@@ -71,16 +71,14 @@ function writeManagedSection(filePath, content) {
 }
 
 async function detectHeadroomFork() {
+  // Kept for detecting already-installed local dev builds — uses them as-is, doesn't prefer them
   const candidates = [
     join(homedir(), 'Work', 'headroom', '.venv13', 'bin', 'headroom'),
     join(homedir(), 'Work', 'headroom', '.venv', 'bin', 'headroom'),
-    join(homedir(), 'headroom', '.venv', 'bin', 'headroom'),
   ];
   for (const p of candidates) {
-    if (existsSync(p)) return { path: p, source: 'local-fork' };
+    if (existsSync(p)) return { path: p, source: 'local-dev' };
   }
-  const inPath = await which('headroom');
-  if (inPath) return { path: inPath, source: 'path' };
   return null;
 }
 
@@ -140,13 +138,12 @@ process.exit(0);
 `);
 }
 
-function printStateTable(tools, forkHeadroom, caBundles, proxy) {
+function printStateTable(tools, caBundles, proxy) {
   console.log('\nCurrent State\n' + '─'.repeat(60));
   for (const [name, r] of Object.entries(tools)) {
     const icon = r.installed ? '\u2713' : '\u2717';
     console.log(`  ${icon} ${name.padEnd(14)} ${r.installed ? r.version : 'not installed'}`);
   }
-  if (forkHeadroom) console.log(`\n  Headroom fork:  ${forkHeadroom.path}`);
   if (caBundles.length) console.log(`  CA bundles:     ${caBundles.map(b => b.source).join(', ')}`);
   if (proxy) console.log(`  Upstream proxy: ${proxy}`);
   console.log('─'.repeat(60) + '\n');
@@ -178,24 +175,22 @@ async function main() {
   console.log('\n\ud83e\uddec Myelin Installer \u2014 ' + os + '\n');
   console.log('Detecting existing installations...');
 
-  const tools        = await detectAll();
+  const tools     = await detectAll();
   const { proxy: corpProxy } = detectCorporateProxy();
-  const caBundles    = detectCaBundles();
-  const sslEnv       = buildCorporateSslEnv(caBundles[0]?.path ?? null);
-  const forkHeadroom = await detectHeadroomFork();
+  const caBundles = detectCaBundles();
+  const sslEnv    = buildCorporateSslEnv(caBundles[0]?.path ?? null);
 
-  if (flags.check) { printStateTable(tools, forkHeadroom, caBundles, corpProxy); process.exit(0); }
+  if (flags.check) { printStateTable(tools, caBundles, corpProxy); process.exit(0); }
 
   mkdirSync(join(home, '.tokenstack'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   let port = existingCfg.proxy.headroom.port;
   if (!(await isPortFree(port))) {
-    // Port in use — check if it's already our Headroom proxy (healthy → keep it)
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {
       ok(`Headroom already running on port ${port} — keeping`);
     } else {
-      warn(`Port ${port} in use by another process. Finding a free port...`);
+      warn(`Port ${port} in use. Finding a free port...`);
       port = await findFreePort(port + 1, port + 20);
       ok(`Using port ${port}`);
     }
@@ -204,9 +199,7 @@ async function main() {
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
     console.log('  uv, serena, semble, ast-grep, rtk');
-    if (!flags['no-headroom']) console.log(forkHeadroom
-      ? `  headroom — use existing fork at ${forkHeadroom.path}`
-      : '  headroom-ai[all] (yehsuf fork, fallback PyPI)');
+    if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
     if (flags.profile === 'proxy') console.log(`  service on port ${port}`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
@@ -215,7 +208,7 @@ async function main() {
     return;
   }
 
-  // 1. Package manager
+
   step('[1/7] Package manager...');
   await ensureUv();
   ok('uv ready');
@@ -248,20 +241,12 @@ async function main() {
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');
   if (!flags['no-headroom']) {
-    if (forkHeadroom) {
-      ok(`headroom — using ${forkHeadroom.source}: ${forkHeadroom.path}`);
-    } else if (!tools.headroom.installed) {
-      console.log('  Installing headroom (yehsuf fork)...');
+    if (!tools.headroom.installed) {
+      console.log('  Installing headroom...');
       const venv = join(home, '.tokenstack', 'venv');
       execSync(`uv venv ${venv}`, { stdio: 'pipe' });
-      try {
-        execSync(`uv pip install --python ${venv} "headroom-ai[all] @ git+https://github.com/yehsuf/headroom.git"`, { stdio: 'inherit' });
-        ok('headroom installed (yehsuf fork)');
-      } catch {
-        warn('Fork install failed — using PyPI headroom-ai');
-        execSync(`uv pip install --python ${venv} "headroom-ai[all]"`, { stdio: 'inherit' });
-        ok('headroom installed (PyPI)');
-      }
+      execSync(`uv pip install --python ${venv} 'headroom-ai[all]'`, { stdio: 'inherit' });
+      ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
   }
 
@@ -273,7 +258,7 @@ async function main() {
   // 4. Service
   if (!flags['no-headroom'] && flags.profile === 'proxy') {
     step('[4/7] Background service...');
-    const binPath = forkHeadroom?.path ?? headroomBinPath();
+    const binPath = headroomBinPath();
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     await installService({ headroomBin: binPath, port, envVars,
@@ -363,7 +348,7 @@ async function main() {
   // 7. Summary
   step('[7/7] Complete! \ud83e\uddec\n' + '\u2500'.repeat(55));
   console.log(`  Proxy port:    ${port}`);
-  console.log(`  Headroom:      ${forkHeadroom ? forkHeadroom.path : headroomBinPath()}`);
+  console.log(`  Headroom:      ${headroomBinPath()}`);
   console.log(`  Config:        ${DEFAULT_CONFIG_PATH}`);
   if (caBundles.length) console.log(`  Corporate SSL: ${caBundles[0].path}`);
   console.log('\n  \u26a0 Start a new terminal/session for all changes to take effect.');
