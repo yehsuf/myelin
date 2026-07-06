@@ -1,8 +1,10 @@
-import { writeFileSync, existsSync, copyFileSync } from 'node:fs';
+import { writeFileSync, existsSync, copyFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { dump } from 'js-yaml';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './reader.mjs';
 
 export async function writeConfig(config, configPath = DEFAULT_CONFIG_PATH) {
+  mkdirSync(dirname(configPath), { recursive: true });
   if (existsSync(configPath)) {
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     copyFileSync(configPath, `${configPath}.bak.${ts}`);
