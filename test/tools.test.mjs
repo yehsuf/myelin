@@ -21,9 +21,9 @@ describe('RTK install strategy', () => {
     const s = rtkInstallStrategy('darwin');
     assert.equal(s[0].method, 'brew');
   });
-  it('returns brew on linux', () => {
+  it('returns github_release first on linux', () => {
     const s = rtkInstallStrategy('linux');
-    assert.equal(s[0].method, 'brew');
+    assert.equal(s[0].method, 'github_release');
   });
   it('returns github_release first on windows', () => {
     const s = rtkInstallStrategy('windows');
