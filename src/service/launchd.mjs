@@ -56,8 +56,33 @@ export function installService(opts) {
 
 export function serviceStatus() {
   try {
-    const out = execSync(`launchctl list ${LABEL} 2>&1`).toString();
-    return { running: !out.includes('Could not find service'), raw: out };
+    // Check our canonical label first
+    const labels = [
+      LABEL,
+      // Username-variant: com.<username>.headroom (common pattern in manual setups)
+      `com.${process.env.USER || process.env.USERNAME || ''}.headroom`,
+    ].filter((l, i, a) => l !== LABEL || i === 0 ? true : a.indexOf(l) === i); // dedupe
+
+    for (const label of labels) {
+      try {
+        const out = execSync(`launchctl list ${label} 2>&1`).toString();
+        if (!out.includes('Could not find service')) {
+          return { running: true, label, raw: out };
+        }
+      } catch {}
+    }
+
+    // Fallback: scan all loaded agents for anything headroom-related
+    try {
+      const all = execSync('launchctl list 2>&1').toString();
+      const match = all.split('\n').find(l => l.toLowerCase().includes('headroom'));
+      if (match) {
+        const label = match.trim().split(/\s+/).pop();
+        return { running: true, label, raw: match };
+      }
+    } catch {}
+
+    return { running: false, raw: '' };
   } catch {
     return { running: false, raw: '' };
   }

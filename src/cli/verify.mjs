@@ -9,7 +9,13 @@ export async function runVerify() {
   const results = [];
 
   const svc = await serviceStatus();
-  results.push({ name: 'Headroom service', ok: svc.running, detail: svc.running ? 'running' : 'not running — try: tokenstack diagnose' });
+  results.push({
+    name: 'Headroom service',
+    ok: svc.running,
+    detail: svc.running
+      ? `running${svc.label ? ` (${svc.label})` : ''}`
+      : 'not running — try: myelin diagnose',
+  });
 
   const healthy = await waitForHeadroom(port, 3000);
   results.push({ name: `Headroom health (port ${port})`, ok: healthy, detail: healthy ? headroomHealthUrl(port) : `no response on :${port}` });
