@@ -188,17 +188,13 @@ async function buildCombinedCaCert(rootCaPath, home) {
 
 /**
  * Build a portable copilot alias.
- * SSL env vars are passed explicitly so headroom works on corporate networks
- * without any patching of headroom internals.
+ * SSL vars are set in the shell profile (see ssl block above) and picked up
+ * automatically by headroom — no need to inline them in the alias.
  */
-function buildCopilotAlias(port, sslEnv = {}) {
-  const sslInline = Object.entries(sslEnv)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(' ');
-  const sslPrefix = sslInline ? `${sslInline} ` : '';
+function buildCopilotAlias(port) {
   return `# Copilot CLI through Headroom proxy (compression + MCPs)
 # Change model: myelin config set copilot.model gpt-4o
-alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) ${sslPrefix}headroom wrap copilot --no-proxy --subscription -- --model $(node \${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
+alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription -- --model $(node \${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
 }
 
 
@@ -412,7 +408,7 @@ async function main() {
         .map(([k, v]) => `export ${k}=${v}`)
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
-      const copilotAlias = buildCopilotAlias(port, sslEnv);
+      const copilotAlias = buildCopilotAlias(port);
       // On Linux/mac, ensure ~/.local/bin and ~/.tokenstack/bin are in PATH
       const extraPath = os !== 'windows'
         ? '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"'
