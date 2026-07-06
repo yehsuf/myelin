@@ -302,7 +302,10 @@ async function main() {
   // 2. Code discovery tools
   step('[2/7] Code discovery tools...');
   if (!tools.serena.installed) {
-    console.log('  Installing Serena...'); uvToolInstall('serena'); ok('serena installed');
+    console.log('  Installing Serena (oraios/serena)...');
+    // serena on PyPI is an unrelated AMQP package — must install from GitHub
+    execSync('uv tool install "serena @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
+    ok('serena installed');
   } else { skip(`serena (${tools.serena.version})`); }
 
   if (!tools.semble.installed) {
