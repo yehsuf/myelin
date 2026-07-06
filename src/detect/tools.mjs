@@ -21,7 +21,12 @@ export async function detectNode() { return detectTool('node', '--version'); }
 export async function detectHeadroom() { return detectTool('headroom', '--version'); }
 export async function detectRtk() { return detectTool('rtk', '--version'); }
 export async function detectSerena() { return detectTool('serena', '--version'); }
-export async function detectSemble() { return detectTool('semble', '--version'); }
+export async function detectSemble() {
+  // semble uses subcommands, no --version flag
+  const path = await which('semble');
+  if (!path) return { installed: false, version: null, path: null };
+  return { installed: true, version: 'semble (installed)', path };
+}
 export async function detectAstGrep() { return detectTool('ast-grep', '--version'); }
 
 export async function detectAll() {

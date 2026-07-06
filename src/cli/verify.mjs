@@ -14,10 +14,14 @@ export async function runVerify() {
   const healthy = await waitForHeadroom(port, 3000);
   results.push({ name: `Headroom health (port ${port})`, ok: healthy, detail: healthy ? headroomHealthUrl(port) : `no response on :${port}` });
 
-  for (const tool of ['uv', 'serena', 'semble', 'ast-grep']) {
+  for (const tool of ['uv', 'serena', 'ast-grep']) {
     const r = await detectTool(tool, '--version');
-    results.push({ name: tool, ok: r.installed, detail: r.installed ? r.version : 'not found — run: tokenstack update' });
+    results.push({ name: tool, ok: r.installed, detail: r.installed ? r.version : 'not found — run: myelin update' });
   }
+  // semble uses subcommands, not --version
+  const { detectSemble } = await import('../detect/tools.mjs');
+  const semble = await detectSemble();
+  results.push({ name: 'semble', ok: semble.installed, detail: semble.installed ? semble.version : 'not found — run: myelin update' });
 
   const width = Math.max(...results.map(r => r.name.length));
   console.log('\nMyelin Component Status\n' + '─'.repeat(60));
