@@ -451,11 +451,13 @@ async function main() {
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
       const copilotAlias = buildCopilotAlias(port);
-      // On Linux, ensure ~/.local/bin is in PATH (uv installs tools there)
-      const localBinPath = os === 'linux' ? '\nexport PATH="$HOME/.local/bin:$PATH"' : '';
+      // On Linux/mac, ensure ~/.local/bin and ~/.tokenstack/bin are in PATH
+      const extraPath = os !== 'windows'
+        ? '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"'
+        : '';
       writeFileSync(profilePath,
-        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${localBinPath}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
-      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}${localBinPath ? ', ~/.local/bin PATH' : ''}, copilot alias)`);
+        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
+      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot alias)`);
     } else { skip(`${profilePath} already configured`); }
   }
 
