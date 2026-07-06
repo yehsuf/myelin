@@ -1,0 +1,48 @@
+export const DEFAULT_CONFIG = {
+  version: '1.0',
+  proxy: {
+    headroom: {
+      enabled: true,
+      port: 8787,
+      bind: '127.0.0.1',
+      backend: 'kompress-base',
+      thrash_cache: true,
+      diff_enforcer: true,
+      corporate_proxy: '',
+    },
+  },
+  index_tier: 'default',
+  code_discovery: {
+    serena: { enabled: true, lsp: { typescript: true, python: true, rust: false, go: true } },
+    semble: true,
+    astgrep: true,
+    mcp_git: true,
+    cbm_fallback: { enabled: true, mcp_limit_threshold: 3 },
+  },
+  conversation_memory: { mem0: true },
+  shell_compression: { rtk: true },
+  output_sandboxing: { srt: true, context_mode: true },
+  budget_routing: {
+    litellm: false,
+    cheap_model: 'claude-haiku-4-5',
+    complex_model: 'claude-opus-4-7',
+    cheap_threshold: 0.3,
+  },
+  output_style: { caveman_rules: true, hooks: true },
+  learning: { headroom_learn: true },
+  observability: { helicone: false, token_optimizer: true, ai_engineering_coach: true },
+  stacklit: { enabled: false },
+  semgrep: { enabled: false },
+};
+
+export function mergeDeep(base, override) {
+  if (typeof base !== 'object' || base === null) return override;
+  if (typeof override !== 'object' || override === null) return override;
+  const result = { ...base };
+  for (const key of Object.keys(override)) {
+    result[key] = (typeof override[key] === 'object' && !Array.isArray(override[key]) && override[key] !== null)
+      ? mergeDeep(base[key] ?? {}, override[key])
+      : override[key];
+  }
+  return result;
+}
