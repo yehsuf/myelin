@@ -318,9 +318,18 @@ async function main() {
 
   if (!tools.astgrep.installed) {
     console.log('  Installing ast-grep...');
-    if (os !== 'windows') {
+    if (os === 'darwin') {
       try { execSync('brew install ast-grep', { stdio: 'inherit' }); ok('ast-grep (brew)'); }
       catch { execSync('cargo install ast-grep --locked', { stdio: 'inherit' }); ok('ast-grep (cargo)'); }
+    } else if (os === 'linux') {
+      // Try npm package (cross-platform, no cargo needed), then GitHub release, then cargo
+      try {
+        execSync('npm install -g @ast-grep/cli', { stdio: 'inherit' });
+        ok('ast-grep (npm)');
+      } catch {
+        try { execSync('cargo install ast-grep --locked', { stdio: 'inherit' }); ok('ast-grep (cargo)'); }
+        catch { warn('ast-grep install failed — install manually: npm install -g @ast-grep/cli'); }
+      }
     } else {
       try { execSync('cargo install ast-grep --locked', { stdio: 'inherit' }); ok('ast-grep (cargo)'); }
       catch { warn('ast-grep install failed — install manually'); }
@@ -440,11 +449,12 @@ async function main() {
         .map(([k, v]) => `export ${k}=${v}`)
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
-      // Build portable copilot alias using gh CLI to detect current account
       const copilotAlias = buildCopilotAlias(port);
+      // On Linux, ensure ~/.local/bin is in PATH (uv installs tools there)
+      const localBinPath = os === 'linux' ? '\nexport PATH="$HOME/.local/bin:$PATH"' : '';
       writeFileSync(profilePath,
-        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
-      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, copilot alias)`);
+        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${localBinPath}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
+      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}${localBinPath ? ', ~/.local/bin PATH' : ''}, copilot alias)`);
     } else { skip(`${profilePath} already configured`); }
   }
 
