@@ -187,14 +187,15 @@ async function buildCombinedCaCert(rootCaPath, home) {
 }
 
 /**
- * Build a portable copilot alias.
- * SSL vars are set in the shell profile (see ssl block above) and picked up
- * automatically by headroom — no need to inline them in the alias.
+ * Return the "copilot runs natively" comment block for the shell profile.
+ * Copilot CLI cannot be routed through Headroom for API compression because
+ * Headroom is not a CONNECT/MITM proxy. Copilot still uses its native auth
+ * and MCPs (Serena, Semble, mcp-git, mem0) load from ~/.copilot/mcp-config.json.
+ * RTK shell compression still applies.
  */
 function buildCopilotAlias(port) {
-  return `# Copilot CLI through Headroom proxy (compression + MCPs)
-# Change model: myelin config set copilot.model gpt-4o
-alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription -- --model $(node \${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
+  return `# copilot runs natively — MCPs (Serena/Semble/mcp-git/mem0) + RTK still active
+# Headroom does NOT wrap copilot (only Claude Code — Copilot API traffic is TLS-encrypted end-to-end)`;
 }
 
 
