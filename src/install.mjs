@@ -232,6 +232,18 @@ function patchHeadroomSslUrllib(home) {
         } else {
           skip('headroom proxy/server.py SSL patch already applied');
         }
+
+        // Also patch _exchange_token_sync — token exchange HTTP call also needs SSL_CERT_FILE
+        const exchOld = `with urllib_request.urlopen(request, timeout=10.0) as response:\n                payload = json.loads(response.read().decode("utf-8"))`;
+        const exchNew = `import ssl as _ssl2\n            _cafile2 = (\n                os.environ.get("SSL_CERT_FILE")\n                or os.environ.get("REQUESTS_CA_BUNDLE")\n                or os.environ.get("HEADROOM_CA_BUNDLE")\n            )\n            _ctx2 = _ssl2.create_default_context(cafile=_cafile2) if _cafile2 else None\n            with urllib_request.urlopen(request, timeout=10.0, context=_ctx2) as response:\n                payload = json.loads(response.read().decode("utf-8"))`;
+        const authContent = readFileSync(authPath, 'utf8');
+        if (!authContent.includes('_ctx2') && authContent.includes('_exchange_token_sync')) {
+          const updated = authContent.replace(exchOld, exchNew);
+          if (updated !== authContent) {
+            writeFileSync(authPath, updated, 'utf8');
+            ok('headroom copilot_auth.py _exchange_token_sync SSL patch applied');
+          }
+        }
       }
       return;
     }
