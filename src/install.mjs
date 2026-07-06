@@ -231,8 +231,8 @@ function patchHeadroomSslUrllib(home) {
  */
 function buildCopilotAlias(port) {
   return `# Copilot CLI through Headroom proxy (compression + MCPs)
-# Override model: export MYELIN_COPILOT_MODEL=gpt-4o  (default: claude-sonnet-4-5)
-alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription -- --model \${MYELIN_COPILOT_MODEL:-claude-sonnet-4-5}'`;
+# Change model: myelin config set copilot.model gpt-4o
+alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription -- --model $(node ${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
 }
 
 

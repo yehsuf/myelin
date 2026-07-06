@@ -34,6 +34,9 @@ export const DEFAULT_CONFIG = {
   observability: { helicone: false, token_optimizer: true, ai_engineering_coach: true },
   stacklit: { enabled: false },
   semgrep: { enabled: false },
+  copilot: {
+    model: 'claude-sonnet-4-6',   // change with: myelin config set copilot.model <model>
+  },
 };
 
 export function mergeDeep(base, override) {
