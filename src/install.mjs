@@ -209,17 +209,31 @@ function patchHeadroomSslUrllib(home) {
 
       if (content.includes('SSL_CERT_FILE') && content.includes('create_default_context')) {
         skip('headroom copilot_auth.py SSL patch already applied');
-        return;
+      } else {
+        const OLD = 'with urllib_request.urlopen(request, timeout=10.0) as response:';
+        const NEW = `import ssl as _ssl\n        _cafile = (\n            os.environ.get("SSL_CERT_FILE")\n            or os.environ.get("REQUESTS_CA_BUNDLE")\n            or os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _ctx = _ssl.create_default_context(cafile=_cafile) if _cafile else None\n        with urllib_request.urlopen(request, timeout=10.0, context=_ctx) as response:`;
+        if (content.includes(OLD)) {
+          writeFileSync(authPath, content.replace(OLD, NEW), 'utf8');
+          ok(`headroom copilot_auth.py SSL patch applied`);
+        }
       }
 
-      const OLD = 'with urllib_request.urlopen(request, timeout=10.0) as response:';
-      const NEW = `import ssl as _ssl\n        _cafile = (\n            os.environ.get("SSL_CERT_FILE")\n            or os.environ.get("REQUESTS_CA_BUNDLE")\n            or os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _ctx = _ssl.create_default_context(cafile=_cafile) if _cafile else None\n        with urllib_request.urlopen(request, timeout=10.0, context=_ctx) as response:`;
-
-      if (content.includes(OLD)) {
-        writeFileSync(authPath, content.replace(OLD, NEW), 'utf8');
-        ok(`headroom copilot_auth.py SSL patch applied`);
-        return;
+      // Also patch server.py — httpx client must use SSL_CERT_FILE for outbound connections
+      const serverPath = authPath.replace('copilot_auth.py', 'proxy/server.py');
+      if (existsSync(serverPath)) {
+        const srv = readFileSync(serverPath, 'utf8');
+        if (!srv.includes('_verify = _ssl.create_default_context')) {
+          const SRV_OLD = '        self.http_client = httpx.AsyncClient(**_client_kwargs)\n        self.http_client_insecure = httpx.AsyncClient(**_client_kwargs, verify=False)';
+          const SRV_NEW = `        import os as _os, ssl as _ssl\n        _cafile = (\n            _os.environ.get("SSL_CERT_FILE")\n            or _os.environ.get("REQUESTS_CA_BUNDLE")\n            or _os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _verify = _ssl.create_default_context(cafile=_cafile) if _cafile else True\n        self.http_client = httpx.AsyncClient(**_client_kwargs, verify=_verify)\n        self.http_client_insecure = httpx.AsyncClient(**_client_kwargs, verify=False)`;
+          if (srv.includes(SRV_OLD)) {
+            writeFileSync(serverPath, srv.replace(SRV_OLD, SRV_NEW, 1), 'utf8');
+            ok(`headroom proxy/server.py httpx SSL patch applied`);
+          }
+        } else {
+          skip('headroom proxy/server.py SSL patch already applied');
+        }
       }
+      return;
     }
   } catch { /* non-fatal */ }
 }
