@@ -187,78 +187,18 @@ async function buildCombinedCaCert(rootCaPath, home) {
 }
 
 /**
- * Patch headroom's copilot_auth.py to respect SSL_CERT_FILE / REQUESTS_CA_BUNDLE
- * environment variables in urllib calls (urllib ignores these by default).
- * This makes headroom's token validation consistent with requests/httpx behavior.
+ * Build a portable copilot alias.
+ * SSL env vars are passed explicitly so headroom works on corporate networks
+ * without any patching of headroom internals.
  */
-function patchHeadroomSslUrllib(home) {
-  try {
-    const candidates = [
-      join(home, '.tokenstack', 'venv'),
-      join(home, 'Work', 'headroom', '.venv13'),
-      join(home, 'Work', 'headroom', '.venv'),
-    ];
-    for (const venv of candidates) {
-      let authPath;
-      try {
-        authPath = execSync(`find "${venv}" -name "copilot_auth.py" -path "*/headroom/*" 2>/dev/null | head -1`, { shell: true }).toString().trim();
-      } catch { continue; }
-      if (!authPath) continue;
-
-      const content = readFileSync(authPath, 'utf8');
-
-      if (content.includes('SSL_CERT_FILE') && content.includes('create_default_context')) {
-        skip('headroom copilot_auth.py SSL patch already applied');
-      } else {
-        const OLD = 'with urllib_request.urlopen(request, timeout=10.0) as response:';
-        const NEW = `import ssl as _ssl\n        _cafile = (\n            os.environ.get("SSL_CERT_FILE")\n            or os.environ.get("REQUESTS_CA_BUNDLE")\n            or os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _ctx = _ssl.create_default_context(cafile=_cafile) if _cafile else None\n        with urllib_request.urlopen(request, timeout=10.0, context=_ctx) as response:`;
-        if (content.includes(OLD)) {
-          writeFileSync(authPath, content.replace(OLD, NEW), 'utf8');
-          ok(`headroom copilot_auth.py SSL patch applied`);
-        }
-      }
-
-      // Also patch server.py — httpx client must use SSL_CERT_FILE for outbound connections
-      const serverPath = authPath.replace('copilot_auth.py', 'proxy/server.py');
-      if (existsSync(serverPath)) {
-        const srv = readFileSync(serverPath, 'utf8');
-        if (!srv.includes('_verify = _ssl.create_default_context')) {
-          const SRV_OLD = '        self.http_client = httpx.AsyncClient(**_client_kwargs)\n        self.http_client_insecure = httpx.AsyncClient(**_client_kwargs, verify=False)';
-          const SRV_NEW = `        import os as _os, ssl as _ssl\n        _cafile = (\n            _os.environ.get("SSL_CERT_FILE")\n            or _os.environ.get("REQUESTS_CA_BUNDLE")\n            or _os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _verify = _ssl.create_default_context(cafile=_cafile) if _cafile else True\n        self.http_client = httpx.AsyncClient(**_client_kwargs, verify=_verify)\n        self.http_client_insecure = httpx.AsyncClient(**_client_kwargs, verify=False)`;
-          if (srv.includes(SRV_OLD)) {
-            writeFileSync(serverPath, srv.replace(SRV_OLD, SRV_NEW, 1), 'utf8');
-            ok(`headroom proxy/server.py httpx SSL patch applied`);
-          }
-        } else {
-          skip('headroom proxy/server.py SSL patch already applied');
-        }
-
-        // Also patch _exchange_token_sync — token exchange HTTP call also needs SSL_CERT_FILE
-        const exchOld = `with urllib_request.urlopen(request, timeout=10.0) as response:\n                payload = json.loads(response.read().decode("utf-8"))`;
-        const exchNew = `import ssl as _ssl2\n            _cafile2 = (\n                os.environ.get("SSL_CERT_FILE")\n                or os.environ.get("REQUESTS_CA_BUNDLE")\n                or os.environ.get("HEADROOM_CA_BUNDLE")\n            )\n            _ctx2 = _ssl2.create_default_context(cafile=_cafile2) if _cafile2 else None\n            with urllib_request.urlopen(request, timeout=10.0, context=_ctx2) as response:\n                payload = json.loads(response.read().decode("utf-8"))`;
-        const authContent = readFileSync(authPath, 'utf8');
-        if (!authContent.includes('_ctx2') && authContent.includes('_exchange_token_sync')) {
-          const updated = authContent.replace(exchOld, exchNew);
-          if (updated !== authContent) {
-            writeFileSync(authPath, updated, 'utf8');
-            ok('headroom copilot_auth.py _exchange_token_sync SSL patch applied');
-          }
-        }
-      }
-      return;
-    }
-  } catch { /* non-fatal */ }
-}
-
-/**
- * Build a portable copilot alias that detects the current gh CLI account
- * and reads the token from the macOS keychain dynamically.
- * Falls back to GITHUB_COPILOT_GITHUB_TOKEN if keychain is not available.
- */
-function buildCopilotAlias(port) {
+function buildCopilotAlias(port, sslEnv = {}) {
+  const sslInline = Object.entries(sslEnv)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  const sslPrefix = sslInline ? `${sslInline} ` : '';
   return `# Copilot CLI through Headroom proxy (compression + MCPs)
 # Change model: myelin config set copilot.model gpt-4o
-alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription -- --model $(node ${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
+alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) ${sslPrefix}headroom wrap copilot --no-proxy --subscription -- --model $(node \${HOME}/tokenstack/bin/tokenstack config get copilot.model 2>/dev/null || echo claude-sonnet-4-6)'`;
 }
 
 
@@ -373,10 +313,6 @@ async function main() {
       execSync(`uv pip install --python ${venv} 'headroom-ai[all]'`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
-
-    // Patch headroom's copilot_auth.py to respect SSL_CERT_FILE env var in urllib calls
-    // (urllib ignores SSL_CERT_FILE by default; this makes it consistent with requests/httpx)
-    patchHeadroomSslUrllib(home);
   }
 
   // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain
@@ -476,7 +412,7 @@ async function main() {
         .map(([k, v]) => `export ${k}=${v}`)
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
-      const copilotAlias = buildCopilotAlias(port);
+      const copilotAlias = buildCopilotAlias(port, sslEnv);
       // On Linux/mac, ensure ~/.local/bin and ~/.tokenstack/bin are in PATH
       const extraPath = os !== 'windows'
         ? '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"'
