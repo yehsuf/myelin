@@ -13,7 +13,7 @@ const UPDATE_COMMANDS = {
 export async function runUpdate(options = {}) {
   const { check = false } = options;
   const tools = await detectAll();
-  console.log(`\nTokenStack Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
+  console.log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
   for (const [name, r] of Object.entries(tools)) {
     const cmd = UPDATE_COMMANDS[name];
     if (!cmd) continue;

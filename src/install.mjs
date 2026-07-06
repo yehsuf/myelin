@@ -33,7 +33,7 @@ async function main() {
   });
 
   const os = detectOS();
-  console.log(`\n🛠  TokenStack Installer — ${os}\n`);
+  console.log(`\n🛠  Myelin Installer — ${os}\n`);
   console.log('Detecting existing installations...');
   const tools = await detectAll();
   const { proxy: corpProxy } = detectCorporateProxy();

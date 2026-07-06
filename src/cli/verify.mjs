@@ -20,7 +20,7 @@ export async function runVerify() {
   }
 
   const width = Math.max(...results.map(r => r.name.length));
-  console.log('\nTokenStack Component Status\n' + '─'.repeat(60));
+  console.log('\nMyelin Component Status\n' + '─'.repeat(60));
   for (const r of results) {
     console.log(`  ${r.ok ? '✓' : '✗'} ${r.name.padEnd(width + 2)} ${r.detail}`);
   }

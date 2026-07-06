@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { configCommand } from './config-cmd.mjs';
 
 const program = new Command();
-program.name('tokenstack').description('Token-efficient AI workspace manager').version('1.0.0');
+program.name('tokenstack').description('Myelin — the neural insulation layer for AI coding agents').version('1.0.0');
 
 program.addCommand(configCommand());
 

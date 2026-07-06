@@ -8,7 +8,7 @@ export async function runDiagnose() {
   const port = cfg.proxy.headroom.port;
   const os = detectOS();
 
-  console.log(`\nTokenStack Diagnostics\n${'─'.repeat(50)}`);
+  console.log(`\nMyelin Diagnostics\n${'─'.repeat(50)}`);
 
   const portFree = await isPortFree(port);
   if (portFree) {
@@ -35,7 +35,7 @@ export async function runDiagnose() {
   try {
     const cmd = os === 'windows'
       ? `powershell -Command "(Get-Process headroom -ErrorAction SilentlyContinue).Count"`
-      : `pgrep -c headroom`;
+      : `pgrep -x headroom | wc -l`;
     const count = parseInt(execSync(cmd, { timeout: 2000 }).toString().trim(), 10);
     if (count > 1) console.warn(`⚠ ${count} headroom processes — possible orphan beacons`);
     else if (count === 1) console.log(`✓ Headroom processes: 1 (healthy)`);
