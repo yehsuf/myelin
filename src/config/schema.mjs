@@ -35,7 +35,7 @@ export const DEFAULT_CONFIG = {
   stacklit: { enabled: false },
   semgrep: { enabled: false },
   copilot: {
-    model: 'claude-sonnet-4-6',   // change with: myelin config set copilot.model <model>
+    model: 'claude-sonnet-4.5',   // change with: myelin config set copilot.model <model>
   },
 };
 
