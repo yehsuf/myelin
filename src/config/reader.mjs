@@ -19,7 +19,12 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
 
   // Env var overrides (highest priority)
   if (process.env.HEADROOM_PORT) {
-    merged = mergeDeep(merged, { proxy: { headroom: { port: parseInt(process.env.HEADROOM_PORT, 10) } } });
+    const rawPort = parseInt(process.env.HEADROOM_PORT, 10);
+    if (!Number.isNaN(rawPort)) {
+      merged = mergeDeep(merged, { proxy: { headroom: { port: rawPort } } });
+    } else {
+      console.warn(`[tokenstack] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
+    }
   }
   if (process.env.TOKENSTACK_PROFILE) {
     merged._profile = process.env.TOKENSTACK_PROFILE;
