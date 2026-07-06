@@ -149,6 +149,92 @@ function printStateTable(tools, caBundles, proxy) {
   console.log('─'.repeat(60) + '\n');
 }
 
+/**
+ * Build a combined CA bundle: the detected root CA + the intermediate CA
+ * extracted from the live TLS connection to api.github.com.
+ * Required when a corporate SSL interceptor (e.g. NetFree/Hot) uses an
+ * intermediate CA that isn't in the standard trust store.
+ * Returns the path to the combined cert, or the original path if no
+ * interception is detected or extraction fails.
+ */
+async function buildCombinedCaCert(rootCaPath, home) {
+  if (!rootCaPath) return null;
+  const combinedPath = join(home, '.tokenstack', 'ca-bundle.pem');
+
+  try {
+    const intermediate = execSync(
+      `echo | openssl s_client -connect api.github.com:443 -showcerts 2>/dev/null | ` +
+      `awk '/-----BEGIN CERTIFICATE-----/{i++} i==2{print} /-----END CERTIFICATE-----/ && i==2{exit}'`,
+      { shell: true, timeout: 10000 }
+    ).toString().trim();
+
+    if (!intermediate.includes('BEGIN CERTIFICATE')) return rootCaPath;
+
+    const rootContent = readFileSync(rootCaPath, 'utf8');
+    // Check if intermediate is already present (avoid duplicates)
+    const intermediateLine = intermediate.split('\n')[1]?.trim() ?? '';
+    if (intermediateLine && rootContent.includes(intermediateLine)) return rootCaPath;
+
+    writeFileSync(
+      combinedPath,
+      rootContent + '\n# Intermediate CA (auto-extracted from live TLS chain)\n' + intermediate + '\n',
+      'utf8'
+    );
+    return combinedPath;
+  } catch {
+    return rootCaPath;
+  }
+}
+
+/**
+ * Patch headroom's copilot_auth.py to respect SSL_CERT_FILE / REQUESTS_CA_BUNDLE
+ * environment variables in urllib calls (urllib ignores these by default).
+ * This makes headroom's token validation consistent with requests/httpx behavior.
+ */
+function patchHeadroomSslUrllib(home) {
+  try {
+    const candidates = [
+      join(home, '.tokenstack', 'venv'),
+      join(home, 'Work', 'headroom', '.venv13'),
+      join(home, 'Work', 'headroom', '.venv'),
+    ];
+    for (const venv of candidates) {
+      let authPath;
+      try {
+        authPath = execSync(`find "${venv}" -name "copilot_auth.py" -path "*/headroom/*" 2>/dev/null | head -1`, { shell: true }).toString().trim();
+      } catch { continue; }
+      if (!authPath) continue;
+
+      const content = readFileSync(authPath, 'utf8');
+
+      if (content.includes('SSL_CERT_FILE') && content.includes('create_default_context')) {
+        skip('headroom copilot_auth.py SSL patch already applied');
+        return;
+      }
+
+      const OLD = 'with urllib_request.urlopen(request, timeout=10.0) as response:';
+      const NEW = `import ssl as _ssl\n        _cafile = (\n            os.environ.get("SSL_CERT_FILE")\n            or os.environ.get("REQUESTS_CA_BUNDLE")\n            or os.environ.get("HEADROOM_CA_BUNDLE")\n        )\n        _ctx = _ssl.create_default_context(cafile=_cafile) if _cafile else None\n        with urllib_request.urlopen(request, timeout=10.0, context=_ctx) as response:`;
+
+      if (content.includes(OLD)) {
+        writeFileSync(authPath, content.replace(OLD, NEW), 'utf8');
+        ok(`headroom copilot_auth.py SSL patch applied`);
+        return;
+      }
+    }
+  } catch { /* non-fatal */ }
+}
+
+/**
+ * Build a portable copilot alias that detects the current gh CLI account
+ * and reads the token from the macOS keychain dynamically.
+ * Falls back to GITHUB_COPILOT_GITHUB_TOKEN if keychain is not available.
+ */
+function buildCopilotAlias(port) {
+  return `# Copilot CLI through Headroom proxy (compression + MCPs)
+alias copilot='GITHUB_COPILOT_GITHUB_TOKEN=$(gh auth token 2>/dev/null || security find-generic-password -s "gh:github.com" -w 2>/dev/null | sed "s/go-keyring-base64://" | base64 -d 2>/dev/null) headroom wrap copilot --no-proxy --subscription'`;
+}
+
+
 async function main() {
   const { values: flags } = parseArgs({
     options: {
@@ -248,6 +334,20 @@ async function main() {
       execSync(`uv pip install --python ${venv} 'headroom-ai[all]'`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
+
+    // Patch headroom's copilot_auth.py to respect SSL_CERT_FILE env var in urllib calls
+    // (urllib ignores SSL_CERT_FILE by default; this makes it consistent with requests/httpx)
+    patchHeadroomSslUrllib(home);
+  }
+
+  // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain
+  // This is required when a corporate SSL interceptor (e.g. NetFree/Hot) uses an intermediate
+  // CA that isn't in the system trust store. We extract it from the live connection.
+  const combinedCert = await buildCombinedCaCert(caBundles[0]?.path ?? null, home);
+  if (combinedCert && combinedCert !== caBundles[0]?.path) {
+    // Update sslEnv to point to the combined cert
+    Object.keys(sslEnv).forEach(k => { sslEnv[k] = combinedCert; });
+    ok(`Combined CA cert built → ${combinedCert}`);
   }
 
   if (!flags['no-rtk']) {
@@ -259,8 +359,11 @@ async function main() {
   if (!flags['no-headroom'] && flags.profile === 'proxy') {
     step('[4/7] Background service...');
     const binPath = headroomBinPath();
+    const cfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
+    // Add OpenAI target URL for Copilot CLI subscription mode
+    envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     await installService({ headroomBin: binPath, port, envVars,
       logPath: join(home, '.tokenstack', 'headroom.log') });
     ok(`service registered (port ${port})`);
@@ -330,14 +433,15 @@ async function main() {
   if (profilePath) {
     const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
     if (!existing.includes('myelin managed')) {
-      // Write all standard CA bundle env vars that libraries use natively
       const certLines = Object.entries(sslEnv)
         .map(([k, v]) => `export ${k}=${v}`)
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
+      // Build portable copilot alias using gh CLI to detect current account
+      const copilotAlias = buildCopilotAlias(port);
       writeFileSync(profilePath,
-        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n# <<< myelin managed <<<\n`, 'utf8');
-      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''})`);
+        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
+      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, copilot alias)`);
     } else { skip(`${profilePath} already configured`); }
   }
 

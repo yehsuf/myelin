@@ -9,6 +9,7 @@ export const DEFAULT_CONFIG = {
       thrash_cache: true,
       diff_enforcer: true,
       corporate_proxy: '',
+      openai_target_url: 'https://api.githubcopilot.com',
     },
   },
   index_tier: 'default',
