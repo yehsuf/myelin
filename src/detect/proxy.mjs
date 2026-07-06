@@ -48,10 +48,11 @@ export function buildCorporateSslEnv(caBundle = null) {
     caBundle = bundles[0].path;
   }
   return {
-    HEADROOM_CA_BUNDLE: caBundle,
-    NODE_EXTRA_CA_CERTS: caBundle,
-    REQUESTS_CA_BUNDLE: caBundle,
-    SSL_CERT_FILE: caBundle,
-    GIT_SSL_CAINFO: caBundle,
+    HEADROOM_CA_BUNDLE: caBundle,   // headroom proxy
+    NODE_EXTRA_CA_CERTS: caBundle,  // Node.js (Claude Code, Copilot CLI)
+    REQUESTS_CA_BUNDLE: caBundle,   // Python requests, huggingface_hub, pip
+    SSL_CERT_FILE: caBundle,        // Python ssl module, openssl
+    CURL_CA_BUNDLE: caBundle,       // curl
+    GIT_SSL_CAINFO: caBundle,       // git
   };
 }

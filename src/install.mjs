@@ -330,12 +330,14 @@ async function main() {
   if (profilePath) {
     const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
     if (!existing.includes('myelin managed')) {
-      const certLines = caBundles[0]?.path
-        ? `\nexport SSL_CERT_FILE=${caBundles[0].path}\nexport REQUESTS_CA_BUNDLE=${caBundles[0].path}`
-        : '';
+      // Write all standard CA bundle env vars that libraries use natively
+      const certLines = Object.entries(sslEnv)
+        .map(([k, v]) => `export ${k}=${v}`)
+        .join('\n');
+      const certBlock = certLines ? `\n${certLines}` : '';
       writeFileSync(profilePath,
-        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certLines}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n# <<< myelin managed <<<\n`, 'utf8');
-      ok(`${profilePath} (ANTHROPIC_BASE_URL, myelin alias${caBundles[0] ? ', SSL cert' : ''})`);
+        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n# <<< myelin managed <<<\n`, 'utf8');
+      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''})`);
     } else { skip(`${profilePath} already configured`); }
   }
 
