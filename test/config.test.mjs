@@ -49,7 +49,10 @@ describe('config reader', () => {
   it('merges user config over defaults', async () => {
     const cfgPath = join(TEST_DIR, 'config.yaml');
     writeFileSync(cfgPath, 'proxy:\n  headroom:\n    port: 9090\n');
+    const saved = process.env.HEADROOM_PORT;
+    delete process.env.HEADROOM_PORT;  // isolate from env override
     const cfg = await loadConfig(cfgPath);
+    if (saved !== undefined) process.env.HEADROOM_PORT = saved;
     assert.equal(cfg.proxy.headroom.port, 9090);
     assert.equal(cfg.proxy.headroom.enabled, true); // default preserved
   });
