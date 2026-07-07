@@ -78,9 +78,11 @@ export async function runVerify() {
   })();
   results.push({ name: 'ast-grep', ok: astgrep.installed, detail: astgrep.installed ? astgrep.version : 'not found — run: myelin update' });
   // semble uses subcommands, not --version
-  const { detectSemble } = await import('../detect/tools.mjs');
+  const { detectSemble, detectHeadroom } = await import('../detect/tools.mjs');
   const semble = await detectSemble();
   results.push({ name: 'semble', ok: semble.installed, detail: semble.installed ? semble.version : 'not found — run: myelin update' });
+  const hr = await detectHeadroom();
+  results.push({ name: 'headroom proxy', ok: hr.installed, detail: hr.installed ? hr.version : 'not found in venv — run: myelin update' });
 
   const width = Math.max(...results.map(r => r.name.length));
   console.log('\nMyelin Component Status\n' + '─'.repeat(60));

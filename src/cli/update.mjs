@@ -36,14 +36,15 @@ export async function runUpdate(options = {}) {
     const cmd = cmds[name];
     if (!cmd) continue;
     const icon = r.installed ? '↑' : '+';
-    const status = r.installed ? `installed (${r.version})` : 'not installed';
-    console.log(`  ${icon} ${name.padEnd(12)} ${status}`);
+    const label = name === 'headroom' ? 'headroom proxy' : name;
+    const status = r.installed ? `${r.version ?? 'installed'}` : 'not installed';
+    console.log(`  ${icon} ${label.padEnd(14)} ${status}`);
     if (!check) {
-      if (!cmd.upgrade) { console.log('    · no auto-update for this platform — reinstall manually'); continue; }
+      if (!cmd.upgrade) { console.log(`    · no auto-update — reinstall: node src/install.mjs --yes`); continue; }
       try { execSync(cmd.upgrade, { stdio: 'inherit' }); console.log('    ✓ done'); }
       catch (e) { console.warn(`    ✗ failed: ${e.message.split('\n')[0]}`); }
     } else {
-      console.log(`    → would run: ${cmd.upgrade ?? '(manual)'}`);
+      console.log(`    → ${cmd.upgrade ?? '(manual)'}`);
     }
   }
   console.log('─'.repeat(55));
