@@ -31,11 +31,14 @@ export async function detectTool(name, versionFlag = '--version') {
 
     let stdout;
     if (process.platform === 'win32') {
-      // .cmd shims require shell — use cmd.exe /c explicitly (no shell:true, no DEP0190)
+      // PowerShell/cmd: .cmd shims need shell invocation
+      // Use powershell -Command to avoid cmd.exe quoting issues
       const cmdPath = path.match(/\.(cmd|exe|ps1)$/i) ? path : (await which(name + '.cmd') || path);
-      const result = await execFileP('cmd.exe', ['/c', cmdPath, versionFlag], {
-        timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      });
+      const result = await execFileP(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', `& '${cmdPath.replace(/'/g, "''")}' ${versionFlag}`],
+        { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }
+      );
       stdout = result.stdout;
     } else {
       const result = await execFileP(path, [versionFlag], {
