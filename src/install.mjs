@@ -367,8 +367,9 @@ async function ensureMitmCA(home, mitmdumpBin) {
  */
 function buildCopilotAlias(_port) {
   const mitm = 8888;
-  return `# Copilot via Myelin mitmproxy (token compression + cache + auto-VPN)
-alias copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} HTTP_PROXY=http://127.0.0.1:${mitm} copilot'`;
+  return `# _copilot routes through Myelin mitmproxy (token compression + cache + auto-VPN)
+# Use _copilot instead of copilot to get compression; copilot still works natively.
+alias _copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} HTTP_PROXY=http://127.0.0.1:${mitm} copilot'`;
 }
 
 
