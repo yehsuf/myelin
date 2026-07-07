@@ -52,9 +52,13 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
   const envStr = Object.entries(envVars)
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}','${v}','User');`)
     .join(' ');
+  const caBundle = (envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE ||
+                   envVars.NODE_EXTRA_CA_CERTS || '').replace(/\//g, '\\');
+  const caArg = caBundle ? ` --set ssl_verify_upstream_trusted_ca=\\"${caBundle}\\"` : '';
+  const proxyArg = (envVars.HTTPS_PROXY || '') ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
   const ps = `
 ${envStr}
-$action = New-ScheduledTaskAction -Execute "${bin}" -Argument "--listen-port ${port} -s \\"${addon}\\"";
+$action = New-ScheduledTaskAction -Execute "${bin}" -Argument "--listen-port ${port} -s \\"${addon}\\"${proxyArg}${caArg}";
 $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME;
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopOnIdleEnd -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999 -ExecutionTimeLimit (New-TimeSpan -Hours 0);
 Register-ScheduledTask -TaskName "${MITM_TASK_NAME}" -Action $action -Trigger $trigger -Settings $settings -Force;

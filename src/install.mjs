@@ -9,8 +9,7 @@ import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
-import { spawn } from 'node:child_process';
+import { createInterface as createRL } from 'node:readline';
 import { detectOS, detectShell } from './detect/os.mjs';
 import { detectAll } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
@@ -252,17 +251,25 @@ async function installMitmproxyCA(home, interactive = true) {
   }
 }
 
-// Minimal Y/n prompt (default Y). Returns true for Y/y/empty.
+// Shared readline instance — created once, reused across all prompts.
+// Auto-accepts (returns true) when stdin is not a TTY or --yes flag is set.
+let _rl = null;
+
 async function promptYN(question) {
-  const readline = await import('node:readline/promises');
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    const ans = (await rl.question(question)).trim().toLowerCase();
-    return ans === '' || ans === 'y' || ans === 'yes';
-  } finally {
-    rl.close();
+  if (!process.stdin.isTTY || process.argv.includes('--yes') || process.argv.includes('-y')) {
+    process.stdout.write(question + ' [auto: Y]\n');
+    return true;
   }
+  if (!_rl) _rl = createRL({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => {
+    _rl.question(question, ans => {
+      const a = ans.trim().toLowerCase();
+      resolve(a === '' || a === 'y' || a === 'yes');
+    });
+  });
 }
+
+function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
 /**
  * Return the path to the Myelin mitmproxy addon script.
@@ -274,15 +281,34 @@ function mitmAddonPath(home) {
 
 /**
  * Detect the mitmdump binary path (cross-platform).
- * Returns null if not installed.
+ * Checks existence for absolute paths, then tries running --version.
  */
 function detectMitmdump(os) {
   const candidates =
     os === 'windows'
-      ? ['mitmdump', join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', 'Scripts', 'mitmdump.exe')]
-      : ['/opt/homebrew/bin/mitmdump', '/usr/local/bin/mitmdump', '/usr/bin/mitmdump', 'mitmdump'];
+      ? [
+          'mitmdump',
+          join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', 'Scripts', 'mitmdump.exe'),
+          join(process.env.APPDATA ?? '', 'Python', 'Scripts', 'mitmdump.exe'),
+        ]
+      : [
+          '/opt/homebrew/bin/mitmdump',
+          '/usr/local/bin/mitmdump',
+          '/usr/bin/mitmdump',
+          join(homedir(), '.local', 'bin', 'mitmdump'),
+          'mitmdump',
+        ];
+
   for (const c of candidates) {
-    try { execSync(`${c.includes(' ') ? `"${c}"` : c} --version`, { stdio: 'pipe' }); return c; } catch {}
+    const isAbsolute = c.startsWith('/') || c.includes('\\');
+    if (isAbsolute && !existsSync(c)) continue;
+    try {
+      execSync(`"${c}" --version`, { stdio: 'pipe', timeout: 5000 });
+      return c;
+    } catch {
+      // binary exists but --version failed or timed out; still usable
+      if (isAbsolute && existsSync(c)) return c;
+    }
   }
   return null;
 }
@@ -299,22 +325,18 @@ async function ensureMitmproxy(os) {
   console.log('  Installing mitmproxy…');
   try {
     if (os === 'darwin') {
-      execSync('brew install mitmproxy', { stdio: 'inherit' });
+      // brew exits non-zero if already installed via different formula; ignore exit code
+      try { execSync('brew install mitmproxy', { stdio: 'inherit' }); } catch {}
     } else if (os === 'windows') {
-      // pip install into user Scripts dir, available on PATH after install
-      execSync('pip install --user mitmproxy', { stdio: 'inherit' });
+      try { execSync('pip install --user mitmproxy', { stdio: 'inherit' }); } catch {}
     } else {
-      // Linux: use uv to install into tokenstack venv or globally
-      execSync('pip install --user mitmproxy', { stdio: 'inherit' });
+      try { execSync('pip install --user mitmproxy', { stdio: 'inherit' }); } catch {}
     }
-  } catch {
-    warn('mitmproxy install failed — install manually: brew install mitmproxy');
-    return null;
-  }
+  } catch {}
 
   bin = detectMitmdump(os);
   if (bin) { ok(`mitmproxy (${bin})`); return bin; }
-  warn('mitmdump not found after install — check PATH');
+  warn('mitmdump not found after install — install manually: brew install mitmproxy');
   return null;
 }
 
@@ -363,6 +385,7 @@ async function main() {
       'with-litellm':  { type: 'boolean', default: false },
       check:           { type: 'boolean', default: false },
       'dry-run':       { type: 'boolean', default: false },
+      yes:             { type: 'boolean', default: false, short: 'y' },
     },
     strict: false,
   });
@@ -629,6 +652,7 @@ async function main() {
   console.log('  myelin config show     \u2192 view settings');
   console.log('  myelin update --check  \u2192 available updates');
   console.log('\u2500'.repeat(55) + '\n');
+  _closeRL();
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch(e => { _closeRL(); console.error(e); process.exit(1); });

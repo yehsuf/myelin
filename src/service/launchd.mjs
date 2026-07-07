@@ -91,10 +91,18 @@ ${envEntries}
  */
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy }) {
   const p = mitmPlistPath();
-  // When a corporate proxy is present, chain mitmproxy through it
   const args = ['--listen-port', String(port), '-s', addonPath];
+
+  // Chain through corporate/upstream proxy if set
   const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
   if (proxy) args.push('--mode', `upstream:${proxy}`);
+
+  // Pass our CA bundle to mitmproxy's upstream TLS verifier.
+  // Required when a corporate SSL interceptor (MITM proxy) sits between
+  // this machine and the internet — mitmproxy must trust its CA to connect upstream.
+  const caBundle = envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE ||
+                   envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
+  if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
 
   const content = generateGenericPlist({
     label: MITM_LABEL,
