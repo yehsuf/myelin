@@ -6,8 +6,7 @@ Per-request pipeline:
   1. RAG inject    — code context when serena MCP absent (ripgrep/serena fallback)
   2. Tool filter   — BM25 + optional model2vec: removes irrelevant tools from tools[]
   3. Compress      — Headroom /v1/compress shrinks ALL message types
-  4. cache_control — preserves existing markers; adds ephemeral breakpoint only where absent
-  5. Forward to provider (original auth headers untouched)
+  4. Forward to provider — all headers (auth, cache_control) passed through untouched
 
 Per-response:
   6. Block detection (HTTP 418 + configurable body marker) → VPN file → poll reachability → replay
@@ -65,11 +64,10 @@ logger = logging.getLogger(__name__)
 HEADROOM_PORT   = int(os.environ.get('MYELIN_HEADROOM_PORT', '8787'))
 HEADROOM_BASE   = f'http://127.0.0.1:{HEADROOM_PORT}'
 
-COMPRESS     = os.environ.get('MYELIN_COMPRESS',     '1') == '1'
-CACHE_INJECT = os.environ.get('MYELIN_CACHE_INJECT', '1') == '1'
-TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER',  '1') == '1'
-RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',   '1') == '1'
-LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS',  '1') == '1'
+COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
+TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
+RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '1') == '1'
+LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 
 # VPN bypass: only active when MYELIN_VPN_DOMAINS_FILE is explicitly set.
 # This is an opt-in feature for networks that block LLM hosts and use
@@ -229,53 +227,7 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> list:
         ctx.log.warn(f'[myelin] compression error: {e}')
     return messages
 
-# ---------------------------------------------------------------------------
-# Cache-control injection
-#
-# Preserves any cache_control already set by the client (e.g. Copilot CLI).
-# Only adds ephemeral breakpoints on messages that don't already have one.
-#
-# Ordering (Anthropic spec): tools → system → messages
-# Breakpoint placed on last stable assistant turn before current user turn.
-# ---------------------------------------------------------------------------
-
-def _has_cc(msg: dict) -> bool:
-    if msg.get('cache_control'):
-        return True
-    content = msg.get('content')
-    if isinstance(content, list):
-        return any(isinstance(b, dict) and b.get('cache_control') for b in content)
-    return False
-
-
-def _inject_cache_control(messages: list, fmt: str) -> list:
-    if not messages:
-        return messages
-
-    msgs = [dict(m) for m in messages]
-
-    if fmt == 'anthropic':
-        last_asst = max((i for i, m in enumerate(msgs) if m.get('role') == 'assistant'), default=None)
-        if last_asst is not None and not _has_cc(msgs[last_asst]):
-            content = msgs[last_asst].get('content', '')
-            if isinstance(content, str):
-                msgs[last_asst]['content'] = [{'type': 'text', 'text': content,
-                                               'cache_control': {'type': 'ephemeral'}}]
-            elif isinstance(content, list) and content:
-                last_block = {**content[-1], 'cache_control': {'type': 'ephemeral'}}
-                msgs[last_asst]['content'] = list(content[:-1]) + [last_block]
-
-    elif fmt == 'openai_compat':
-        last_asst = None
-        for i, m in enumerate(msgs):
-            if m.get('role') == 'system' and i == 0 and not _has_cc(m):
-                msgs[i] = {**m, 'cache_control': {'type': 'ephemeral'}}
-            if m.get('role') == 'assistant':
-                last_asst = i
-        if last_asst is not None and not _has_cc(msgs[last_asst]):
-            msgs[last_asst] = {**msgs[last_asst], 'cache_control': {'type': 'ephemeral'}}
-
-    return msgs
+# cache_control is passed through untouched — the client manages its own breakpoints.
 
 # ---------------------------------------------------------------------------
 # Block-page detection + VPN domain routing
@@ -384,9 +336,7 @@ class MyelinAddon:
             messages = _compress_messages(messages, provider['fmt'], model)
             data['messages'] = messages
 
-        # 4. Cache-control (preserves existing client markers)
-        if CACHE_INJECT and provider.get('cache_fmt'):
-            data['messages'] = _inject_cache_control(messages, provider['cache_fmt'])
+        # cache_control: passed through untouched — Copilot CLI sets its own breakpoints
 
         new_body = json.dumps(data, separators=(',', ':')).encode()
         compressed_size = len(new_body)
