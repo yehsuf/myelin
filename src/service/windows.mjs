@@ -18,6 +18,12 @@ function runPs(script) {
 }
 
 export function installService(opts) {
+  // Skip re-registration if headroom is already running
+  try {
+    const pid = execSync(`powershell -Command "Get-Process headroom -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
+    if (pid) { return; } // already running, no need to re-register
+  } catch {}
+
   const bin = opts.headroomBin.replace(/\//g, '\\');
   runPs(`
 $action   = New-ScheduledTaskAction -Execute 'powershell.exe' \`
@@ -30,11 +36,16 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Limited
 Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Start-ScheduledTask -TaskName '${TASK_NAME}'
-Write-Host "[myelin] headroom task state: Running"
 `);
 }
 
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
+  // Skip re-registration if mitmdump is already running
+  try {
+    const pid = execSync(`powershell -Command "Get-Process mitmdump -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
+    if (pid) { return; }
+  } catch {}
+
   const bin   = mitmdumpBin.replace(/\//g, '\\');
   const addon = addonPath.replace(/\//g, '\\');
   const ca    = (envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '').replace(/\//g, '\\');
