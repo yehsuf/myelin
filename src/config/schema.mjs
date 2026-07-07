@@ -14,6 +14,9 @@ export const DEFAULT_CONFIG = {
     mitm: {
       enabled: true,
       port: 8888,
+      // block_bypass: set true to enable 418 block detection + override proxy retry.
+      // Requires override_proxy to be set.
+      block_bypass: false,
       // block_marker: case-insensitive text that must appear in a 418 response body
       // to confirm it is a network filter block page (not a legitimate API 418).
       // Default 'netfree' matches all NetFree block pages regardless of format.

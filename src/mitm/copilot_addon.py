@@ -88,6 +88,8 @@ LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 _OVERRIDE_PROXY_RAW = os.environ.get('MYELIN_OVERRIDE_PROXY', '')
 OVERRIDE_PROXY: Optional[str] = _OVERRIDE_PROXY_RAW if _OVERRIDE_PROXY_RAW else None
 
+BLOCK_BYPASS = os.environ.get('MYELIN_BLOCK_BYPASS', '0') == '1'
+
 _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', 'netfree')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MARKER_RAW else None
 
@@ -372,12 +374,12 @@ class MyelinAddon:
     def response(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
 
-        # Block detection + override proxy retry (opt-in: requires MYELIN_OVERRIDE_PROXY)
+        # Block bypass (opt-in: requires MYELIN_BLOCK_BYPASS=1 + MYELIN_OVERRIDE_PROXY)
         #
         # On 418 block page: set flow.server_conn.via to route the replayed request
         # directly through the override proxy (SOCKS5/HTTP VPN endpoint).
         # No domain file, no polling daemon — mitmproxy switches the transport per-flow.
-        if (OVERRIDE_PROXY or VPN_DOMAINS_FILE):
+        if BLOCK_BYPASS and (OVERRIDE_PROXY or VPN_DOMAINS_FILE):
             body = flow.response.content or b''
             if _is_network_block(flow.response.status_code, body):
                 # Don't retry a flow that already went through the override proxy
