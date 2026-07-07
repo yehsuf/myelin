@@ -417,9 +417,34 @@ class MyelinAddon:
         if LOG_SAVINGS and 'myelin_original_bytes' in flow.metadata:
             orig = flow.metadata['myelin_original_bytes']
             final = flow.metadata['myelin_final_bytes']
+            tok_before = flow.metadata.get('myelin_tok_before', 0)
+            tok_after  = flow.metadata.get('myelin_tok_after', 0)
+
+            # Parse actual usage from API response
+            usage_str = ''
+            try:
+                rbody = _decompress_body(flow.response.content or b'',
+                                         flow.response.headers.get('content-encoding', ''))
+                rdata = json.loads(rbody)
+                usage = rdata.get('usage', {})
+                if usage:
+                    inp  = usage.get('input_tokens') or usage.get('prompt_tokens', 0)
+                    out  = usage.get('output_tokens') or usage.get('completion_tokens', 0)
+                    cr   = usage.get('cache_read_input_tokens', 0)
+                    cw   = usage.get('cache_creation_input_tokens', 0)
+                    parts = [f'in={inp}', f'out={out}']
+                    if cr: parts.append(f'cache_read={cr}')
+                    if cw: parts.append(f'cache_write={cw}')
+                    usage_str = ' [' + ' '.join(parts) + ']'
+                    ctx.log.info(f'[myelin] usage {host}{usage_str}')
+            except Exception:
+                pass
+
             if orig > final:
+                tok_pct = f' tokens {tok_before}→{tok_after} ({(tok_before-tok_after)/tok_before*100:.1f}%)' if tok_before else ''
                 ctx.log.info(
                     f'[myelin] {host} -{orig - final}B ({(orig-final)/orig*100:.1f}%)'
+                    f'{tok_pct}'
                     f' → HTTP {flow.response.status_code}'
                 )
 

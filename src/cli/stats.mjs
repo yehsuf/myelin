@@ -18,11 +18,14 @@ export async function runStats() {
 
     // Parse compression lines: "[...] [myelin] ✓ <host> <b>→<a>B (<pct>%) tokens <tb>→<ta> (<tpct>%)"
     const compRe = /\[myelin\] ✓ (\S+) (\d+)→(\d+)B \(([\d.]+)%\)(?: tokens (\d+)→(\d+))?/;
-    // Parse tool filter lines: "[...] [myelin] tools <before>→<after>"
+    // Parse tool filter lines
     const toolRe = /\[myelin\] tools (\d+)→(\d+)/;
+    // Parse actual API usage: "[myelin] usage <host> [in=N out=N cache_read=N cache_write=N]"
+    const usageRe = /\[myelin\] usage \S+ \[in=(\d+) out=(\d+)(?:.*cache_read=(\d+))?(?:.*cache_write=(\d+))?\]/;
 
     let totalBefore = 0, totalAfter = 0, reqCount = 0;
     let totalTokBefore = 0, totalTokAfter = 0, tokCount = 0;
+    let totalIn = 0, totalOut = 0, totalCacheRead = 0, totalCacheWrite = 0, usageCount = 0;
     let totalToolsBefore = 0, totalToolsAfter = 0, toolFilterCount = 0;
     const byHost = {};
 
@@ -42,6 +45,14 @@ export async function runStats() {
         totalToolsAfter  += parseInt(tm[2]);
         toolFilterCount++;
       }
+      const um = usageRe.exec(line);
+      if (um) {
+        totalIn        += parseInt(um[1] || 0);
+        totalOut       += parseInt(um[2] || 0);
+        totalCacheRead += parseInt(um[3] || 0);
+        totalCacheWrite+= parseInt(um[4] || 0);
+        usageCount++;
+      }
     }
 
     if (reqCount === 0) {
@@ -57,11 +68,12 @@ export async function runStats() {
       if (tokCount > 0) {
         const tokSaved = totalTokBefore - totalTokAfter;
         const tokPct = (tokSaved / totalTokBefore * 100).toFixed(1);
-        // Copilot uses claude-sonnet-4-6 at $3/MTok input
-        const costSaved = (tokSaved / 1_000_000 * 3).toFixed(3);
-        console.log(`  Tokens sent:          ${(totalTokBefore/1000).toFixed(0)}K → ${(totalTokAfter/1000).toFixed(0)}K  (${tokPct}% · ~$${costSaved} saved)`);
+        console.log(`  Tokens compressed:    ${(totalTokBefore/1000).toFixed(0)}K → ${(totalTokAfter/1000).toFixed(0)}K  (${tokPct}% reduction)`);
       } else {
-        console.log(`  Total saved:          ${savedKB} KB  (${pct}% — restart _copilot to see token counts)`);
+        console.log(`  Bytes saved:          ${savedKB} KB  (${pct}% — restart _copilot to see token counts)`);
+      }
+      if (usageCount > 0) {
+        console.log(`  Actual API usage:     in=${(totalIn/1000).toFixed(0)}K  out=${(totalOut/1000).toFixed(0)}K  cache_read=${(totalCacheRead/1000).toFixed(0)}K  cache_write=${(totalCacheWrite/1000).toFixed(0)}K  (${usageCount} responses)`);
       }
 
       if (toolFilterCount > 0) {
