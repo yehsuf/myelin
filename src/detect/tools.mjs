@@ -25,7 +25,12 @@ export async function detectTool(name, versionFlag = '--version') {
 
 export async function detectUv() { return detectTool('uv', '--version'); }
 export async function detectNode() { return detectTool('node', '--version'); }
-export async function detectHeadroom() { return detectTool('headroom', '--version'); }
+export async function detectHeadroom() {
+  // headroom lives in the myelin venv, not in global PATH
+  const { headroomBinPath } = await import('../tools/headroom.mjs');
+  const binPath = headroomBinPath();
+  return detectTool(binPath, '--version');
+}
 export async function detectRtk() { return detectTool('rtk', '--version'); }
 export async function detectSerena() { return detectTool('serena', '--version'); }
 export async function detectSemble() {
