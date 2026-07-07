@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -28,25 +28,10 @@ export async function detectTool(name, versionFlag = '--version') {
   try {
     const path = await which(name);
     if (!path) return { installed: false, version: null, path: null };
-
-    let stdout;
-    if (process.platform === 'win32') {
-      // PowerShell/cmd: .cmd shims need shell invocation
-      // Use powershell -Command to avoid cmd.exe quoting issues
-      const cmdPath = path.match(/\.(cmd|exe|ps1)$/i) ? path : (await which(name + '.cmd') || path);
-      const result = await execFileP(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command', `& '${cmdPath.replace(/'/g, "''")}' ${versionFlag}`],
-        { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }
-      );
-      stdout = result.stdout;
-    } else {
-      const result = await execFileP(path, [versionFlag], {
-        timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
-      });
-      stdout = result.stdout;
-    }
-
+    // execSync with string avoids DEP0190 and runs .cmd shims correctly on Windows
+    const stdout = execSync(`"${path}" ${versionFlag}`, {
+      timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], env: process.env,
+    }).toString();
     const version = stdout.trim().split('\n')[0].trim();
     return { installed: true, version, path };
   } catch {
