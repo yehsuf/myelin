@@ -428,14 +428,35 @@ async function ensureMitmCA(home, mitmdumpBin) {
  */
 function buildCopilotAlias(os) {
   const mitm = 8888;
+  // Hosts that must bypass mitmproxy — mTLS client certs can't tunnel through CONNECT proxy:
+  // - api.github.com: Copilot auth + auto-update
+  // - *.akamai.com, *.corp.akamai.com: internal Akamai tools (Jira/Bitbucket/Confluence via mTLS)
+  // - npm registries: MCP server installs
+  const NO_PROXY_HOSTS = [
+    'api.github.com',
+    '*.akamai.com',
+    '*.corp.akamai.com',
+    '*.akamaized.net',
+    'track.akamai.com',
+    'git.source.akamai.com',
+    'collaborate.akamai.com',
+    'registry.npmjs.org',
+    '*.npmjs.com',
+    '*.npmjs.org',
+    'repos.akamai.com',
+    'localhost',
+    '127.0.0.1',
+    '::1',
+    '*.local',
+  ].join(',');
+
   if (os === 'windows') {
-    // PowerShell function — uses Test-NetConnection for health check
     return `# _copilot: routes through Myelin mitmproxy with health-check fallback
 function global:_copilot {
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitm} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
     $env:HTTPS_PROXY = "http://127.0.0.1:${mitm}"
-    $env:NO_PROXY = "api.github.com,registry.npmjs.org,localhost,127.0.0.1"
+    $env:NO_PROXY = "${NO_PROXY_HOSTS}"
     & copilot @args
     $env:HTTPS_PROXY = $null
     $env:NO_PROXY = $null
@@ -450,7 +471,7 @@ function global:_copilot {
 function _copilot() {
   if nc -z 127.0.0.1 ${mitm} 2>/dev/null; then
     HTTPS_PROXY=http://127.0.0.1:${mitm} \\
-    NO_PROXY=api.github.com,registry.npmjs.org,*.npmjs.com,*.npmjs.org,repos.akamai.com,localhost,127.0.0.1,*.local \\
+    NO_PROXY=${NO_PROXY_HOSTS} \\
     copilot "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitm}) — running uncompressed" >&2
