@@ -347,7 +347,7 @@ function detectMitmdump(os) {
     // For absolute paths that exist, skip --version check — just return it
     if (isAbsolute && existsSync(c)) return c;
     try {
-      execSync(`"${c}" --version`, { stdio: 'pipe', timeout: 5000 });
+      execSync(`"${c}" --version`, { stdio: 'ignore', timeout: 5000 });
       return c;
     } catch { /* not found in PATH */ }
   }
