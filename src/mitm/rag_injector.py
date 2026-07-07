@@ -57,13 +57,36 @@ def _has_serena_tools(tools: list[dict]) -> bool:
 
 
 def _is_serena_running() -> bool:
-    """Check if serena-agent is running as a process."""
+    """Cross-platform check for a running serena-agent process."""
+    # Try psutil first (optional dep, most reliable)
     try:
-        result = subprocess.run(
-            ['pgrep', '-f', 'serena'],
-            capture_output=True, text=True, timeout=1,
-        )
-        return result.returncode == 0
+        import psutil
+        for p in psutil.process_iter(['cmdline']):
+            try:
+                cmd = ' '.join(p.cmdline())
+                if 'serena' in cmd.lower():
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        return False
+    except ImportError:
+        pass
+
+    import platform
+    system = platform.system()
+    try:
+        if system == 'Windows':
+            out = subprocess.run(
+                ['tasklist', '/FI', 'IMAGENAME eq serena.exe', '/FO', 'CSV'],
+                capture_output=True, text=True, timeout=2,
+            )
+            return 'serena' in out.stdout.lower()
+        else:
+            out = subprocess.run(
+                ['pgrep', '-f', 'serena'],
+                capture_output=True, timeout=2,
+            )
+            return out.returncode == 0
     except Exception:
         return False
 
@@ -127,61 +150,77 @@ def _extract_keywords(query: str) -> list[str]:
 # Ripgrep-based search (fallback, always available)
 # ---------------------------------------------------------------------------
 
+def _rg_available() -> bool:
+    try:
+        subprocess.run(['rg', '--version'], capture_output=True, timeout=2)
+        return True
+    except Exception:
+        return False
+
+_RG_OK: Optional[bool] = None  # cached after first call
+
 def _rg_search(query: str, workspace: Path, max_results: int = MAX_SNIPPETS) -> list[dict]:
-    """Run ripgrep for keywords, return list of {file, line, snippet} dicts."""
+    """Run ripgrep for keywords, return list of {file, snippet} dicts."""
+    global _RG_OK
+    if _RG_OK is None:
+        _RG_OK = _rg_available()
+
     keywords = _extract_keywords(query)
     if not keywords:
         return []
 
     results = []
-    seen_files: set = set()
+    seen: set = set()
 
-    for kw in keywords[:4]:  # limit to top 4 keywords
-        try:
-            out = subprocess.run(
-                ['rg', '--json', '-l', '--max-count', '1', kw, str(workspace)],
-                capture_output=True, text=True, timeout=3,
-            )
-            if out.returncode != 0:
-                continue
-            for line in out.stdout.splitlines():
-                try:
-                    obj = json.loads(line)
-                    if obj.get('type') == 'match':
-                        path = obj['data']['path']['text']
-                        if path not in seen_files:
-                            seen_files.add(path)
-                            snippet = _read_snippet(Path(path))
-                            if snippet:
-                                results.append({'file': path, 'snippet': snippet})
-                                if len(results) >= max_results:
-                                    return results
-                except (json.JSONDecodeError, KeyError):
-                    pass
-        except Exception:
-            pass
-
-    # If rg --json didn't work, try plain rg
-    if not results:
-        for kw in keywords[:4]:
+    for kw in keywords[:4]:
+        if _RG_OK:
             try:
                 out = subprocess.run(
                     ['rg', '-l', '--max-count', '1', kw, str(workspace)],
-                    capture_output=True, text=True, timeout=3,
+                    capture_output=True, text=True, timeout=4,
                 )
-                for path_str in out.stdout.strip().splitlines():
-                    p = Path(path_str)
-                    if str(p) not in seen_files and p.is_file():
-                        seen_files.add(str(p))
-                        snippet = _read_snippet(p)
-                        if snippet:
-                            results.append({'file': path_str, 'snippet': snippet})
-                            if len(results) >= max_results:
-                                return results
+                paths = out.stdout.strip().splitlines()
             except Exception:
-                pass
+                paths = []
+        else:
+            # Pure-Python fallback: walk workspace looking for keyword in files
+            paths = _py_grep(kw, workspace, limit=3)
+
+        for path_str in paths:
+            p = Path(path_str)
+            if str(p) not in seen and p.is_file():
+                seen.add(str(p))
+                snippet = _read_snippet(p)
+                if snippet:
+                    results.append({'file': path_str, 'snippet': snippet})
+                    if len(results) >= max_results:
+                        return results
 
     return results
+
+
+def _py_grep(keyword: str, workspace: Path, limit: int = 3) -> list[str]:
+    """Pure-Python file search — used when ripgrep is unavailable."""
+    kw_lower = keyword.lower()
+    found = []
+    skip_dirs = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', 'dist', 'build'}
+    try:
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for fname in files:
+                if not fname.endswith(('.py', '.ts', '.js', '.mjs', '.go', '.java', '.rs', '.c', '.cpp')):
+                    continue
+                fpath = Path(root) / fname
+                try:
+                    if kw_lower in fpath.read_text(errors='replace').lower():
+                        found.append(str(fpath))
+                        if len(found) >= limit:
+                            return found
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return found
 
 
 def _read_snippet(path: Path, max_lines: int = SNIPPET_LINES) -> str:

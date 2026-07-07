@@ -85,13 +85,21 @@ ${envEntries}
 </plist>`;
 }
 
-/** Install mitmproxy as a LaunchAgent running the Myelin addon. */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home }) {
+/** Install mitmproxy as a LaunchAgent running the Myelin addon.
+ *  If an enterprise upstream proxy is set (via envVars.HTTPS_PROXY),
+ *  mitmproxy is started in upstream mode so it chains through it.
+ */
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy }) {
   const p = mitmPlistPath();
+  // When a corporate proxy is present, chain mitmproxy through it
+  const args = ['--listen-port', String(port), '-s', addonPath];
+  const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
+  if (proxy) args.push('--mode', `upstream:${proxy}`);
+
   const content = generateGenericPlist({
     label: MITM_LABEL,
     command: mitmdumpBin,
-    args: ['--listen-port', String(port), '-s', addonPath],
+    args,
     envVars: {
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...envVars,

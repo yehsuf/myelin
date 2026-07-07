@@ -11,6 +11,20 @@ export const DEFAULT_CONFIG = {
       corporate_proxy: '',
       openai_target_url: 'https://api.githubcopilot.com',
     },
+    mitm: {
+      enabled: true,
+      port: 8888,
+      // block_marker: body substring that confirms a network block page (418 response).
+      // Leave empty to treat any 418 as a block (when vpn_domains_file is set).
+      block_marker: '',
+      // vpn_domains_file: path to a file your VPN routing daemon watches.
+      // When set and a block is detected, the hostname is appended here.
+      // Leave empty to disable VPN auto-retry entirely.
+      vpn_domains_file: '',
+      // extra_providers: JSON object extending the built-in provider map.
+      // Example: {"my-llm.internal.corp": {"fmt":"openai","compress_paths":["/v1/chat/completions"],"cache_fmt":null}}
+      extra_providers: '',
+    },
   },
   index_tier: 'default',
   code_discovery: {

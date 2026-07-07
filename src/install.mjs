@@ -506,17 +506,26 @@ async function main() {
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
       const addonPath = mitmAddonPath(home);
-      const mitmEnv = { MYELIN_HEADROOM_PORT: String(port), ...sslEnv };
+      const mitmCfg = cfg.proxy?.mitm ?? {};
+      const mitmPort = mitmCfg.port ?? 8888;
+      const mitmEnv = {
+        MYELIN_HEADROOM_PORT: String(port),
+        ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
+        ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
+        ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
+        ...sslEnv,
+      };
       try {
         await installMitmService({
           mitmdumpBin,
-          port: 8888,
+          port: mitmPort,
           addonPath,
           envVars: mitmEnv,
+          upstreamProxy: corpProxy || '',
           logPath: join(home, '.tokenstack', 'mitmproxy.log'),
           home,
         });
-        ok('mitmproxy service registered (port 8888)');
+        ok(`mitmproxy service registered (port ${mitmPort})`);
       } catch (e) {
         warn(`mitmproxy service registration failed: ${e.message}`);
       }

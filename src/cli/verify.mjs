@@ -1,11 +1,13 @@
 import { loadConfig } from '../config/reader.mjs';
 import { waitForHeadroom, headroomHealthUrl } from '../tools/headroom.mjs';
 import { detectTool } from '../detect/tools.mjs';
-import { serviceStatus } from '../service/index.mjs';
+import { serviceStatus, mitmServiceStatus } from '../service/index.mjs';
+import { which } from '../detect/which.mjs';
 
 export async function runVerify() {
   const cfg = await loadConfig();
   const port = cfg.proxy.headroom.port;
+  const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const results = [];
 
   const svc = await serviceStatus();
@@ -18,7 +20,21 @@ export async function runVerify() {
   });
 
   const healthy = await waitForHeadroom(port, 3000);
-  results.push({ name: `Headroom health (port ${port})`, ok: healthy, detail: healthy ? headroomHealthUrl(port) : `no response on :${port}` });
+  results.push({
+    name: `Headroom health (:${port})`,
+    ok: healthy,
+    detail: healthy ? headroomHealthUrl(port) : `no response on :${port}`,
+  });
+
+  const mitmSvc = await mitmServiceStatus();
+  const mitmdump = await which('mitmdump');
+  results.push({
+    name: `Mitmproxy service (:${mitmPort})`,
+    ok: mitmSvc.running,
+    detail: mitmSvc.running
+      ? `running${mitmdump ? ` (${mitmdump})` : ''}`
+      : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
+  });
 
   for (const tool of ['uv', 'serena', 'ast-grep']) {
     const r = await detectTool(tool, '--version');

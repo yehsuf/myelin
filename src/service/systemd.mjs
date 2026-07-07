@@ -19,14 +19,15 @@ ${envLines}
 WantedBy=default.target`;
 }
 
-export function generateMitmUnit({ mitmdumpBin, port, addonPath, envVars = {} }) {
+export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {} }) {
+  const execArgs = args ?? ['--listen-port', String(port), '-s', addonPath];
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   return `[Unit]
 Description=Myelin mitmproxy LLM compression proxy
 After=network.target tokenstack-headroom.service
 
 [Service]
-ExecStart=${mitmdumpBin} --listen-port ${port} -s ${addonPath}
+ExecStart=${mitmdumpBin} ${execArgs.join(' ')}
 Restart=always
 RestartSec=10
 ${envLines}
@@ -53,7 +54,10 @@ export function installService(opts) {
 }
 
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
-  const content = generateMitmUnit({ mitmdumpBin, port, addonPath, envVars });
+  const args = ['--listen-port', String(port), '-s', addonPath];
+  const proxy = envVars.HTTPS_PROXY || envVars.https_proxy || '';
+  if (proxy) args.push('--mode', `upstream:${proxy}`);
+  const content = generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars });
   const p = mitmUnitPath();
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');
