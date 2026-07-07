@@ -1,5 +1,18 @@
 import { execSync, execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { detectOS } from '../detect/os.mjs';
+
+function addUvToPath() {
+  // After installing uv, update process.env.PATH so subsequent execSync calls find it
+  const os = detectOS();
+  const uvDir = os === 'windows'
+    ? join(homedir(), '.local', 'bin')
+    : join(homedir(), '.local', 'bin');
+  if (!process.env.PATH?.includes(uvDir)) {
+    process.env.PATH = uvDir + (os === 'windows' ? ';' : ':') + (process.env.PATH || '');
+  }
+}
 
 export async function ensureUv() {
   try {
@@ -12,6 +25,7 @@ export async function ensureUv() {
   } else {
     execSync('curl -LsSf https://astral.sh/uv/install.sh | sh', { stdio: 'inherit' });
   }
+  addUvToPath();
   return { installed: true, alreadyPresent: false };
 }
 
