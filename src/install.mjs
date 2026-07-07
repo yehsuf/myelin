@@ -86,9 +86,10 @@ async function detectHeadroomFork() {
 
 function shellProfilePath(os, shell) {
   if (os === 'windows') {
-    // Prefer APPDATA over Documents — Documents is often Controlled Folder Access protected
-    const appData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
-    return join(appData, 'Microsoft', 'Windows', 'PowerShell', 'v1.0', 'profile.ps1');
+    // PowerShell $PROFILE = Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
+    // install.ps1 already whitelists node.exe in Controlled Folder Access before this runs
+    const docs = process.env.USERPROFILE ? join(process.env.USERPROFILE, 'Documents') : join(homedir(), 'Documents');
+    return join(docs, 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
   }
   if (shell.includes('zsh'))  return join(homedir(), '.zshrc');
   if (shell.includes('bash')) return join(homedir(), '.bashrc');
