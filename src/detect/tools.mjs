@@ -28,14 +28,22 @@ export async function detectTool(name, versionFlag = '--version') {
   try {
     const path = await which(name);
     if (!path) return { installed: false, version: null, path: null };
-    // Prefer .cmd path on Windows (npm shims) — execFile can run those directly
-    const resolvedPath = process.platform === 'win32' && !path.match(/\.(cmd|exe|ps1)$/i)
-      ? (await which(name + '.cmd') || path)
-      : path;
-    const { stdout } = await execFileP(resolvedPath, [versionFlag], {
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
+
+    let stdout;
+    if (process.platform === 'win32') {
+      // .cmd shims require shell — use cmd.exe /c explicitly (no shell:true, no DEP0190)
+      const cmdPath = path.match(/\.(cmd|exe|ps1)$/i) ? path : (await which(name + '.cmd') || path);
+      const result = await execFileP('cmd.exe', ['/c', cmdPath, versionFlag], {
+        timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      stdout = result.stdout;
+    } else {
+      const result = await execFileP(path, [versionFlag], {
+        timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      stdout = result.stdout;
+    }
+
     const version = stdout.trim().split('\n')[0].trim();
     return { installed: true, version, path };
   } catch {
