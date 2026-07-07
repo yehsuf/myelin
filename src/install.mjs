@@ -6,7 +6,7 @@
  *        --with-stacklit  --with-litellm  --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -205,76 +205,77 @@ async function installMitmproxyCA(home, interactive = true) {
     skip('mitmproxy CA not found (run: mitmdump --listen-port 18899 briefly to generate)');
     return;
   }
+  const mitmCert = readFileSync(mitmCaPath, 'utf8');
+  const mitmMarker = 'CN=mitmproxy';
 
-  // Detect all PEM candidates from env — only user-owned paths (skip system/ProgramData)
-  const candidates = new Set();
-  const systemCaPaths = new Set(); // system CAs to READ from, not write to
+  // --- 1. Discover all CA-related paths from environment ---
   const envVars = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
                    'HEADROOM_CA_BUNDLE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE'];
+  const discovered = new Map(); // path → { writable, isPemBundle }
+
   for (const v of envVars) {
     const p = process.env[v];
-    if (!p || !existsSync(p)) continue;
-    const isUserOwned = p.startsWith(home) || p.startsWith(homedir());
-    if (isUserOwned) {
-      candidates.add(p);
-    } else {
-      systemCaPaths.add(p); // will read content from these into our bundle
-    }
+    if (!p || !existsSync(p) || discovered.has(p)) continue;
+    // Check if it's a PEM bundle (multiple certs) vs single cert
+    let content = '';
+    try { content = readFileSync(p, 'utf8'); } catch { continue; }
+    const certCount = (content.match(/-----BEGIN CERTIFICATE-----/g) || []).length;
+    if (certCount < 1) continue; // not a PEM file at all
+    const isPemBundle = certCount > 1;
+    // Check writability by attempting a test write
+    let writable = false;
+    try { accessSync(p, 2 /* W_OK */); writable = true; } catch {}
+    discovered.set(p, { writable, isPemBundle, content });
   }
 
-  // Always rebuild our ca-bundle.pem from fresh system sources + mitmproxy CA
+  // --- 2. Always rebuild our own bundle (fresh system content + mitmproxy CA) ---
   const ourBundle = join(home, '.tokenstack', 'ca-bundle.pem');
   mkdirSync(join(home, '.tokenstack'), { recursive: true });
 
-  // Collect system CA content: env-referenced system files + well-known paths
-  const sysCaPaths = [
-    ...systemCaPaths,  // NetFree, corporate, etc. — readable even if not writable
+  // Seed from: read-only discovered files + well-known system paths
+  let sysCerts = '';
+  const seedPaths = [
+    ...[...discovered.entries()].filter(([, v]) => !v.writable).map(([p]) => p),
     '/etc/ssl/certs/ca-certificates.crt',
     '/etc/pki/tls/certs/ca-bundle.crt',
     '/etc/ssl/ca-bundle.pem',
     '/etc/ssl/cert.pem',
   ];
-  let sysCerts = '';
-  for (const p of sysCaPaths) {
+  for (const p of seedPaths) {
     if (existsSync(p)) {
       try { sysCerts += readFileSync(p, 'utf8') + '\n'; } catch {}
     }
   }
   if (!sysCerts) {
-    // macOS keychain fallback
     try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true }).toString(); } catch {}
   }
+  // Strip old mitmproxy CA entry, re-add fresh
+  const withoutMitm = sysCerts.replace(/\n?# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
+  writeFileSync(ourBundle,
+    (withoutMitm || '') + '\n# mitmproxy CA (Myelin Copilot interception)\n' + mitmCert + '\n', 'utf8');
+  ok(`ca-bundle.pem rebuilt from system CAs + mitmproxy CA`);
+  discovered.set(ourBundle, { writable: true, isPemBundle: true, content: readFileSync(ourBundle, 'utf8') });
 
-  // Write fresh system certs (strip mitmproxy CA — will be re-added below)
-  const withoutMitm = sysCerts.replace(/# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
-  writeFileSync(ourBundle, withoutMitm || '', 'utf8');
-  ok(`ca-bundle.pem refreshed from system CAs${systemCaPaths.size ? ` + ${[...systemCaPaths].map(p => p.split(/[\\/]/).pop()).join(', ')}` : ''}`);
-
-  // Ensure our bundle is always in candidates
-  candidates.add(ourBundle);
-
-  const mitmCert = readFileSync(mitmCaPath, 'utf8');
-  const mitmMarker = 'CN=mitmproxy';
-
-  for (const pemPath of candidates) {
-    const content = readFileSync(pemPath, 'utf8');
-    if (content.includes(mitmMarker)) {
-      skip(`${pemPath} — already trusts mitmproxy CA`);
-      continue;
-    }
+  // --- 3. For writable PEM bundles: offer to append mitmproxy CA ---
+  for (const [pemPath, { writable, isPemBundle, content }] of discovered) {
+    if (!writable || !isPemBundle) continue;
+    if (content.includes(mitmMarker)) { skip(`${pemPath} — already trusts mitmproxy CA`); continue; }
 
     if (interactive) {
       const answer = await promptYN(`Add mitmproxy CA to ${pemPath}? [Y/n]: `);
-      if (!answer) { skip(`${pemPath} — user declined`); continue; }
+      if (!answer) { skip(`${pemPath} — skipped`); continue; }
     }
-
-    // Backup + append
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    copyFileSync(pemPath, `${pemPath}.bak.${ts}`);
+    try { copyFileSync(pemPath, `${pemPath}.bak.${ts}`); } catch {}
     writeFileSync(pemPath,
-      content + '\n# mitmproxy CA (for Copilot HTTPS interception via Myelin)\n' + mitmCert + '\n',
-      'utf8');
-    ok(`${pemPath} — added mitmproxy CA (backup: ${pemPath}.bak.${ts})`);
+      content + '\n# mitmproxy CA (Myelin Copilot interception)\n' + mitmCert + '\n', 'utf8');
+    ok(`${pemPath} — added mitmproxy CA`);
+  }
+
+  // --- 4. Report read-only bundles (inform user, suggest elevation) ---
+  const readOnlyBundles = [...discovered.entries()].filter(([p, v]) => !v.writable && v.isPemBundle && p !== ourBundle);
+  for (const [p] of readOnlyBundles) {
+    skip(`${p} — read-only, content merged into ca-bundle.pem (to add directly: run installer as admin)`);
   }
 }
 
