@@ -206,13 +206,20 @@ async function installMitmproxyCA(home, interactive = true) {
     return;
   }
 
-  // Detect all PEM candidates from env
+  // Detect all PEM candidates from env — only user-owned paths (skip system/ProgramData)
   const candidates = new Set();
   const envVars = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
                    'HEADROOM_CA_BUNDLE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE'];
   for (const v of envVars) {
     const p = process.env[v];
-    if (p && existsSync(p)) candidates.add(p);
+    if (!p || !existsSync(p)) continue;
+    // Skip system-owned paths — only append to files inside the user home dir
+    const isUserOwned = p.startsWith(home) || p.startsWith(homedir());
+    if (!isUserOwned) {
+      skip(`${p} — system file, skipping (add mitmproxy CA manually if needed)`);
+      continue;
+    }
+    candidates.add(p);
   }
 
   // Fallback: create/use ~/.tokenstack/ca-bundle.pem
