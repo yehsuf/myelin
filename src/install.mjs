@@ -368,8 +368,8 @@ async function ensureMitmCA(home, mitmdumpBin) {
       stdio: 'ignore',
     });
     proc.unref();
-    // Wait up to 4s for CA file to appear
-    for (let i = 0; i < 8; i++) {
+    // Wait up to 10s for CA file to appear (first run can be slow on Linux)
+    for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 500));
       if (existsSync(caPath)) break;
     }
@@ -540,7 +540,8 @@ async function main() {
   const mitmdumpBin = await ensureMitmproxy(os);
   if (mitmdumpBin) {
     await ensureMitmCA(home, mitmdumpBin);
-    await installMitmproxyCA(home);
+    // non-interactive when --yes: auto-append CA to bundle without prompting
+    await installMitmproxyCA(home, !flags['yes']);
     ok('mitmproxy ready');
   } else {
     warn('mitmproxy not available — Copilot compression disabled');
