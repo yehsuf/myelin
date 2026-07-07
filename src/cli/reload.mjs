@@ -85,7 +85,9 @@ end tell`;
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
-        write text "${cmd}" to s
+        tell s
+          write text "${cmd}"
+        end tell
       end repeat
     end repeat
   end repeat
