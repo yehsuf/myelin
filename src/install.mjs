@@ -85,9 +85,9 @@ async function detectHeadroomFork() {
 
 function shellProfilePath(os, shell) {
   if (os === 'windows') {
-    // PowerShell profile — create directory if needed
-    const psProfile = join(homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
-    return psProfile;
+    // Prefer APPDATA over Documents — Documents is often Controlled Folder Access protected
+    const appData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
+    return join(appData, 'Microsoft', 'Windows', 'PowerShell', 'v1.0', 'profile.ps1');
   }
   if (shell.includes('zsh'))  return join(homedir(), '.zshrc');
   if (shell.includes('bash')) return join(homedir(), '.bashrc');

