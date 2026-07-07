@@ -14,9 +14,11 @@ export const DEFAULT_CONFIG = {
     mitm: {
       enabled: true,
       port: 8888,
-      // block_marker: body substring that confirms a network block page (418 response).
-      // Leave empty to treat any 418 as a block (when override_proxy is set).
-      block_marker: '',
+      // block_marker: case-insensitive text that must appear in a 418 response body
+      // to confirm it is a network filter block page (not a legitimate API 418).
+      // Default 'netfree' matches all NetFree block pages regardless of format.
+      // Set to '' to treat any 418 as a block.
+      block_marker: 'netfree',
       // override_proxy: SOCKS5 or HTTP proxy to route blocked requests through.
       // Format: socks5://host:port  or  http://host:port
       // When set, any 418 block page causes the request to be replayed via this proxy.

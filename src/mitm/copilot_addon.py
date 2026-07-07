@@ -88,8 +88,8 @@ LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 _OVERRIDE_PROXY_RAW = os.environ.get('MYELIN_OVERRIDE_PROXY', '')
 OVERRIDE_PROXY: Optional[str] = _OVERRIDE_PROXY_RAW if _OVERRIDE_PROXY_RAW else None
 
-_BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', '')
-BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.encode() if _BLOCK_MARKER_RAW else None
+_BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', 'netfree')
+BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MARKER_RAW else None
 
 # Keep domain-file fallback for backwards compat (deprecated, prefer OVERRIDE_PROXY)
 _VPN_FILE_RAW = os.environ.get('MYELIN_VPN_DOMAINS_FILE', '')
@@ -256,8 +256,8 @@ def _is_network_block(status: int, body: bytes) -> bool:
     if status != 418:
         return False
     if BLOCK_MARKER:
-        return BLOCK_MARKER in body
-    return True  # any 418 triggers retry when VPN file is configured
+        return BLOCK_MARKER in body.lower()
+    return True  # any 418 triggers retry when override proxy is configured
 
 
 def _add_to_vpn_file(hostname: str) -> bool:
