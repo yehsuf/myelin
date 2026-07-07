@@ -97,10 +97,17 @@ BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.encode() if _BLOCK_MARKER_RAW 
 # ---------------------------------------------------------------------------
 
 PROVIDERS: dict = {
+    # Standard GitHub Copilot (personal/team accounts)
     'api.githubcopilot.com': {
         'fmt': 'openai',
-        'compress_paths': ['/chat/completions', '/v1/chat/completions'],
+        'compress_paths': ['/chat/completions', '/v1/chat/completions', '/v1/messages'],
         'cache_fmt': 'openai_compat',
+    },
+    # GitHub Copilot Business / Enterprise accounts
+    'api.business.githubcopilot.com': {
+        'fmt': 'anthropic',
+        'compress_paths': ['/v1/messages', '/chat/completions', '/v1/chat/completions'],
+        'cache_fmt': 'anthropic',
     },
     'api.anthropic.com': {
         'fmt': 'anthropic',
