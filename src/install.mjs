@@ -367,12 +367,21 @@ async function ensureMitmCA(home, mitmdumpBin) {
  */
 function buildCopilotAlias(_port) {
   const mitm = 8888;
+  // Shell function (not alias) so we can health-check the proxy first.
+  // api.github.com in NO_PROXY: auth + auto-update bypass mitmproxy unconditionally.
   // Only HTTPS_PROXY — not HTTP_PROXY (avoids npm/npx MCP server installs going through proxy).
-  // NO_PROXY excludes npm registry, localhost, and non-LLM hosts so only Copilot API traffic
-  // is intercepted.
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
-# copilot still works natively without compression.
-alias _copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} NO_PROXY=registry.npmjs.org,*.npmjs.com,*.npmjs.org,localhost,127.0.0.1,*.local copilot'`;
+# Falls back to plain copilot with a warning if mitmproxy is offline.
+function _copilot() {
+  if nc -z 127.0.0.1 ${mitm} 2>/dev/null; then
+    HTTPS_PROXY=http://127.0.0.1:${mitm} \\
+    NO_PROXY=api.github.com,registry.npmjs.org,*.npmjs.com,*.npmjs.org,repos.akamai.com,localhost,127.0.0.1,*.local \\
+    copilot "$@"
+  else
+    echo "⚠  myelin: mitmproxy offline (port ${mitm}) — running uncompressed" >&2
+    copilot "$@"
+  fi
+}`;
 }
 
 
