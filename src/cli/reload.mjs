@@ -33,23 +33,31 @@ export async function runReload({ silent = false } = {}) {
     ? `source ${profilePath}`
     : `source "${profilePath}"`;
 
-  // Write reload marker — shells with the hook will auto-reload on next prompt
+  // Write reload marker with timestamp — shells can check this
   const markerPath = join(home, '.myelin-reload');
-  writeFileSync(markerPath, String(Date.now()), 'utf8');
+  const ts = new Date().toISOString();
+  writeFileSync(markerPath, ts, 'utf8');
+
+  // Append a MYELIN_LOADED_AT export to the source command so each terminal
+  // gets a visible timestamp after reload
+  const sourceCmdWithMarker = shellName === 'fish'
+    ? `source ${profilePath}; and set -x MYELIN_LOADED_AT "${ts}"; and echo "✓ myelin profile reloaded at ${ts}"`
+    : `source "${profilePath}" && export MYELIN_LOADED_AT="${ts}" && echo "✓ myelin profile reloaded at ${ts}"`;
 
   let reloaded = false;
 
   if (os === 'darwin') {
-    reloaded = _reloadMacTerminals(sourceCmd);
+    reloaded = _reloadMacTerminals(sourceCmdWithMarker);
   }
 
   if (!silent) {
     console.log('\n🔄 Shell profile reload');
     if (reloaded) {
-      console.log(`  ✓ Reloaded all open terminal windows`);
+      console.log(`  ✓ Sent reload to all open terminals — each will print:`);
+      console.log(`      ✓ myelin profile reloaded at ${ts}`);
     } else {
       console.log(`  ⚠ Could not auto-reload. Run manually in each terminal:`);
-      console.log(`\n      ${sourceCmd}\n`);
+      console.log(`\n      ${sourceCmdWithMarker}\n`);
     }
   }
 
