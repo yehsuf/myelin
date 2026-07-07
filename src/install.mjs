@@ -164,6 +164,8 @@ function printStateTable(tools, caBundles, proxy) {
  */
 async function buildCombinedCaCert(rootCaPath, home) {
   if (!rootCaPath) return null;
+  // Skip on Windows — openssl/awk not available; ca-bundle.pem already built by installMitmproxyCA
+  if (detectOS() === 'windows') return rootCaPath;
   const combinedPath = join(home, '.tokenstack', 'ca-bundle.pem');
 
   try {
@@ -613,7 +615,7 @@ async function main() {
       logPath: join(home, '.tokenstack', 'headroom.log') });
     ok(`service registered (port ${port})`);
     console.log('  Waiting for proxy...');
-    const healthy = await waitForHeadroom(port, 10000);
+    const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
     healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression

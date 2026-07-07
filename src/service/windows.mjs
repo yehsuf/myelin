@@ -31,13 +31,16 @@ export function generateTaskXml({ headroomBin, port }) {
 }
 
 export function installService(opts) {
+  const bin = opts.headroomBin.replace(/\//g, '\\');
   const ps = `
-$headroomBin = "${opts.headroomBin.replace(/\//g, '\\\\')}";
-$action = New-ScheduledTaskAction -Execute "$headroomBin.exe" -Argument "proxy --port ${opts.port}";
+$bin = "${bin}";
+$action = New-ScheduledTaskAction -Execute $bin -Argument "proxy --port ${opts.port}";
 $trigger = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME;
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopOnIdleEnd -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999 -ExecutionTimeLimit (New-TimeSpan -Hours 0);
 Register-ScheduledTask -TaskName "${TASK_NAME}" -Action $action -Trigger $trigger -Settings $settings -Force;
 Start-ScheduledTask -TaskName "${TASK_NAME}";
+Start-Sleep -Seconds 3;
+(Get-ScheduledTask -TaskName "${TASK_NAME}").State;
 `;
   execSync(`powershell -ExecutionPolicy Bypass -Command "${ps.replace(/"/g, '\\"')}"`);
 }

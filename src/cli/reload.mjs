@@ -28,10 +28,12 @@ export async function runReload({ silent = false } = {}) {
     : shell.includes('bash') ? 'bash'
     : shell.includes('fish') ? 'fish' : 'sh';
 
-  const profilePath = profileMap[shellName] ?? join(home, '.profile');
-  const sourceCmd   = shellName === 'fish'
-    ? `source ${profilePath}`
-    : `source "${profilePath}"`;
+  const profilePath = os === 'windows'
+    ? join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'PowerShell', 'v1.0', 'profile.ps1')
+    : (profileMap[shellName] ?? join(home, '.profile'));
+  const sourceCmd = os === 'windows'
+    ? `. "${profilePath}"`
+    : (shellName === 'fish' ? `source ${profilePath}` : `source "${profilePath}"`);
 
   // Write reload marker with timestamp — shells can check this
   const markerPath = join(home, '.myelin-reload');
