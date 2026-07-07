@@ -529,8 +529,9 @@ async function main() {
         catch { warn('ast-grep install failed — install manually: npm install -g @ast-grep/cli'); }
       }
     } else {
-      try { execSync('cargo install ast-grep --locked', { stdio: 'inherit' }); ok('ast-grep (cargo)'); }
-      catch { warn('ast-grep install failed — install manually'); }
+      // Windows: no cargo by default — use npm
+      try { execSync('npm install -g @ast-grep/cli', { stdio: 'inherit' }); ok('ast-grep (npm)'); }
+      catch { warn('ast-grep install failed — install manually: npm install -g @ast-grep/cli'); }
     }
   } else { skip(`ast-grep (${tools.astgrep.version})`); }
 
@@ -543,7 +544,9 @@ async function main() {
       if (!existsSync(join(venv, 'pyvenv.cfg'))) {
         execSync(`uv venv ${venv}`, { stdio: 'pipe' });
       }
-      execSync(`uv pip install --python ${venv} 'headroom-ai[all]'`, { stdio: 'inherit' });
+      // Single quotes break on Windows cmd — use double quotes or no quotes
+      const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
+      execSync(`uv pip install --python ${venv} ${headroomPkg}`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
   }
