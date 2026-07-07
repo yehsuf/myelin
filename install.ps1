@@ -36,7 +36,11 @@ try { $binDir = "$env:USERPROFILE\.tokenstack\bin"; New-Item -Force -Path $binDi
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}
 
 Check-Node; Check-Git; Fetch-Repo
-Set-Location $RepoDir; npm install --silent
+Set-Location $RepoDir
+Write-Host "[myelin] Installing npm dependencies..."
+npm install
+if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
+Write-Host "[myelin] npm install complete."
 
 $a = @("src/install.mjs")
 if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($Yes) { $a += "--yes" }
