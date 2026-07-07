@@ -20,13 +20,15 @@ function runPs(script) {
 export function installService(opts) {
   const bin = opts.headroomBin.replace(/\//g, '\\');
   runPs(`
-$action   = New-ScheduledTaskAction -Execute '${bin}' -Argument 'proxy --port ${opts.port}'
+$action   = New-ScheduledTaskAction -Execute 'powershell.exe' \`
+              -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -Command "& ''${bin}'' proxy --port ${opts.port}"'
 $trigger  = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopOnIdleEnd \`
               -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999 \`
-              -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+              -ExecutionTimeLimit (New-TimeSpan -Hours 0) -Hidden
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Limited
 Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings
+Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Start-ScheduledTask -TaskName '${TASK_NAME}'
 Start-Sleep -Seconds 3
 $state = (Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue).State
@@ -45,13 +47,15 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
     .join('\n');
   runPs(`
 ${envLines}
-$action   = New-ScheduledTaskAction -Execute '${bin}' -Argument '--listen-port ${port} -s "${addon}"${proxyArg}${caArg}'
+$action   = New-ScheduledTaskAction -Execute 'powershell.exe' \`
+              -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -Command "& ''${bin}'' --listen-port ${port} -s ''${addon}''${proxyArg}${caArg}"'
 $trigger  = New-ScheduledTaskTrigger -AtLogon -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopOnIdleEnd \`
               -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999 \`
-              -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+              -ExecutionTimeLimit (New-TimeSpan -Hours 0) -Hidden
+$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Limited
 Unregister-ScheduledTask -TaskName '${MITM_TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName '${MITM_TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings
+Register-ScheduledTask -TaskName '${MITM_TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Start-ScheduledTask -TaskName '${MITM_TASK_NAME}'
 $state = (Get-ScheduledTask -TaskName '${MITM_TASK_NAME}' -ErrorAction SilentlyContinue).State
 Write-Host "[myelin] mitmproxy task state: $state"
