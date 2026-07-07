@@ -538,7 +538,8 @@ async function main() {
       const mitmPort = mitmCfg.port ?? 8888;
       const mitmEnv = {
         MYELIN_HEADROOM_PORT: String(port),
-        ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
+        ...(mitmCfg.block_marker   ? { MYELIN_BLOCK_MARKER:   mitmCfg.block_marker   } : {}),
+        ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
         ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
         ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
         ...sslEnv,

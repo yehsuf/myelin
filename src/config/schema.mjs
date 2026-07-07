@@ -15,14 +15,16 @@ export const DEFAULT_CONFIG = {
       enabled: true,
       port: 8888,
       // block_marker: body substring that confirms a network block page (418 response).
-      // Leave empty to treat any 418 as a block (when vpn_domains_file is set).
+      // Leave empty to treat any 418 as a block (when override_proxy is set).
       block_marker: '',
-      // vpn_domains_file: path to a file your VPN routing daemon watches.
-      // When set and a block is detected, the hostname is appended here.
-      // Leave empty to disable VPN auto-retry entirely.
+      // override_proxy: SOCKS5 or HTTP proxy to route blocked requests through.
+      // Format: socks5://host:port  or  http://host:port
+      // When set, any 418 block page causes the request to be replayed via this proxy.
+      // No domain file, no polling — mitmproxy switches the upstream transport per-flow.
+      override_proxy: '',
+      // vpn_domains_file: legacy fallback if override_proxy is not set.
       vpn_domains_file: '',
       // extra_providers: JSON object extending the built-in provider map.
-      // Example: {"my-llm.internal.corp": {"fmt":"openai","compress_paths":["/v1/chat/completions"],"cache_fmt":null}}
       extra_providers: '',
     },
   },

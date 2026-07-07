@@ -69,17 +69,31 @@ TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
 RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '1') == '1'
 LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 
-# VPN bypass: only active when MYELIN_VPN_DOMAINS_FILE is explicitly set.
-# This is an opt-in feature for networks that block LLM hosts and use
-# a domain-routing VPN daemon (e.g. OpenVPN with a routing watcher script).
-_VPN_FILE_RAW = os.environ.get('MYELIN_VPN_DOMAINS_FILE', '')
-VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else None
+# Block detection + override proxy routing (opt-in).
+#
+# When a network filter blocks an LLM host (returns 418), instead of writing
+# to a domain file and waiting for a VPN daemon to poll, we directly re-route
+# the replayed request through an override proxy (SOCKS5 or HTTP).
+#
+# Set MYELIN_OVERRIDE_PROXY to your VPN/SOCKS endpoint, e.g.:
+#   socks5://10.8.0.1:1080
+#   http://10.8.0.1:3128
+#
+# This maps to mitmproxy's server_conn.via field which switches the upstream
+# transport for that specific flow — no global proxy change, no daemon needed.
+#
+# MYELIN_BLOCK_MARKER: body substring confirming a block page (optional).
+# If unset, any 418 triggers the retry.
 
-# Block-page body marker: if set, a 418 is only treated as a network block
-# when this byte-string appears in the response body. When unset, ANY 418
-# triggers VPN retry (if VPN_DOMAINS_FILE is configured).
+_OVERRIDE_PROXY_RAW = os.environ.get('MYELIN_OVERRIDE_PROXY', '')
+OVERRIDE_PROXY: Optional[str] = _OVERRIDE_PROXY_RAW if _OVERRIDE_PROXY_RAW else None
+
 _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', '')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.encode() if _BLOCK_MARKER_RAW else None
+
+# Keep domain-file fallback for backwards compat (deprecated, prefer OVERRIDE_PROXY)
+_VPN_FILE_RAW = os.environ.get('MYELIN_VPN_DOMAINS_FILE', '')
+VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else None
 
 # ---------------------------------------------------------------------------
 # Provider detection
@@ -358,16 +372,41 @@ class MyelinAddon:
     def response(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
 
-        # Block detection + VPN retry (opt-in: requires MYELIN_VPN_DOMAINS_FILE)
-        if VPN_DOMAINS_FILE:
+        # Block detection + override proxy retry (opt-in: requires MYELIN_OVERRIDE_PROXY)
+        #
+        # On 418 block page: set flow.server_conn.via to route the replayed request
+        # directly through the override proxy (SOCKS5/HTTP VPN endpoint).
+        # No domain file, no polling daemon — mitmproxy switches the transport per-flow.
+        if (OVERRIDE_PROXY or VPN_DOMAINS_FILE):
             body = flow.response.content or b''
             if _is_network_block(flow.response.status_code, body):
-                ctx.log.warn(f'[myelin] network block on {host} (418) — adding to VPN routing')
-                if _add_to_vpn_file(host) and _poll_reachable(host):
-                    ctx.log.info(f'[myelin] {host} reachable via VPN — replaying')
-                    ctx.master.commands.call('replay.client', [flow])
-                else:
-                    ctx.log.error(f'[myelin] VPN routing failed for {host}')
+                # Don't retry a flow that already went through the override proxy
+                if flow.metadata.get('myelin_via_override'):
+                    ctx.log.error(f'[myelin] {host} still blocked via override proxy — giving up')
+                    return
+
+                if OVERRIDE_PROXY:
+                    ctx.log.warn(
+                        f'[myelin] network block on {host} (418) — retrying via {OVERRIDE_PROXY}'
+                    )
+                    try:
+                        from mitmproxy.net.server_spec import parse as parse_spec
+                        # Mark replayed flow so we don't retry infinitely
+                        flow.metadata['myelin_via_override'] = True
+                        # Set upstream proxy for next connection attempt
+                        flow.server_conn.via = parse_spec(OVERRIDE_PROXY, 'socks5')
+                        ctx.master.commands.call('replay.client', [flow])
+                    except Exception as e:
+                        ctx.log.error(f'[myelin] override proxy replay failed: {e}')
+                elif VPN_DOMAINS_FILE:
+                    # Legacy: domain-file fallback
+                    ctx.log.warn(f'[myelin] network block on {host} — adding to VPN routing file')
+                    if _add_to_vpn_file(host) and _poll_reachable(host):
+                        ctx.log.info(f'[myelin] {host} reachable via VPN — replaying')
+                        flow.metadata['myelin_via_override'] = True
+                        ctx.master.commands.call('replay.client', [flow])
+                    else:
+                        ctx.log.error(f'[myelin] VPN routing failed for {host}')
                 return
 
         if LOG_SAVINGS and 'myelin_original_bytes' in flow.metadata:
