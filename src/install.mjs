@@ -276,8 +276,9 @@ function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
  * Return the path to the Myelin mitmproxy addon script.
  * Resolves relative to the tokenstack repo root so it works on all platforms.
  */
-function mitmAddonPath(home) {
-  return join(home, 'tokenstack', 'src', 'mitm', 'copilot_addon.py');
+function mitmAddonPath(_home) {
+  // Resolve relative to the installer script so it works regardless of clone location.
+  return join(new URL('.', import.meta.url).pathname, 'mitm', 'copilot_addon.py');
 }
 
 /**

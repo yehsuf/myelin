@@ -218,8 +218,8 @@ def _encode_body(data: bytes, original_encoding: str) -> bytes:
 # Tool results are the biggest token sink (bash output, file reads, etc.).
 # ---------------------------------------------------------------------------
 
-def _compress_messages(messages: list, fmt: str, model: str = '') -> list:
-    """POST to Headroom /v1/compress. Requires model field. Falls back on error."""
+def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
+    """POST to Headroom /v1/compress. Returns (messages, tokens_before, tokens_after)."""
     payload = json.dumps({
         'messages': messages,
         'format': fmt,
@@ -236,12 +236,12 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> list:
             result = json.loads(resp.read())
             compressed = result.get('messages')
             if isinstance(compressed, list) and compressed:
-                return compressed
+                return compressed, result.get('tokens_before', 0), result.get('tokens_after', 0)
     except urllib.error.URLError as e:
         ctx.log.warn(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}')
     except Exception as e:
         ctx.log.warn(f'[myelin] compression error: {e}')
-    return messages
+    return messages, 0, 0
 
 # cache_control is passed through untouched — the client manages its own breakpoints.
 
@@ -349,7 +349,7 @@ class MyelinAddon:
 
         # 3. Compress messages (all roles including tool results)
         if COMPRESS:
-            messages = _compress_messages(messages, provider['fmt'], model)
+            messages, tok_before, tok_after = _compress_messages(messages, provider['fmt'], model)
             data['messages'] = messages
 
         # cache_control: passed through untouched — Copilot CLI sets its own breakpoints
@@ -365,11 +365,14 @@ class MyelinAddon:
 
         pct = (original_size - compressed_size) / original_size * 100 if original_size else 0
         if LOG_SAVINGS and pct > 0:
-            ctx.log.info(f'[myelin] ✓ {host} {original_size}→{compressed_size}B ({pct:.1f}%)')
+            tok_pct = (tok_before - tok_after) / tok_before * 100 if tok_before else 0
+            ctx.log.info(f'[myelin] ✓ {host} {original_size}→{compressed_size}B ({pct:.1f}%) tokens {tok_before}→{tok_after} ({tok_pct:.1f}%)')
 
         flow.metadata['myelin_host']           = host
         flow.metadata['myelin_original_bytes'] = original_size
         flow.metadata['myelin_final_bytes']    = compressed_size
+        flow.metadata['myelin_tok_before']     = tok_before
+        flow.metadata['myelin_tok_after']      = tok_after
 
     def response(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
