@@ -8,11 +8,13 @@ export async function detectTool(name, versionFlag = '--version') {
   try {
     const path = await which(name);
     if (!path) return { installed: false, version: null, path: null };
-    // On Windows, npm shims are .cmd files — use the resolved path directly with shell:true
-    const { stdout } = await execFileP(path, [versionFlag], {
+    // Prefer .cmd path on Windows (npm shims) — execFile can run those directly
+    const resolvedPath = process.platform === 'win32' && !path.match(/\.(cmd|exe|ps1)$/i)
+      ? (await which(name + '.cmd') || path)
+      : path;
+    const { stdout } = await execFileP(resolvedPath, [versionFlag], {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
-      shell: process.platform === 'win32',
     });
     const version = stdout.trim().split('\n')[0].trim();
     return { installed: true, version, path };
