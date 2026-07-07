@@ -38,7 +38,7 @@ try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem"
 Check-Node; Check-Git; Fetch-Repo
 Set-Location $RepoDir
 Write-Host "[myelin] Installing npm dependencies..."
-npm install
+npm install --registry https://registry.npmjs.org
 if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
 Write-Host "[myelin] npm install complete."
 

@@ -30,5 +30,7 @@ fetch_repo() {
 
 check_node; check_git; fetch_repo
 cd "$REPO_DIR" && npm install --silent
+echo "[myelin] Installing npm dependencies..."
+npm install --registry https://registry.npmjs.org
 echo "[myelin] Running installer..."
 node src/install.mjs "$@"
