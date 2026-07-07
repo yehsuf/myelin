@@ -63,11 +63,38 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 
 ### Windows (PowerShell — run as Administrator once for winget)
 ```powershell
-# Install prerequisites
+# 1. Install prerequisites (one-time, as Administrator)
 winget install Git.Git OpenJS.NodeJS.LTS Python.Python.3.12
 
-# Restart PowerShell, then install mitmproxy
+# Restart PowerShell after winget installs, then:
+
+# 2. Install mitmproxy
 pip install mitmproxy
+# Verify: mitmdump --version
+
+# 3. Clone and install Myelin
+git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\repo"
+cd "$env:USERPROFILE\.tokenstack\repo"
+npm install
+node src/install.mjs --yes
+
+# 4. Reload profile (or restart PowerShell)
+. $PROFILE
+```
+
+What the installer does on Windows:
+- Registers **headroom** as a Scheduled Task (`TokenstackHeadroom`) — starts at logon, restarts on failure
+- Registers **mitmproxy** as a Scheduled Task (`MyelinMitmproxy`) — starts at logon
+- Writes `$env:ANTHROPIC_BASE_URL`, `$env:HEADROOM_PORT`, CA bundle env vars to `~\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`
+- Adds `_copilot` PowerShell function (health-checks :8888, falls back gracefully)
+- Adds `myelin` function pointing to the CLI
+
+After install, in any new PowerShell window:
+```powershell
+myelin verify          # health check
+_copilot               # Copilot CLI through mitmproxy (compressed)
+copilot                # Copilot CLI direct (uncompressed)
+claude                 # Claude Code through headroom (compressed)
 ```
 
 ---
@@ -91,7 +118,7 @@ git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\rep
 cd "$env:USERPROFILE\.tokenstack\repo"
 npm install
 node src/install.mjs --yes
-# Restart PowerShell (profile is updated automatically)
+. $PROFILE    # reload profile in current window
 ```
 
 ---
@@ -228,7 +255,9 @@ systemctl --user disable --now myelin-mitmproxy.service tokenstack-headroom.serv
 rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/tokenstack-headroom.service
 systemctl --user daemon-reload
 
-# All platforms — remove managed shell section and config
+# Windows
+Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
+Unregister-ScheduledTask -TaskName "TokenstackHeadroom" -Confirm:$false
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
 rm -rf ~/.tokenstack
