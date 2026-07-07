@@ -303,9 +303,17 @@ function detectMitmdump(os) {
   const candidates =
     os === 'windows'
       ? [
-          'mitmdump',
           join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', 'Scripts', 'mitmdump.exe'),
           join(process.env.APPDATA ?? '', 'Python', 'Scripts', 'mitmdump.exe'),
+          // pip install --user puts in versioned paths e.g. Python313\Scripts
+          ...[...Array(8)].map((_, i) =>
+            join(process.env.APPDATA ?? '', 'Python', `Python3${10 + i}`, 'Scripts', 'mitmdump.exe')
+          ),
+          ...[...Array(8)].map((_, i) =>
+            join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', `Python3${10 + i}`, 'Scripts', 'mitmdump.exe')
+          ),
+          join(homedir(), '.local', 'bin', 'mitmdump.exe'),
+          'mitmdump',
         ]
       : [
           '/opt/homebrew/bin/mitmdump',
@@ -352,7 +360,10 @@ async function ensureMitmproxy(os) {
 
   bin = detectMitmdump(os);
   if (bin) { ok(`mitmproxy (${bin})`); return bin; }
-  warn('mitmdump not found after install — install manually: brew install mitmproxy');
+  const installCmd = os === 'darwin' ? 'brew install mitmproxy'
+                   : os === 'windows' ? 'pip install mitmproxy'
+                   : 'pip3 install --user mitmproxy';
+  warn(`mitmdump not found after install — install manually: ${installCmd}`);
   return null;
 }
 
@@ -694,12 +705,34 @@ async function main() {
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
       : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
     const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"';
+
+    // On Windows, add key bin dirs to process.env.PATH now so tool invocations work
+    if (os === 'windows') {
+      const winPaths = [
+        join(home, '.local', 'bin'),
+        join(home, '.tokenstack', 'bin'),
+        join(home, 'AppData', 'Roaming', 'uv', 'bin'),
+        join(home, 'AppData', 'Local', 'uv', 'bin'),
+        join(home, 'AppData', 'Roaming', 'Python', 'Scripts'),
+        // versioned pip --user script dirs
+        ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
+        ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
+      ];
+      for (const p of winPaths) {
+        if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + process.env.PATH;
+      }
+    }
     let block;
     if (os === 'windows') {
-      // PowerShell profile syntax
       const psEnv = `$env:HEADROOM_PORT = "${port}"\n$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${port}"`;
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
-      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+      const psPaths = [
+        `$env:USERPROFILE\\.local\\bin`,
+        `$env:USERPROFILE\\.tokenstack\\bin`,
+        `$env:APPDATA\\uv\\bin`,
+        `$env:LOCALAPPDATA\\uv\\bin`,
+      ].map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
     } else {
       block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
     }
