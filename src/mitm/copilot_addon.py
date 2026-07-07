@@ -322,6 +322,7 @@ class MyelinAddon:
 
         # Extract model from request body (forwarded unchanged; used for compression hints)
         model = data.get('model', '')
+        flow.metadata['myelin_model'] = model
 
         original_size = len(body)
 
@@ -420,23 +421,41 @@ class MyelinAddon:
             tok_before = flow.metadata.get('myelin_tok_before', 0)
             tok_after  = flow.metadata.get('myelin_tok_after', 0)
 
-            # Parse actual usage from API response
-            usage_str = ''
+            # Parse actual usage from API response and compute cost at Anthropic list prices
             try:
                 rbody = _decompress_body(flow.response.content or b'',
                                          flow.response.headers.get('content-encoding', ''))
                 rdata = json.loads(rbody)
                 usage = rdata.get('usage', {})
                 if usage:
-                    inp  = usage.get('input_tokens') or usage.get('prompt_tokens', 0)
-                    out  = usage.get('output_tokens') or usage.get('completion_tokens', 0)
-                    cr   = usage.get('cache_read_input_tokens', 0)
-                    cw   = usage.get('cache_creation_input_tokens', 0)
-                    parts = [f'in={inp}', f'out={out}']
-                    if cr: parts.append(f'cache_read={cr}')
-                    if cw: parts.append(f'cache_write={cw}')
-                    usage_str = ' [' + ' '.join(parts) + ']'
-                    ctx.log.info(f'[myelin] usage {host}{usage_str}')
+                    inp = usage.get('input_tokens') or usage.get('prompt_tokens', 0)
+                    out = usage.get('output_tokens') or usage.get('completion_tokens', 0)
+                    cr  = usage.get('cache_read_input_tokens', 0)
+                    cw  = usage.get('cache_creation_input_tokens', 0)
+                    model_log = flow.metadata.get('myelin_model', '')
+                    # Anthropic list prices per MTok (input / output)
+                    PRICES = {
+                        'claude-sonnet-4-6': (3.00, 15.00),
+                        'claude-sonnet-4.6': (3.00, 15.00),
+                        'claude-sonnet-4-5': (3.00, 15.00),
+                        'claude-opus-4-7':   (15.00, 75.00),
+                        'claude-opus-4-6':   (15.00, 75.00),
+                        'claude-haiku-4-5':  (0.80, 4.00),
+                        'claude-haiku-3-5':  (0.80, 4.00),
+                    }
+                    pin, pout = PRICES.get(model_log, (3.00, 15.00))
+                    M = 1_000_000
+                    cost = (inp / M * pin) + (out / M * pout) + \
+                           (cr  / M * pin * 0.10) + (cw / M * pin * 1.25)
+                    # Compression saving: tokens removed × input price (those tokens were never sent)
+                    tok_saved = flow.metadata.get('myelin_tok_before', 0) - \
+                                flow.metadata.get('myelin_tok_after', 0)
+                    saved = (tok_saved / M * pin) if tok_saved > 0 else 0.0
+                    ctx.log.info(
+                        f'[myelin] usage {host}'
+                        f' in={inp} out={out} cache_read={cr} cache_write={cw}'
+                        f' cost=${cost:.6f} saved=${saved:.6f} model={model_log}'
+                    )
             except Exception:
                 pass
 

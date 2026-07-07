@@ -20,12 +20,14 @@ export async function runStats() {
     const compRe = /\[myelin\] ✓ (\S+) (\d+)→(\d+)B \(([\d.]+)%\)(?: tokens (\d+)→(\d+))?/;
     // Parse tool filter lines
     const toolRe = /\[myelin\] tools (\d+)→(\d+)/;
-    // Parse actual API usage: "[myelin] usage <host> [in=N out=N cache_read=N cache_write=N]"
-    const usageRe = /\[myelin\] usage \S+ \[in=(\d+) out=(\d+)(?:.*cache_read=(\d+))?(?:.*cache_write=(\d+))?\]/;
+    // Parse actual API usage (cost pre-computed by addon at log time):
+    // "[myelin] usage <host> in=N out=N cache_read=N cache_write=N cost=$N saved=$N model=M"
+    const usageRe = /\[myelin\] usage \S+ in=(\d+) out=(\d+) cache_read=(\d+) cache_write=(\d+) cost=\$([\d.]+) saved=\$([\d.]+)/;
 
     let totalBefore = 0, totalAfter = 0, reqCount = 0;
     let totalTokBefore = 0, totalTokAfter = 0, tokCount = 0;
     let totalIn = 0, totalOut = 0, totalCacheRead = 0, totalCacheWrite = 0, usageCount = 0;
+    let totalCostUsd = 0, totalSavedUsd = 0;
     let totalToolsBefore = 0, totalToolsAfter = 0, toolFilterCount = 0;
     const byHost = {};
 
@@ -47,10 +49,12 @@ export async function runStats() {
       }
       const um = usageRe.exec(line);
       if (um) {
-        totalIn        += parseInt(um[1] || 0);
-        totalOut       += parseInt(um[2] || 0);
-        totalCacheRead += parseInt(um[3] || 0);
-        totalCacheWrite+= parseInt(um[4] || 0);
+        totalIn         += parseInt(um[1]);
+        totalOut        += parseInt(um[2]);
+        totalCacheRead  += parseInt(um[3]);
+        totalCacheWrite += parseInt(um[4]);
+        totalCostUsd    += parseFloat(um[5]);
+        totalSavedUsd   += parseFloat(um[6]);
         usageCount++;
       }
     }
