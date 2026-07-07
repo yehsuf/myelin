@@ -42,10 +42,19 @@ export async function detectTool(name, versionFlag = '--version') {
 export async function detectUv() { return detectTool('uv', '--version'); }
 export async function detectNode() { return detectTool('node', '--version'); }
 export async function detectHeadroom() {
-  // headroom lives in the myelin venv, not in global PATH
+  // headroom lives in the myelin venv, not in global PATH — check existence + run directly
   const { headroomBinPath } = await import('../tools/headroom.mjs');
+  const { existsSync } = await import('node:fs');
   const binPath = headroomBinPath();
-  return detectTool(binPath, '--version');
+  if (!existsSync(binPath)) return { installed: false, version: null, path: null };
+  try {
+    const { execSync } = await import('node:child_process');
+    const stdout = execSync(`"${binPath}" --version`, { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    const version = stdout.trim().split('\n')[0].trim();
+    return { installed: true, version, path: binPath };
+  } catch {
+    return { installed: false, version: null, path: null };
+  }
 }
 export async function detectRtk() { return detectTool('rtk', '--version'); }
 export async function detectSerena() { return detectTool('serena', '--version'); }
