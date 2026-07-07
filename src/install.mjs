@@ -86,10 +86,10 @@ async function detectHeadroomFork() {
 
 function shellProfilePath(os, shell) {
   if (os === 'windows') {
-    // PowerShell $PROFILE = Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1
-    // install.ps1 already whitelists node.exe in Controlled Folder Access before this runs
-    const docs = process.env.USERPROFILE ? join(process.env.USERPROFILE, 'Documents') : join(homedir(), 'Documents');
-    return join(docs, 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
+    // Documents\WindowsPowerShell is Controlled Folder Access protected on many corp machines.
+    // Use APPDATA instead and dot-source it from the real $PROFILE.
+    const appData = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
+    return join(appData, 'Microsoft', 'Windows', 'PowerShell', 'v1.0', 'profile.ps1');
   }
   if (shell.includes('zsh'))  return join(homedir(), '.zshrc');
   if (shell.includes('bash')) return join(homedir(), '.bashrc');
@@ -763,6 +763,19 @@ async function main() {
     if (updated !== existing) {
       writeFileSync(profilePath, updated, 'utf8');
       ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot alias)`);
+      // On Windows: dot-source our AppData profile from the real $PROFILE (Documents)
+      // so it auto-loads in new PS windows — Documents write goes through PS itself (allowed)
+      if (os === 'windows') {
+        try {
+          execSync(`powershell -ExecutionPolicy Bypass -Command "` +
+            `$p = $PROFILE; ` +
+            `if (!(Test-Path $p)) { New-Item -Force -Path $p -ItemType File | Out-Null }; ` +
+            `$line = '. \\"${profilePath.replace(/\\/g, '\\\\')}\\""'; ` +
+            `$c = Get-Content $p -Raw -ErrorAction SilentlyContinue; ` +
+            `if ($c -notlike \\"*myelin*\\") { Add-Content $p $line }"`, { stdio: 'pipe' });
+          ok(`$PROFILE — dot-sources myelin profile (auto-loads in new windows)`);
+        } catch { /* non-fatal */ }
+      }
     } else {
       skip(`${profilePath} already configured`);
     }

@@ -29,7 +29,7 @@ export async function runReload({ silent = false } = {}) {
     : shell.includes('fish') ? 'fish' : 'sh';
 
   const profilePath = os === 'windows'
-    ? join(process.env.USERPROFILE || home, 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1')
+    ? join(process.env.APPDATA || join(home, 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'PowerShell', 'v1.0', 'profile.ps1')
     : (profileMap[shellName] ?? join(home, '.profile'));
   const sourceCmd = os === 'windows'
     ? `. "${profilePath}"`
