@@ -36,6 +36,13 @@ program.command('stats')
     await runStats();
   });
 
+program.command('reload')
+  .description('Reload shell profiles in all open terminal windows')
+  .action(async () => {
+    const { runReload } = await import('./reload.mjs');
+    await runReload();
+  });
+
 program.command('install')
   .description('Install or update all Myelin components')
   .option('-y, --yes', 'Auto-accept all prompts')

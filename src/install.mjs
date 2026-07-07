@@ -653,12 +653,15 @@ async function main() {
   console.log(`  Headroom:      ${headroomBinPath()}`);
   console.log(`  Config:        ${DEFAULT_CONFIG_PATH}`);
   if (caBundles.length) console.log(`  Corporate SSL: ${caBundles[0].path}`);
-  console.log('\n  \u26a0 Start a new terminal/session for all changes to take effect.');
   console.log('\n  myelin verify          \u2192 health check');
   console.log('  myelin config show     \u2192 view settings');
   console.log('  myelin update --check  \u2192 available updates');
   console.log('\u2500'.repeat(55) + '\n');
   _closeRL();
+
+  // Reload shell profiles in all open terminals
+  const { runReload } = await import('./cli/reload.mjs');
+  await runReload();
 }
 
 main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
