@@ -668,12 +668,19 @@ async function main() {
         .join('\n');
       const certBlock = certLines ? `\n${certLines}` : '';
       const copilotAlias = buildCopilotAlias(port);
+      // resolve installer location for the myelin alias
+      const repoRoot = join(new URL('..', import.meta.url).pathname);
+      const myelinAlias = `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
       // On Linux/mac, ensure ~/.local/bin and ~/.tokenstack/bin are in PATH
       const extraPath = os !== 'windows'
         ? '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"'
         : '';
-      writeFileSync(profilePath,
-        existing + `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\nalias myelin="node \${HOME}/tokenstack/bin/tokenstack"\n${copilotAlias}\n# <<< myelin managed <<<\n`, 'utf8');
+      const block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\n${myelinAlias}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+      // Replace existing managed block if present, otherwise append
+      const updated = existing.includes('myelin managed')
+        ? existing.replace(/\n# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
+        : existing + block;
+      writeFileSync(profilePath, updated, 'utf8');
       ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot alias)`);
     } else { skip(`${profilePath} already configured`); }
   }
