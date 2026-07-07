@@ -208,45 +208,50 @@ async function installMitmproxyCA(home, interactive = true) {
 
   // Detect all PEM candidates from env — only user-owned paths (skip system/ProgramData)
   const candidates = new Set();
+  const systemCaPaths = new Set(); // system CAs to READ from, not write to
   const envVars = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
                    'HEADROOM_CA_BUNDLE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE'];
   for (const v of envVars) {
     const p = process.env[v];
     if (!p || !existsSync(p)) continue;
-    // Skip system-owned paths — only append to files inside the user home dir
     const isUserOwned = p.startsWith(home) || p.startsWith(homedir());
-    if (!isUserOwned) {
-      skip(`${p} — system file, skipping (add mitmproxy CA manually if needed)`);
-      continue;
+    if (isUserOwned) {
+      candidates.add(p);
+    } else {
+      systemCaPaths.add(p); // will read content from these into our bundle
     }
-    candidates.add(p);
   }
 
-  // Fallback: create/use ~/.tokenstack/ca-bundle.pem
-  if (candidates.size === 0) {
-    const fallback = join(home, '.tokenstack', 'ca-bundle.pem');
-    if (!existsSync(fallback)) {
-      mkdirSync(join(home, '.tokenstack'), { recursive: true });
-      // Read system CA bundle cross-platform
-      const sysCaPaths = [
-        '/etc/ssl/certs/ca-certificates.crt',  // Debian/Ubuntu
-        '/etc/pki/tls/certs/ca-bundle.crt',    // RHEL/CentOS
-        '/etc/ssl/ca-bundle.pem',               // OpenSUSE
-        '/etc/ssl/cert.pem',                    // macOS/Alpine
-      ];
-      let sysCerts = '';
-      for (const p of sysCaPaths) {
-        if (existsSync(p)) { sysCerts = readFileSync(p, 'utf8'); break; }
-      }
-      if (!sysCerts) {
-        // macOS keychain fallback
-        try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true }).toString(); } catch {}
-      }
-      writeFileSync(fallback, sysCerts || '');
-      ok(`Created new CA bundle at ${fallback}`);
+  // Always rebuild our ca-bundle.pem from fresh system sources + mitmproxy CA
+  const ourBundle = join(home, '.tokenstack', 'ca-bundle.pem');
+  mkdirSync(join(home, '.tokenstack'), { recursive: true });
+
+  // Collect system CA content: env-referenced system files + well-known paths
+  const sysCaPaths = [
+    ...systemCaPaths,  // NetFree, corporate, etc. — readable even if not writable
+    '/etc/ssl/certs/ca-certificates.crt',
+    '/etc/pki/tls/certs/ca-bundle.crt',
+    '/etc/ssl/ca-bundle.pem',
+    '/etc/ssl/cert.pem',
+  ];
+  let sysCerts = '';
+  for (const p of sysCaPaths) {
+    if (existsSync(p)) {
+      try { sysCerts += readFileSync(p, 'utf8') + '\n'; } catch {}
     }
-    candidates.add(fallback);
   }
+  if (!sysCerts) {
+    // macOS keychain fallback
+    try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true }).toString(); } catch {}
+  }
+
+  // Write fresh system certs (strip mitmproxy CA — will be re-added below)
+  const withoutMitm = sysCerts.replace(/# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
+  writeFileSync(ourBundle, withoutMitm || '', 'utf8');
+  ok(`ca-bundle.pem refreshed from system CAs${systemCaPaths.size ? ` + ${[...systemCaPaths].map(p => p.split(/[\\/]/).pop()).join(', ')}` : ''}`);
+
+  // Ensure our bundle is always in candidates
+  candidates.add(ourBundle);
 
   const mitmCert = readFileSync(mitmCaPath, 'utf8');
   const mitmMarker = 'CN=mitmproxy';
