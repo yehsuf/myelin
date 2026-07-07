@@ -87,9 +87,9 @@ end tell`;
     const script = `tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
-      repeat with s in sessions of t
-        write text "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" to s
-      end repeat
+      tell current session of t
+        write text "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
+      end tell
     end repeat
   end repeat
 end tell`;
