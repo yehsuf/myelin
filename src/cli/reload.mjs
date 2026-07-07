@@ -53,9 +53,9 @@ export async function runReload({ silent = false } = {}) {
     if (reloaded) {
       console.log(`  ✓ Reloaded all open terminal windows`);
     } else {
-      console.log(`  ⚠ Could not auto-reload other terminals.`);
+      console.log(`  ⚠ Could not auto-reload. Run manually:\n      ${sourceCmd}`);
     }
-    console.log(`\n  ▶ Run in THIS terminal:\n      ${sourceCmd}\n`);
+    console.log();
   }
 
   return reloaded;
