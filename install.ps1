@@ -1,5 +1,5 @@
 param(
-    [string]$Profile = "proxy",
+    [string]$Preset = "proxy",
     [string]$IndexTier = "default",
     [switch]$Check,
     [switch]$DryRun,
@@ -46,6 +46,6 @@ $a = @("src/install.mjs")
 if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($Yes) { $a += "--yes" }
 if ($NoHeadroom) { $a += "--no-headroom" }
 if ($CopilotOnly) { $a += "--copilot-only" }; if ($ClaudeOnly) { $a += "--claude-only" }
-$a += "--profile", $Profile, "--index-tier", $IndexTier
+$a += "--profile", $Preset, "--index-tier", $IndexTier
 Write-Host "[myelin] Running installer..."
 node @a
