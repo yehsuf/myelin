@@ -374,7 +374,6 @@ function buildCopilotAlias(_port) {
 # copilot still works natively without compression.
 alias _copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} NO_PROXY=registry.npmjs.org,*.npmjs.com,*.npmjs.org,localhost,127.0.0.1,*.local copilot'`;
 }
-}
 
 
 async function main() {
