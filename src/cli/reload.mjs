@@ -53,12 +53,14 @@ export async function runReload({ silent = false } = {}) {
   if (!silent) {
     console.log('\n🔄 Shell profile reload');
     if (reloaded) {
-      console.log(`  ✓ Sent reload to all open terminals — each will print:`);
+      console.log(`  ✓ Sent reload to all other terminal windows — each will print:`);
       console.log(`      ✓ myelin profile reloaded at ${ts}`);
     } else {
-      console.log(`  ⚠ Could not auto-reload. Run manually in each terminal:`);
-      console.log(`\n      ${sourceCmdWithMarker}\n`);
+      console.log(`  ⚠ Could not auto-reload other terminals.`);
     }
+    // Current shell always needs manual source (child process can't affect parent env)
+    console.log(`\n  ▶ Run in THIS terminal:`);
+    console.log(`      ${sourceCmd}\n`);
   }
 
   return reloaded;
