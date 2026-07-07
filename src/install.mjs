@@ -84,7 +84,11 @@ async function detectHeadroomFork() {
 }
 
 function shellProfilePath(os, shell) {
-  if (os === 'windows') return null;
+  if (os === 'windows') {
+    // PowerShell profile — create directory if needed
+    const psProfile = join(homedir(), 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1');
+    return psProfile;
+  }
   if (shell.includes('zsh'))  return join(homedir(), '.zshrc');
   if (shell.includes('bash')) return join(homedir(), '.bashrc');
   if (shell.includes('fish')) return join(homedir(), '.config', 'fish', 'config.fish');
@@ -394,11 +398,25 @@ async function ensureMitmCA(home, mitmdumpBin) {
  * Native auth preserved — HTTPS_PROXY causes Copilot to send its
  * TLS traffic through mitmproxy which intercepts + compresses + retries.
  */
-function buildCopilotAlias(_port) {
+function buildCopilotAlias(os) {
   const mitm = 8888;
-  // Shell function (not alias) so we can health-check the proxy first.
-  // api.github.com in NO_PROXY: auth + auto-update bypass mitmproxy unconditionally.
-  // Only HTTPS_PROXY — not HTTP_PROXY (avoids npm/npx MCP server installs going through proxy).
+  if (os === 'windows') {
+    // PowerShell function — uses Test-NetConnection for health check
+    return `# _copilot: routes through Myelin mitmproxy with health-check fallback
+function global:_copilot {
+  $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitm} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
+  if ($probe) {
+    $env:HTTPS_PROXY = "http://127.0.0.1:${mitm}"
+    $env:NO_PROXY = "api.github.com,registry.npmjs.org,localhost,127.0.0.1"
+    & copilot @args
+    $env:HTTPS_PROXY = $null
+    $env:NO_PROXY = $null
+  } else {
+    Write-Warning "myelin: mitmproxy offline (port ${mitm}) - running uncompressed"
+    & copilot @args
+  }
+}`;
+  }
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Falls back to plain copilot with a warning if mitmproxy is offline.
 function _copilot() {
@@ -661,18 +679,27 @@ async function main() {
   // Shell profile
   const profilePath = shellProfilePath(os, shell);
   if (profilePath) {
+    if (os === 'windows') mkdirSync(join(profilePath, '..'), { recursive: true });
     const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
     const certLines = Object.entries(sslEnv)
       .map(([k, v]) => `export ${k}=${v}`)
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
-    const copilotAlias = buildCopilotAlias(port);
+    const copilotAlias = buildCopilotAlias(os);
     const repoRoot = join(new URL('..', import.meta.url).pathname);
-    const myelinAlias = `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
-    const extraPath = os !== 'windows'
-      ? '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"'
-      : '';
-    const block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\n${myelinAlias}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+    const myelinCmd = os === 'windows'
+      ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
+      : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
+    const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"';
+    let block;
+    if (os === 'windows') {
+      // PowerShell profile syntax
+      const psEnv = `$env:HEADROOM_PORT = "${port}"\n$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${port}"`;
+      const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+    } else {
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+    }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
       : existing + block;
