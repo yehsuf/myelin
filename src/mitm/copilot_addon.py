@@ -84,55 +84,94 @@ _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', '')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.encode() if _BLOCK_MARKER_RAW else None
 
 # ---------------------------------------------------------------------------
-# Provider registry
+# Provider detection
 #
-# Maps request hostname → compression/caching config.
-# Add entries for private or enterprise LLM endpoints here, or via
-# MYELIN_EXTRA_PROVIDERS env var (JSON object with the same schema).
+# Instead of a static hostname map, we detect the provider from:
+#   1. The request hostname (domain suffix matching)
+#   2. The request path (determines wire format: anthropic vs openai)
 #
-# Fields:
-#   compress_paths  — URL path prefixes to intercept (POST only)
-#   fmt             — 'openai' | 'anthropic'  (Headroom compression schema)
-#   cache_fmt       — 'anthropic' | 'openai_compat' | None
+# This handles all current and future Copilot subdomain variants
+# (api.githubcopilot.com, api.business.githubcopilot.com, etc.)
+# without any hardcoded subdomains.
+#
+# Format detection from path:
+#   /v1/messages           → anthropic
+#   /chat/completions      → openai
+#   /v1/chat/completions   → openai
+#
+# Static overrides can be added via MYELIN_EXTRA_PROVIDERS (JSON).
 # ---------------------------------------------------------------------------
 
-PROVIDERS: dict = {
-    # Standard GitHub Copilot (personal/team accounts)
-    'api.githubcopilot.com': {
-        'fmt': 'openai',
-        'compress_paths': ['/chat/completions', '/v1/chat/completions', '/v1/messages'],
-        'cache_fmt': 'openai_compat',
-    },
-    # GitHub Copilot Business / Enterprise accounts
-    'api.business.githubcopilot.com': {
-        'fmt': 'anthropic',
-        'compress_paths': ['/v1/messages', '/chat/completions', '/v1/chat/completions'],
-        'cache_fmt': 'anthropic',
-    },
-    'api.anthropic.com': {
-        'fmt': 'anthropic',
-        'compress_paths': ['/v1/messages'],
-        'cache_fmt': 'anthropic',
-    },
-    'api.openai.com': {
-        'fmt': 'openai',
-        'compress_paths': ['/v1/chat/completions'],
-        'cache_fmt': None,
-    },
-    'openai.azure.com': {
-        'fmt': 'openai',
-        'compress_paths': ['/chat/completions'],
-        'cache_fmt': None,
-    },
+import re as _re
+
+# Domain suffix patterns → default format hint (overridden by path detection)
+_DOMAIN_PATTERNS: list[tuple] = [
+    (_re.compile(r'(^|\.)githubcopilot\.com$'),   'auto'),   # all copilot subdomains
+    (_re.compile(r'^api\.anthropic\.com$'),         'anthropic'),
+    (_re.compile(r'^api\.openai\.com$'),            'openai'),
+    (_re.compile(r'openai\.azure\.com$'),           'openai'),
+]
+
+# Paths that indicate an LLM completion request worth intercepting
+_COMPLETION_PATHS = {
+    '/v1/messages':          'anthropic',
+    '/chat/completions':     'openai',
+    '/v1/chat/completions':  'openai',
 }
 
-# Merge extra providers from env var
+# Cache format per wire format
+_CACHE_FMT = {
+    'anthropic': 'anthropic',
+    'openai':    'openai_compat',
+}
+
+# Static overrides: MYELIN_EXTRA_PROVIDERS env var (JSON object)
+# Schema: {"hostname": {"fmt": "openai|anthropic", "compress_paths": [...], "cache_fmt": ...}}
+_STATIC_OVERRIDES: dict = {}
 _extra_raw = os.environ.get('MYELIN_EXTRA_PROVIDERS', '')
 if _extra_raw:
     try:
-        PROVIDERS.update(json.loads(_extra_raw))
+        _STATIC_OVERRIDES = json.loads(_extra_raw)
     except Exception:
         pass
+
+
+def _detect_provider(host: str, path: str) -> Optional[dict]:
+    """
+    Return provider config for this host+path, or None if not interceptable.
+    Config keys: fmt, cache_fmt
+    """
+    # Static overrides take priority
+    if host in _STATIC_OVERRIDES:
+        ov = _STATIC_OVERRIDES[host]
+        paths = ov.get('compress_paths', list(_COMPLETION_PATHS.keys()))
+        if any(path.startswith(p) or path == p for p in paths):
+            return ov
+        return None
+
+    # Domain pattern matching
+    domain_fmt = None
+    for pat, fmt_hint in _DOMAIN_PATTERNS:
+        if pat.search(host):
+            domain_fmt = fmt_hint
+            break
+
+    if domain_fmt is None:
+        return None
+
+    # Path must be a known completion endpoint
+    path_fmt = None
+    for p, fmt in _COMPLETION_PATHS.items():
+        if path.startswith(p) or path == p:
+            path_fmt = fmt
+            break
+
+    if path_fmt is None:
+        return None
+
+    # 'auto' means trust the path; specific domain hints override
+    fmt = path_fmt if domain_fmt == 'auto' else domain_fmt
+    return {'fmt': fmt, 'cache_fmt': _CACHE_FMT.get(fmt)}
 
 # ---------------------------------------------------------------------------
 # Body codec
@@ -165,8 +204,13 @@ def _encode_body(data: bytes, original_encoding: str) -> bytes:
 # Tool results are the biggest token sink (bash output, file reads, etc.).
 # ---------------------------------------------------------------------------
 
-def _compress_messages(messages: list, fmt: str) -> list:
-    payload = json.dumps({'messages': messages, 'format': fmt}).encode()
+def _compress_messages(messages: list, fmt: str, model: str = '') -> list:
+    """POST to Headroom /v1/compress. Requires model field. Falls back on error."""
+    payload = json.dumps({
+        'messages': messages,
+        'format': fmt,
+        'model': model or 'default',
+    }).encode()
     req = urllib.request.Request(
         f'{HEADROOM_BASE}/v1/compress',
         data=payload,
@@ -284,12 +328,14 @@ class MyelinAddon:
 
     def request(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
-        provider = PROVIDERS.get(host)
-        if not provider or flow.request.method != 'POST':
+        path = flow.request.path
+
+        if flow.request.method != 'POST':
             return
 
-        path = flow.request.path
-        if not any(path.startswith(p) or path == p for p in provider['compress_paths']):
+        # Auto-detect provider from host pattern + path — no hardcoded subdomains
+        provider = _detect_provider(host, path)
+        if not provider:
             return
 
         raw_encoding = flow.request.headers.get('content-encoding', '')
@@ -305,6 +351,9 @@ class MyelinAddon:
         messages = data.get('messages')
         if not isinstance(messages, list) or not messages:
             return
+
+        # Extract model from request body (forwarded unchanged; used for compression hints)
+        model = data.get('model', '')
 
         original_size = len(body)
 
@@ -332,7 +381,7 @@ class MyelinAddon:
 
         # 3. Compress messages (all roles including tool results)
         if COMPRESS:
-            messages = _compress_messages(messages, provider['fmt'])
+            messages = _compress_messages(messages, provider['fmt'], model)
             data['messages'] = messages
 
         # 4. Cache-control (preserves existing client markers)
