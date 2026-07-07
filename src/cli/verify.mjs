@@ -32,6 +32,7 @@ function ensureWindowsPath() {
   for (const p of extra) {
     if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + (process.env.PATH || '');
   }
+}
 
 export async function runVerify() {
   ensureWindowsPath();
