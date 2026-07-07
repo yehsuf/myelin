@@ -38,11 +38,9 @@ export async function runReload({ silent = false } = {}) {
   const ts = new Date().toISOString();
   writeFileSync(markerPath, ts, 'utf8');
 
-  // Append a MYELIN_LOADED_AT export to the source command so each terminal
-  // gets a visible timestamp after reload
   const sourceCmdWithMarker = shellName === 'fish'
-    ? `source ${profilePath}; and set -x MYELIN_LOADED_AT "${ts}"; and echo "✓ myelin profile reloaded at ${ts}"`
-    : `source "${profilePath}" && export MYELIN_LOADED_AT="${ts}" && echo "✓ myelin profile reloaded at ${ts}"`;
+    ? `source ${profilePath}`
+    : `source "${profilePath}"`;
 
   let reloaded = false;
 
@@ -53,14 +51,11 @@ export async function runReload({ silent = false } = {}) {
   if (!silent) {
     console.log('\n🔄 Shell profile reload');
     if (reloaded) {
-      console.log(`  ✓ Sent reload to all other terminal windows — each will print:`);
-      console.log(`      ✓ myelin profile reloaded at ${ts}`);
+      console.log(`  ✓ Reloaded all open terminal windows`);
     } else {
       console.log(`  ⚠ Could not auto-reload other terminals.`);
     }
-    // Current shell always needs manual source (child process can't affect parent env)
-    console.log(`\n  ▶ Run in THIS terminal:`);
-    console.log(`      ${sourceCmd}\n`);
+    console.log(`\n  ▶ Run in THIS terminal:\n      ${sourceCmd}\n`);
   }
 
   return reloaded;
@@ -69,12 +64,13 @@ export async function runReload({ silent = false } = {}) {
 function _reloadMacTerminals(sourceCmd) {
   let reloaded = false;
 
-  // Terminal.app
+  // Terminal.app — all tabs in all windows
   try {
+    const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
-      do script "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" in t
+      do script "${cmd}" in t
     end repeat
   end repeat
 end tell`;
@@ -82,14 +78,15 @@ end tell`;
     reloaded = true;
   } catch {}
 
-  // iTerm2
+  // iTerm2 — all sessions in all tabs in all windows
   try {
+    const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
-      tell current session of t
-        write text "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
-      end tell
+      repeat with s in sessions of t
+        write text "${cmd}" to s
+      end repeat
     end repeat
   end repeat
 end tell`;
