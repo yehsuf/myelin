@@ -729,8 +729,8 @@ async function main() {
         join(home, '.tokenstack', 'bin'),
         join(home, 'AppData', 'Roaming', 'uv', 'bin'),
         join(home, 'AppData', 'Local', 'uv', 'bin'),
+        join(home, 'AppData', 'Roaming', 'npm'),
         join(home, 'AppData', 'Roaming', 'Python', 'Scripts'),
-        // versioned pip --user script dirs
         ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
         ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
       ];
@@ -747,6 +747,7 @@ async function main() {
         `$env:USERPROFILE\\.tokenstack\\bin`,
         `$env:APPDATA\\uv\\bin`,
         `$env:LOCALAPPDATA\\uv\\bin`,
+        `$env:APPDATA\\npm`,
       ].map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
     } else {

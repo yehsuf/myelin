@@ -8,7 +8,7 @@ export async function detectTool(name, versionFlag = '--version') {
   try {
     const path = await which(name);
     if (!path) return { installed: false, version: null, path: null };
-    const { stdout } = await execFileP(name, [versionFlag], { timeout: 5000 });
+    const { stdout } = await execFileP(name, [versionFlag], { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] });
     const version = stdout.trim().split('\n')[0].trim();
     return { installed: true, version, path };
   } catch {

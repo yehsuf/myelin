@@ -14,6 +14,8 @@ function ensureWindowsPath() {
     join(home, '.tokenstack', 'bin'),
     join(home, 'AppData', 'Roaming', 'uv', 'bin'),
     join(home, 'AppData', 'Local', 'uv', 'bin'),
+    join(home, 'AppData', 'Roaming', 'npm'),           // npm global bin on Windows
+    join(home, 'AppData', 'Local', 'npm'),
     ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
     ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
   ];
