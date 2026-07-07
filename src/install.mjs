@@ -308,19 +308,19 @@ function detectMitmdump(os) {
           '/usr/local/bin/mitmdump',
           '/usr/bin/mitmdump',
           join(homedir(), '.local', 'bin', 'mitmdump'),
+          join(homedir(), '.local', 'bin', 'mitmdump.exe'),
           'mitmdump',
         ];
 
   for (const c of candidates) {
     const isAbsolute = c.startsWith('/') || c.includes('\\');
     if (isAbsolute && !existsSync(c)) continue;
+    // For absolute paths that exist, skip --version check — just return it
+    if (isAbsolute && existsSync(c)) return c;
     try {
       execSync(`"${c}" --version`, { stdio: 'pipe', timeout: 5000 });
       return c;
-    } catch {
-      // binary exists but --version failed or timed out; still usable
-      if (isAbsolute && existsSync(c)) return c;
-    }
+    } catch { /* not found in PATH */ }
   }
   return null;
 }
