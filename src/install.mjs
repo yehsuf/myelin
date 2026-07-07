@@ -367,9 +367,13 @@ async function ensureMitmCA(home, mitmdumpBin) {
  */
 function buildCopilotAlias(_port) {
   const mitm = 8888;
-  return `# _copilot routes through Myelin mitmproxy (token compression + cache + auto-VPN)
-# Use _copilot instead of copilot to get compression; copilot still works natively.
-alias _copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} HTTP_PROXY=http://127.0.0.1:${mitm} copilot'`;
+  // Only HTTPS_PROXY — not HTTP_PROXY (avoids npm/npx MCP server installs going through proxy).
+  // NO_PROXY excludes npm registry, localhost, and non-LLM hosts so only Copilot API traffic
+  // is intercepted.
+  return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
+# copilot still works natively without compression.
+alias _copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} NO_PROXY=registry.npmjs.org,*.npmjs.com,*.npmjs.org,localhost,127.0.0.1,*.local copilot'`;
+}
 }
 
 
