@@ -104,6 +104,16 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
   if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
 
+  // Bypass TLS interception for mTLS hosts (Akamai internal tools, etc.)
+  // client certs cannot survive CONNECT proxy — these get raw TCP tunnel
+  const IGNORE_HOSTS = [
+    r`.*\.akamai\.com`,
+    r`.*\.corp\.akamai\.com`,
+    r`.*\.akamaized\.net`,
+    r`.*\.akamaihd\.net`,
+  ].join('|');
+  args.push('--ignore-hosts', IGNORE_HOSTS);
+
   const content = generateGenericPlist({
     label: MITM_LABEL,
     command: mitmdumpBin,
