@@ -36,4 +36,30 @@ program.command('stats')
     await runStats();
   });
 
+program.command('install')
+  .description('Install or update all Myelin components')
+  .option('-y, --yes', 'Auto-accept all prompts')
+  .option('--profile <profile>', 'Installation profile (proxy|mcp|minimal)', 'proxy')
+  .option('--dry-run', 'Show what would be installed without making changes')
+  .option('--no-headroom', 'Skip headroom install')
+  .option('--no-rtk', 'Skip RTK install')
+  .option('--copilot-only', 'Configure Copilot only (skip Claude Code)')
+  .option('--claude-only', 'Configure Claude Code only (skip Copilot)')
+  .action(async (opts) => {
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { join: pjoin, dirname } = await import('node:path');
+    const installPath = pjoin(dirname(fileURLToPath(import.meta.url)), '..', 'install.mjs');
+    const args = [installPath];
+    if (opts.yes)         args.push('--yes');
+    if (opts.dryRun)      args.push('--dry-run');
+    if (opts.profile !== 'proxy') args.push('--profile', opts.profile);
+    if (opts.noHeadroom)  args.push('--no-headroom');
+    if (opts.noRtk)       args.push('--no-rtk');
+    if (opts.copilotOnly) args.push('--copilot-only');
+    if (opts.claudeOnly)  args.push('--claude-only');
+    const result = spawnSync(process.execPath, args, { stdio: 'inherit' });
+    process.exit(result.status ?? 0);
+  });
+
 program.parse();
