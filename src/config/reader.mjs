@@ -12,7 +12,7 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
     try {
       userConfig = parse(readFileSync(configPath, 'utf8')) ?? {};
     } catch (e) {
-      console.warn(`[tokenstack] Warning: Could not parse config at ${configPath}: ${e.message}`);
+      console.warn(`[myelin] Warning: Could not parse config at ${configPath}: ${e.message}`);
     }
   }
   let merged = mergeDeep(DEFAULT_CONFIG, userConfig);
@@ -23,7 +23,7 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
     if (!Number.isNaN(rawPort)) {
       merged = mergeDeep(merged, { proxy: { headroom: { port: rawPort } } });
     } else {
-      console.warn(`[tokenstack] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
+      console.warn(`[myelin] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
     }
   }
   if (process.env.TOKENSTACK_PROFILE) {

@@ -42,18 +42,18 @@ export async function installRtk(os) {
         if (ok) return { method: 'github_release', ok: true };
       }
       if (s.method === 'cargo') {
-        console.warn('[tokenstack] Installing RTK via cargo — this may take a few minutes.');
+        console.warn('[myelin] Installing RTK via cargo — this may take a few minutes.');
         if (os === 'windows') {
-          console.warn('[tokenstack] WARNING: cargo on Windows requires ~3GB Visual Studio Build Tools.');
+          console.warn('[myelin] WARNING: cargo on Windows requires ~3GB Visual Studio Build Tools.');
         }
         execSync('cargo install rtk --locked', { stdio: 'inherit' });
         return { method: 'cargo', ok: true };
       }
     } catch (e) {
-      console.warn(`[tokenstack] RTK install via ${s.method} failed: ${e.message}`);
+      console.warn(`[myelin] RTK install via ${s.method} failed: ${e.message}`);
     }
   }
-  console.warn('[tokenstack] SKIP: RTK could not be installed. Shell compression inactive.');
+  console.warn('[myelin] SKIP: RTK could not be installed. Shell compression inactive.');
   return { method: null, ok: false };
 }
 

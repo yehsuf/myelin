@@ -305,7 +305,7 @@ function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
 /**
  * Return the path to the Myelin mitmproxy addon script.
- * Resolves relative to the tokenstack repo root so it works on all platforms.
+ * Resolves relative to the myelin repo root so it works on all platforms.
  */
 function mitmAddonPath(_home) {
   // Resolve relative to the installer script so it works regardless of clone location.

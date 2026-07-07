@@ -28,7 +28,7 @@ export async function runDiagnose() {
     try {
       const freePort = await findFreePort(port + 1, port + 20);
       console.log(`  → Suggested free port: ${freePort}`);
-      console.log(`  → To switch: tokenstack config set proxy.headroom.port ${freePort}`);
+      console.log(`  → To switch: myelin config set proxy.headroom.port ${freePort}`);
     } catch {}
   }
 

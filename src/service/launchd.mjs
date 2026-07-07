@@ -34,9 +34,9 @@ ${envEntries}
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>${logPath ?? '/tmp/tokenstack-headroom.log'}</string>
+    <string>${logPath ?? '/tmp/myelin-headroom.log'}</string>
     <key>StandardErrorPath</key>
-    <string>${logPath ?? '/tmp/tokenstack-headroom.log'}</string>
+    <string>${logPath ?? '/tmp/myelin-headroom.log'}</string>
 </dict>
 </plist>`;
 }

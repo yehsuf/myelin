@@ -6,7 +6,7 @@ import { execSync } from 'node:child_process';
 export function generateSystemdUnit({ headroomBin, port, envVars = {} }) {
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   return `[Unit]
-Description=TokenStack Headroom AI Proxy
+Description=Myelin Headroom AI Proxy
 After=network.target
 
 [Service]

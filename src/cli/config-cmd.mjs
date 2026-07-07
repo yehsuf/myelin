@@ -7,7 +7,7 @@ import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
 
 export function configCommand() {
-  const cmd = new Command('config').description('Manage TokenStack configuration');
+  const cmd = new Command('config').description('Manage Myelin configuration');
 
   cmd.command('show')
     .description('Print current configuration (merged with defaults)')
@@ -28,7 +28,7 @@ export function configCommand() {
       await setConfigValue(key, value);
       console.log(`✓ Set ${key} = ${value}`);
       if (key === 'proxy.headroom.port') {
-        console.log('  ↳ Port change detected — run: tokenstack verify to check the new port');
+        console.log('  ↳ Port change detected — run: myelin verify to check the new port');
       }
     });
 

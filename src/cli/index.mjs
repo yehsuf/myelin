@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { configCommand } from './config-cmd.mjs';
 
 const program = new Command();
-program.name('tokenstack').description('Myelin — the neural insulation layer for AI coding agents').version('1.0.0');
+program.name('myelin').description('Myelin — the neural insulation layer for AI coding agents').version('1.0.0');
 
 program.addCommand(configCommand());
 
@@ -22,7 +22,7 @@ program.command('diagnose')
   });
 
 program.command('update')
-  .description('Update all TokenStack tools')
+  .description('Update all Myelin tools')
   .option('--check', 'Show what would be updated without making changes')
   .action(async (opts) => {
     const { runUpdate } = await import('./update.mjs');
