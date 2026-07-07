@@ -34,52 +34,60 @@ Anthropic API / GitHub Copilot API
 ## Prerequisites
 
 ### macOS
+
+The installer auto-installs everything missing. Only hard prerequisites: **Node.js 20+**, **Homebrew**.
+
 ```bash
-# Homebrew (required)
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+# Check what you have
+node --version && brew --version
 
-# Node.js 20+
-brew install node
-
-# Python 3.10+ (for mitmproxy/headroom — usually pre-installed on macOS 13+)
-python3 --version
+# Install only what's missing
+brew install node          # if node missing / < 20
+# (Python ships with macOS 13+; brew install python@3.12 if older)
 ```
 
 ### Linux (Ubuntu/Debian)
-```bash
-# Node.js 20+ via nvm (recommended)
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
-source ~/.bashrc
-nvm install 20 && nvm use 20
 
-# Python 3.10+ (usually pre-installed)
+The installer auto-installs everything missing. Only hard prerequisites: **Node.js 20+**, **Python 3.10+**.
+
+```bash
+# Check what you have
+node --version 2>/dev/null || echo "node: missing"
 python3 --version
 
-# mitmproxy
-pip3 install --user mitmproxy
-# Add to PATH if not already:
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+# Install Node 20+ via nvm (if missing or < 20)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc && nvm install 20
 ```
 
-### Windows (PowerShell — run as Administrator once for winget)
+### Windows (PowerShell)
+
+The installer detects what you have and installs only what's missing. The only hard prerequisites are **Node.js 20+**, **Python 3.10+**, and **Git** — everything else (mitmproxy, headroom, RTK, serena, semble) is installed automatically.
+
+**Check what you already have:**
 ```powershell
-# 1. Install prerequisites (one-time, as Administrator)
-winget install Git.Git OpenJS.NodeJS.LTS Python.Python.3.12
+node --version    # need 20+
+python --version  # need 3.10+
+git --version
+```
 
-# Restart PowerShell after winget installs, then:
+**Install only what's missing** (run PowerShell as Administrator):
+```powershell
+winget install Git.Git            # if git missing
+winget install OpenJS.NodeJS.LTS  # if node missing / < 20
+winget install Python.Python.3.12 # if python missing
+# Restart PowerShell after any winget install
+```
 
-# 2. Install mitmproxy
-pip install mitmproxy
-# Verify: mitmdump --version
-
-# 3. Clone and install Myelin
+**Clone, check, and install:**
+```powershell
 git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\repo"
 cd "$env:USERPROFILE\.tokenstack\repo"
 npm install
-node src/install.mjs --yes
-
-# 4. Reload profile (or restart PowerShell)
-. $PROFILE
+node src/install.mjs --check     # shows what's present vs missing
+node src/install.mjs --dry-run   # preview what would be installed
+node src/install.mjs --yes       # install everything missing
+. $PROFILE                        # reload in current window
 ```
 
 What the installer does on Windows:
@@ -106,7 +114,9 @@ claude                 # Claude Code through headroom (compressed)
 git clone https://github.com/yehsuf/myelin.git ~/.tokenstack/repo
 cd ~/.tokenstack/repo
 npm install
-node src/install.mjs --yes
+node src/install.mjs --check      # shows what's present vs missing
+node src/install.mjs --dry-run    # preview what would be installed
+node src/install.mjs --yes        # install
 source ~/.zshrc        # macOS (zsh)
 # or:
 source ~/.bashrc       # Linux (bash)
