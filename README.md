@@ -9,124 +9,238 @@
 > In biology, myelin is the substance that wraps around neurons and makes signals travel 100× faster.  
 > This is myelin for your AI coding agent.
 
-**~93% token reduction · 6× longer sessions · 30 min → 3+ hrs · works with Claude Code + GitHub Copilot CLI**
+**~14-72% Copilot token reduction · 91% fewer tools per request · KV cache 69%+ hit rate · works with Claude Code + GitHub Copilot CLI**
 
 ---
 
 ## What it does
 
-AI coding agents (Claude Code, GitHub Copilot CLI) burn through context windows in 30 minutes. `cargo test` alone costs 4,823 tokens. `git diff HEAD~1` costs 21,500. Agents re-read their own output every turn — the waste compounds.
-
-Myelin wraps your agent stack with 9 compression layers, each catching what the previous missed:
+AI coding agents burn through context in 30 minutes. Myelin wraps your agent stack with compression layers:
 
 ```
 USER PROMPT
     ↓
-Serena + Semble         LSP-backed code discovery       →  symbol-precise, no full-file reads
-RTK                     Shell output compression         →  60-90% on CLI output
-Headroom proxy          Outbound compression layer       →  60-95% before Anthropic/GitHub sees it
-mem0                    Conversation memory              →  80-90% reduction on session history
-context-mode            Output virtualisation            →  30min → 3+ hour sessions
-CacheAligner            KV cache stabilisation           →  90% discount on repeated prefixes
-Enforcement hooks       Prevents agent backsliding       →  makes savings stick
+Serena + Semble    LSP-backed code discovery     →  symbol-precise, no full-file reads
+RTK                Shell output compression       →  60-90% on CLI output
+mitmproxy addon    Tool filter + compress         →  91% fewer tools, 14-72% byte reduction
+Headroom proxy     Outbound compression + cache   →  69%+ KV cache hit rate, cost savings
+Enforcement hooks  Prevents agent backsliding     →  makes savings stick
     ↓
-Anthropic API / GitHub Copilot
+Anthropic API / GitHub Copilot API
 ```
 
-## Quick Start
+---
 
+## Prerequisites
+
+### macOS
 ```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/yehsuf/myelin/main/install.sh | sh
+# Homebrew (required)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/yehsuf/myelin/main/install.ps1 | iex"
+# Node.js 20+
+brew install node
+
+# Python 3.10+ (for mitmproxy/headroom — usually pre-installed on macOS 13+)
+python3 --version
 ```
 
-Or clone and run directly:
+### Linux (Ubuntu/Debian)
+```bash
+# Node.js 20+ via nvm (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install 20 && nvm use 20
 
+# Python 3.10+ (usually pre-installed)
+python3 --version
+
+# mitmproxy
+pip3 install --user mitmproxy
+# Add to PATH if not already:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+### Windows (PowerShell — run as Administrator once for winget)
+```powershell
+# Install prerequisites
+winget install Git.Git OpenJS.NodeJS.LTS Python.Python.3.12
+
+# Restart PowerShell, then install mitmproxy
+pip install mitmproxy
+```
+
+---
+
+## Install
+
+### macOS / Linux
 ```bash
 git clone https://github.com/yehsuf/myelin.git ~/.tokenstack/repo
-cd ~/.tokenstack/repo && npm install
-node src/install.mjs --check    # see what's on your machine
-node src/install.mjs --dry-run  # preview what would be installed
-node src/install.mjs            # install
+cd ~/.tokenstack/repo
+npm install
+node src/install.mjs --yes
+source ~/.zshrc        # macOS (zsh)
+# or:
+source ~/.bashrc       # Linux (bash)
 ```
 
-## CLI
+### Windows (PowerShell)
+```powershell
+git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\repo"
+cd "$env:USERPROFILE\.tokenstack\repo"
+npm install
+node src/install.mjs --yes
+# Restart PowerShell (profile is updated automatically)
+```
+
+---
+
+## Verify
 
 ```bash
-tokenstack verify              # health check all components
-tokenstack diagnose            # detect port conflicts, find fixes
-tokenstack config show         # view current settings
-tokenstack config set proxy.headroom.port 9090
-tokenstack update --check      # see what has updates
-tokenstack update              # apply all updates
+myelin verify          # health check all 7 components
+myelin stats           # compression statistics
+myelin config show     # view current settings
 ```
 
-## The Stack
+Expected output:
+```
+✓ headroom proxy    :8787  healthy
+✓ mitmproxy         :8888  healthy
+✓ serena            MCP    ready
+✓ semble            MCP    ready
+✓ rtk               shell  ready
+✓ enforcement hooks        active
+✓ shell profile            configured
+```
 
-| Layer | Tool | Savings |
-|-------|------|---------|
-| Code discovery (structural) | [Serena](https://github.com/oraios/serena) | Symbol-precise — no full-file reads |
-| Code discovery (semantic) | [Semble](https://github.com/MinishLab/semble) | 98% fewer tokens vs grep+read |
-| Structural patterns | [ast-grep](https://github.com/ast-grep/ast-grep) | Exact AST matches, not whole files |
-| Diff/review context | [mcp-server-git](https://github.com/modelcontextprotocol/servers) | 10× smaller for reviews |
-| Conversation memory | [mem0](https://github.com/mem0ai/mem0) | 80-90% vs full history |
-| Shell compression | [RTK](https://github.com/rtk-ai/rtk) | 60-90% on CLI output |
-| Output sandboxing | [Anthropic SRT](https://github.com/anthropics/sandbox-runtime) | OS-level output control |
-| Backbone proxy | [Headroom](https://github.com/yehsuf/headroom) | 60-95% outbound compression |
-| Output virtualisation | [context-mode](https://github.com/mksglu/context-mode) | 6× session extension (Claude Code) |
-| Model routing | [LiteLLM](https://github.com/BerriAI/litellm) | 30-40% cost reduction (opt-in) |
+---
+
+## Usage
+
+### Claude Code (automatic)
+```bash
+claude   # ANTHROPIC_BASE_URL automatically points to headroom :8787
+```
+Headroom compresses messages before forwarding to Anthropic. KV cache alignment reduces costs by up to $1+/day.
+
+### GitHub Copilot CLI (compressed)
+```bash
+_copilot   # routes through mitmproxy :8888 — compresses + filters tools
+copilot    # direct, uncompressed (still works if mitmproxy is down)
+```
+`_copilot` health-checks port 8888 first — falls back to plain `copilot` with a warning if mitmproxy is offline.
+
+---
+
+## What gets compressed
+
+| Layer | Before | After | Saving |
+|-------|--------|-------|--------|
+| Tools per request (Copilot) | ~125 tools | ~11 tools | **91%** |
+| Bytes per request (Copilot) | baseline | -14 to -72% | **14-72%** |
+| KV cache hit rate (Claude) | ~0% cold | ~69% | **69%+ token discount** |
+| Text compression (Claude) | baseline | -3.5% additional | small |
+
+---
+
+## Platform feature parity
+
+| Feature | macOS | Linux | Windows |
+|---------|-------|-------|---------|
+| Installer | ✅ | ✅ | ✅ (untested) |
+| Claude Code via headroom | ✅ | ✅ | ✅ (untested) |
+| Copilot via mitmproxy | ✅ | ✅ | ✅ (untested) |
+| CA generation (no sudo) | ✅ keychain | ✅ ca-bundle.pem | ✅ certutil |
+| Background service | ✅ launchd | ✅ systemd user | ✅ Task Scheduler |
+| Shell reload (auto) | ✅ AppleScript | ⚠️ run manually | ⚠️ restart shell |
+| `myelin stats` | ✅ | ✅ | ✅ |
+| `_copilot` health fallback | ✅ | ✅ | ✅ |
+
+---
 
 ## Configuration
 
-Config lives at `~/.tokenstack/config.yaml`. Every setting is documented in [`docs/settings-reference.md`](docs/settings-reference.md).
-
-Key settings:
+Config: `~/.tokenstack/config.yaml`
 
 ```yaml
 proxy:
   headroom:
-    port: 8787        # change with: tokenstack config set proxy.headroom.port <N>
-    backend: kompress-base  # or: llmlingua-2 (heavier, more compression)
+    port: 8787          # change: myelin config set proxy.headroom.port 9090
+    backend: kompress-base   # or: llmlingua-2
+  mitm:
+    port: 8888
+    block_bypass: false      # set true if behind content filter (NetFree etc.)
+    override_proxy: ''       # socks5://10.8.0.1:1080
 
-index_tier: default   # light | default | full (controls RAM usage)
-
-budget_routing:
-  litellm: false      # set true to route cheap turns to Haiku
+index_tier: default     # light | default | full
 ```
+
+### Corporate / SSL environments
+Myelin auto-detects corporate proxies and CA bundles. If it misses yours:
+```bash
+export HTTPS_PROXY=http://proxy.corp.example.com:3128
+export HEADROOM_CA_BUNDLE=/path/to/corporate-ca.pem
+```
+
+### Block bypass (NetFree / content filters)
+```bash
+myelin config set proxy.mitm.block_bypass true
+myelin config set proxy.mitm.override_proxy socks5://10.8.0.1:1080
+node ~/.tokenstack/repo/src/install.mjs --yes   # re-registers service
+```
+
+---
 
 ## Profiles
 
 ```bash
-node src/install.mjs --profile proxy    # default: full proxy stack
+node src/install.mjs --profile proxy    # default: full proxy + MCPs
 node src/install.mjs --profile mcp      # MCPs only, no proxy daemon
 node src/install.mjs --profile minimal  # Serena + RTK only
 ```
 
-## Corporate / SSL Environments
+---
 
-Myelin auto-detects corporate proxy settings and CA bundles. If auto-detection misses yours:
+## Update
 
 ```bash
-export HEADROOM_CA_BUNDLE=/path/to/corporate-ca.pem
-export HTTPS_PROXY=http://proxy.corp.example.com:3128
-tokenstack config set proxy.headroom.port 9090  # if 8787 is taken
+cd ~/.tokenstack/repo
+git fetch origin && git reset --hard origin/main
+npm install
+node src/install.mjs --yes
 ```
 
-## Platforms
+---
 
-| Platform | Status | Notes |
-|----------|--------|-------|
-| macOS | ✅ Full support | launchd service, Homebrew for RTK |
-| Linux | ✅ Full support | systemd user service |
-| Windows | ✅ Full support | Task Scheduler, native PowerShell hooks |
+## Uninstall
+
+```bash
+# macOS
+launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
+launchctl bootout gui/$(id -u)/com.tokenstack.headroom 2>/dev/null
+rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
+rm ~/Library/LaunchAgents/com.tokenstack.headroom.plist
+
+# Linux
+systemctl --user disable --now myelin-mitmproxy.service tokenstack-headroom.service
+rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/tokenstack-headroom.service
+systemctl --user daemon-reload
+
+# All platforms — remove managed shell section and config
+# Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
+# '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
+rm -rf ~/.tokenstack
+```
+
+---
 
 ## Architecture
 
-See [`docs/specs/2026-07-06-tokenstack-design.md`](docs/specs/2026-07-06-tokenstack-design.md) for the full architecture spec, validated by 3 architects (Claude Opus 4.7, GPT-5.5, Gemini 3.1) + 2 research agents.
+See [`docs/specs/2026-07-06-tokenstack-design.md`](docs/specs/2026-07-06-tokenstack-design.md) for the full architecture spec.
 
 ## License
 
 MIT — see [LICENSE](LICENSE)
+
