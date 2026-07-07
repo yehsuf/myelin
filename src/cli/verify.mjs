@@ -57,10 +57,16 @@ export async function runVerify() {
       : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
   });
 
-  for (const tool of ['uv', 'serena', 'ast-grep']) {
+  for (const tool of ['uv', 'serena']) {
     const r = await detectTool(tool, '--version');
     results.push({ name: tool, ok: r.installed, detail: r.installed ? r.version : 'not found — run: myelin update' });
   }
+  // ast-grep may be installed as 'sg' (npm) or 'ast-grep' (cargo/brew)
+  const astgrep = await (async () => {
+    const r = await detectTool('ast-grep', '--version');
+    return r.installed ? r : detectTool('sg', '--version');
+  })();
+  results.push({ name: 'ast-grep', ok: astgrep.installed, detail: astgrep.installed ? astgrep.version : 'not found — run: myelin update' });
   // semble uses subcommands, not --version
   const { detectSemble } = await import('../detect/tools.mjs');
   const semble = await detectSemble();

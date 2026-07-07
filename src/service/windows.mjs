@@ -60,8 +60,9 @@ Write-Host "[myelin] mitmproxy task state: $state"
 
 export function mitmServiceStatus() {
   try {
-    const out = execSync(`powershell -Command "(Get-ScheduledTask -TaskName '${MITM_TASK_NAME}' -ErrorAction SilentlyContinue).State"`, { stdio: 'pipe' }).toString().trim();
-    return { running: out === 'Running', state: out };
+    // Check if mitmdump process is actually running (task state is unreliable on Windows)
+    const out = execSync(`powershell -Command "Get-Process mitmdump -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
+    return { running: !!out, state: out ? 'Running' : 'Stopped' };
   } catch {
     return { running: false, state: 'Unknown' };
   }
@@ -69,8 +70,9 @@ export function mitmServiceStatus() {
 
 export function serviceStatus() {
   try {
-    const out = execSync(`powershell -Command "(Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue).State"`, { stdio: 'pipe' }).toString().trim();
-    return { running: out === 'Running', state: out };
+    // Check if headroom process is actually running (task state is unreliable on Windows)
+    const out = execSync(`powershell -Command "Get-Process headroom -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
+    return { running: !!out, state: out ? 'Running' : 'Stopped' };
   } catch {
     return { running: false, state: 'Unknown' };
   }

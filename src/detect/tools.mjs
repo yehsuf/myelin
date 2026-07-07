@@ -27,7 +27,12 @@ export async function detectSemble() {
   if (!path) return { installed: false, version: null, path: null };
   return { installed: true, version: 'semble (installed)', path };
 }
-export async function detectAstGrep() { return detectTool('ast-grep', '--version'); }
+export async function detectAstGrep() {
+  // @ast-grep/cli installs as 'sg' on all platforms; 'ast-grep' is the Rust crate name
+  return (await detectTool('ast-grep', '--version')).installed
+    ? detectTool('ast-grep', '--version')
+    : detectTool('sg', '--version');
+}
 
 export async function detectAll() {
   const [node, uv, headroom, rtk, serena, semble, astgrep] = await Promise.all([
