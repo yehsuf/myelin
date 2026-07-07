@@ -494,7 +494,9 @@ async function main() {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
       const venv = join(home, '.tokenstack', 'venv');
-      execSync(`uv venv ${venv}`, { stdio: 'pipe' });
+      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
+        execSync(`uv venv ${venv}`, { stdio: 'pipe' });
+      }
       execSync(`uv pip install --python ${venv} 'headroom-ai[all]'`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
