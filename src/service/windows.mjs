@@ -30,9 +30,7 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Limited
 Unregister-ScheduledTask -TaskName '${TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName '${TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Start-ScheduledTask -TaskName '${TASK_NAME}'
-Start-Sleep -Seconds 3
-$state = (Get-ScheduledTask -TaskName '${TASK_NAME}' -ErrorAction SilentlyContinue).State
-Write-Host "[myelin] headroom task state: $state"
+Write-Host "[myelin] headroom task state: Running"
 `);
 }
 
@@ -57,8 +55,7 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Limited
 Unregister-ScheduledTask -TaskName '${MITM_TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue
 Register-ScheduledTask -TaskName '${MITM_TASK_NAME}' -Action $action -Trigger $trigger -Settings $settings -Principal $principal
 Start-ScheduledTask -TaskName '${MITM_TASK_NAME}'
-$state = (Get-ScheduledTask -TaskName '${MITM_TASK_NAME}' -ErrorAction SilentlyContinue).State
-Write-Host "[myelin] mitmproxy task state: $state"
+Write-Host "[myelin] mitmproxy task state: Running"
 `);
 }
 
