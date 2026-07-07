@@ -468,4 +468,28 @@ class MyelinAddon:
                 )
 
 
-addons = [MyelinAddon()]
+# Hosts that must NOT be TLS-intercepted — client certificates (mTLS) won't survive CONNECT proxy.
+# These get a transparent TCP tunnel; mitmproxy never sees the TLS handshake.
+_IGNORE_HOSTS_PATTERNS = [
+    r'.*\.akamai\.com$',
+    r'.*\.corp\.akamai\.com$',
+    r'.*\.akamaized\.net$',
+    r'.*\.akamaihd\.net$',
+    r'track\.akamai\.com$',
+    r'git\.source\.akamai\.com$',
+    r'collaborate\.akamai\.com$',
+]
+
+class MyelinIgnoreHosts:
+    """Sets ignore_hosts so mTLS destinations get a raw TCP tunnel (no TLS interception)."""
+    def configure(self, updated):
+        import mitmproxy.ctx as _ctx
+        existing = list(_ctx.options.ignore_hosts or [])
+        for pat in _IGNORE_HOSTS_PATTERNS:
+            if pat not in existing:
+                existing.append(pat)
+        _ctx.options.ignore_hosts = existing
+
+
+addons = [MyelinIgnoreHosts(), MyelinAddon()]
+
