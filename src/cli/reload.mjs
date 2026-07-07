@@ -46,50 +46,46 @@ export async function runReload({ silent = false } = {}) {
   if (!silent) {
     console.log('\n🔄 Shell profile reload');
     if (reloaded) {
-      console.log(`  ✓ Sent "${sourceCmd}" to open terminal windows`);
+      console.log(`  ✓ Reloaded all open terminal windows`);
+    } else {
+      console.log(`  ⚠ Could not auto-reload. Run manually in each terminal:`);
+      console.log(`\n      ${sourceCmd}\n`);
     }
-    console.log(`\n  ⚠ Run in each existing terminal to apply changes:`);
-    console.log(`\n      ${sourceCmd}\n`);
   }
 
   return reloaded;
 }
 
 function _reloadMacTerminals(sourceCmd) {
-  // AppleScript: send source command to every tab in Terminal.app and iTerm2
-  const script = `
-tell application "System Events"
-  set termApps to {"Terminal", "iTerm2", "iTerm"}
-  repeat with appName in termApps
-    if exists (application process appName) then
-      try
-        tell application appName
-          if appName is "Terminal" then
-            repeat with w in windows
-              repeat with t in tabs of w
-                do script "${sourceCmd.replace(/"/g, '\\"')}" in t
-              end repeat
-            end repeat
-          else
-            -- iTerm2
-            repeat with w in windows
-              repeat with t in tabs of w
-                repeat with s in sessions of t
-                  write text "${sourceCmd.replace(/"/g, '\\"')}" to s
-                end repeat
-              end repeat
-            end repeat
-          end if
-        end tell
-      end try
-    end if
-  end repeat
-end tell`.trim();
+  let reloaded = false;
 
+  // Terminal.app
   try {
-    execSync(`osascript -e '${script.replace(/'/g, "'\\''")}'`, { stdio: 'pipe', timeout: 5000 });
-    return true;
-  } catch {
-    return false;
-  }
+    const script = `tell application "Terminal"
+  repeat with w in windows
+    repeat with t in tabs of w
+      do script "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" in t
+    end repeat
+  end repeat
+end tell`;
+    execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000 });
+    reloaded = true;
+  } catch {}
+
+  // iTerm2
+  try {
+    const script = `tell application "iTerm2"
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        write text "${sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}" to s
+      end repeat
+    end repeat
+  end repeat
+end tell`;
+    execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000 });
+    reloaded = true;
+  } catch {}
+
+  return reloaded;
 }
