@@ -23,6 +23,7 @@ import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headr
 import { installRtk } from './tools/rtk.mjs';
 import { installService, installMitmService } from './service/index.mjs';
 import { fileURLToPath } from 'node:url';
+import { execSync, spawn } from 'node:child_process';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
