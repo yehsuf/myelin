@@ -29,8 +29,11 @@ program.command('update')
     await runUpdate({ check: opts.check });
   });
 
-program.command('stats').description('Show token savings').action(() => {
-  console.log('stats: coming in Plan 6');
-});
+program.command('stats')
+  .description('Show compression savings for Copilot and Claude Code')
+  .action(async () => {
+    const { runStats } = await import('./stats.mjs');
+    await runStats();
+  });
 
 program.parse();
