@@ -10,6 +10,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync } from
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { detectOS, detectShell } from './detect/os.mjs';
 import { detectAll } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
@@ -21,7 +22,7 @@ import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
 import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
-import { installService } from './service/index.mjs';
+import { installService, installMitmService } from './service/index.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -187,15 +188,165 @@ async function buildCombinedCaCert(rootCaPath, home) {
 }
 
 /**
- * Return the "copilot runs natively" comment block for the shell profile.
- * Copilot CLI cannot be routed through Headroom for API compression because
- * Headroom is not a CONNECT/MITM proxy. Copilot still uses its native auth
- * and MCPs (Serena, Semble, mcp-git, mem0) load from ~/.copilot/mcp-config.json.
- * RTK shell compression still applies.
+ * Install mitmproxy CA into all PEM bundles referenced by env vars.
+ * Detects locations from NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE,
+ * HEADROOM_CA_BUNDLE, GIT_SSL_CAINFO, CURL_CA_BUNDLE. Prompts user per file.
+ * Creates ~/.tokenstack/ca-bundle.pem if none exists.
+ *
+ * Interactive: shows exact file path and asks Y/n for each.
  */
-function buildCopilotAlias(port) {
-  return `# copilot runs natively — MCPs (Serena/Semble/mcp-git/mem0) + RTK still active
-# Headroom does NOT wrap copilot (only Claude Code — Copilot API traffic is TLS-encrypted end-to-end)`;
+async function installMitmproxyCA(home, interactive = true) {
+  const mitmCaPath = join(home, '.mitmproxy', 'mitmproxy-ca-cert.pem');
+  if (!existsSync(mitmCaPath)) {
+    skip('mitmproxy CA not found (run: mitmdump --listen-port 18899 briefly to generate)');
+    return;
+  }
+
+  // Detect all PEM candidates from env
+  const candidates = new Set();
+  const envVars = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
+                   'HEADROOM_CA_BUNDLE', 'GIT_SSL_CAINFO', 'CURL_CA_BUNDLE'];
+  for (const v of envVars) {
+    const p = process.env[v];
+    if (p && existsSync(p)) candidates.add(p);
+  }
+
+  // Fallback: create/use ~/.tokenstack/ca-bundle.pem
+  if (candidates.size === 0) {
+    const fallback = join(home, '.tokenstack', 'ca-bundle.pem');
+    if (!existsSync(fallback)) {
+      mkdirSync(join(home, '.tokenstack'), { recursive: true });
+      try {
+        const sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null || cat /etc/ssl/cert.pem 2>/dev/null', { shell: true }).toString();
+        writeFileSync(fallback, sysCerts);
+      } catch {
+        writeFileSync(fallback, '');
+      }
+      ok(`Created new CA bundle at ${fallback}`);
+    }
+    candidates.add(fallback);
+  }
+
+  const mitmCert = readFileSync(mitmCaPath, 'utf8');
+  const mitmMarker = 'CN=mitmproxy';
+
+  for (const pemPath of candidates) {
+    const content = readFileSync(pemPath, 'utf8');
+    if (content.includes(mitmMarker)) {
+      skip(`${pemPath} — already trusts mitmproxy CA`);
+      continue;
+    }
+
+    if (interactive) {
+      const answer = await promptYN(`Add mitmproxy CA to ${pemPath}? [Y/n]: `);
+      if (!answer) { skip(`${pemPath} — user declined`); continue; }
+    }
+
+    // Backup + append
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    copyFileSync(pemPath, `${pemPath}.bak.${ts}`);
+    writeFileSync(pemPath,
+      content + '\n# mitmproxy CA (for Copilot HTTPS interception via Myelin)\n' + mitmCert + '\n',
+      'utf8');
+    ok(`${pemPath} — added mitmproxy CA (backup: ${pemPath}.bak.${ts})`);
+  }
+}
+
+// Minimal Y/n prompt (default Y). Returns true for Y/y/empty.
+async function promptYN(question) {
+  const readline = await import('node:readline/promises');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const ans = (await rl.question(question)).trim().toLowerCase();
+    return ans === '' || ans === 'y' || ans === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+/**
+ * Return the path to the Myelin mitmproxy addon script.
+ * Resolves relative to the tokenstack repo root so it works on all platforms.
+ */
+function mitmAddonPath(home) {
+  return join(home, 'tokenstack', 'src', 'mitm', 'copilot_addon.py');
+}
+
+/**
+ * Detect the mitmdump binary path (cross-platform).
+ * Returns null if not installed.
+ */
+function detectMitmdump(os) {
+  const candidates =
+    os === 'windows'
+      ? ['mitmdump', join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Python', 'Scripts', 'mitmdump.exe')]
+      : ['/opt/homebrew/bin/mitmdump', '/usr/local/bin/mitmdump', '/usr/bin/mitmdump', 'mitmdump'];
+  for (const c of candidates) {
+    try { execSync(`${c.includes(' ') ? `"${c}"` : c} --version`, { stdio: 'pipe' }); return c; } catch {}
+  }
+  return null;
+}
+
+/**
+ * Install mitmproxy (mitmdump) if not present.
+ * Mac: brew. Windows: pip (pipx). Linux: pip via uv.
+ * Returns the mitmdump binary path.
+ */
+async function ensureMitmproxy(os) {
+  let bin = detectMitmdump(os);
+  if (bin) return bin;
+
+  console.log('  Installing mitmproxy…');
+  try {
+    if (os === 'darwin') {
+      execSync('brew install mitmproxy', { stdio: 'inherit' });
+    } else if (os === 'windows') {
+      // pip install into user Scripts dir, available on PATH after install
+      execSync('pip install --user mitmproxy', { stdio: 'inherit' });
+    } else {
+      // Linux: use uv to install into tokenstack venv or globally
+      execSync('pip install --user mitmproxy', { stdio: 'inherit' });
+    }
+  } catch {
+    warn('mitmproxy install failed — install manually: brew install mitmproxy');
+    return null;
+  }
+
+  bin = detectMitmdump(os);
+  if (bin) { ok(`mitmproxy (${bin})`); return bin; }
+  warn('mitmdump not found after install — check PATH');
+  return null;
+}
+
+/**
+ * Generate the mitmproxy CA (runs mitmdump briefly if CA does not exist).
+ * Returns the CA cert path, or null.
+ */
+async function ensureMitmCA(home, mitmdumpBin) {
+  const caPath = join(home, '.mitmproxy', 'mitmproxy-ca-cert.pem');
+  if (existsSync(caPath)) return caPath;
+  if (!mitmdumpBin) return null;
+
+  ok('Generating mitmproxy CA (one-time)…');
+  try {
+    const proc = spawn(mitmdumpBin, ['--listen-port', '19876'], { detached: true, stdio: 'ignore' });
+    await new Promise(r => setTimeout(r, 2500));
+    try { process.kill(-proc.pid); } catch {}
+    proc.unref();
+  } catch {}
+
+  return existsSync(caPath) ? caPath : null;
+}
+
+/**
+ * Copilot CLI alias routed through Myelin mitmproxy at port 8888.
+ * Native auth preserved — HTTPS_PROXY causes Copilot to send its
+ * TLS traffic through mitmproxy which intercepts + compresses + retries.
+ */
+function buildCopilotAlias(_port) {
+  const mitm = 8888;
+  return `# Copilot via Myelin mitmproxy (token compression + cache + auto-VPN)
+alias copilot='HTTPS_PROXY=http://127.0.0.1:${mitm} HTTP_PROXY=http://127.0.0.1:${mitm} copilot'`;
 }
 
 
@@ -248,12 +399,12 @@ async function main() {
 
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
-    console.log('  uv, serena, semble, ast-grep, rtk');
+    console.log('  uv, serena, semble, ast-grep, rtk, mitmproxy');
     if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
-    if (flags.profile === 'proxy') console.log(`  service on port ${port}`);
+    if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
-    console.log('  shell profile ANTHROPIC_BASE_URL');
+    console.log('  shell profile ANTHROPIC_BASE_URL + HTTPS_PROXY alias for copilot');
     console.log('\n[dry-run] No changes made.\n');
     return;
   }
@@ -327,6 +478,16 @@ async function main() {
     else { skip(`rtk (${tools.rtk.version})`); }
   }
 
+  // mitmproxy — install binary + generate CA + append CA to PEM bundles
+  const mitmdumpBin = await ensureMitmproxy(os);
+  if (mitmdumpBin) {
+    await ensureMitmCA(home, mitmdumpBin);
+    await installMitmproxyCA(home);
+    ok('mitmproxy ready');
+  } else {
+    warn('mitmproxy not available — Copilot compression disabled');
+  }
+
   // 4. Service
   if (!flags['no-headroom'] && flags.profile === 'proxy') {
     step('[4/7] Background service...');
@@ -334,7 +495,6 @@ async function main() {
     const cfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
-    // Add OpenAI target URL for Copilot CLI subscription mode
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     await installService({ headroomBin: binPath, port, envVars,
       logPath: join(home, '.tokenstack', 'headroom.log') });
@@ -342,6 +502,25 @@ async function main() {
     console.log('  Waiting for proxy...');
     const healthy = await waitForHeadroom(port, 10000);
     healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
+
+    // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
+    if (mitmdumpBin) {
+      const addonPath = mitmAddonPath(home);
+      const mitmEnv = { MYELIN_HEADROOM_PORT: String(port), ...sslEnv };
+      try {
+        await installMitmService({
+          mitmdumpBin,
+          port: 8888,
+          addonPath,
+          envVars: mitmEnv,
+          logPath: join(home, '.tokenstack', 'mitmproxy.log'),
+          home,
+        });
+        ok('mitmproxy service registered (port 8888)');
+      } catch (e) {
+        warn(`mitmproxy service registration failed: ${e.message}`);
+      }
+    }
   } else {
     step('[4/7] Service: skipped');
   }
@@ -431,7 +610,8 @@ async function main() {
 
   // 7. Summary
   step('[7/7] Complete! \ud83e\uddec\n' + '\u2500'.repeat(55));
-  console.log(`  Proxy port:    ${port}`);
+  console.log(`  Headroom port: ${port}`);
+  console.log(`  Mitmproxy:     8888  (Copilot compression + cache)`);
   console.log(`  Headroom:      ${headroomBinPath()}`);
   console.log(`  Config:        ${DEFAULT_CONFIG_PATH}`);
   if (caBundles.length) console.log(`  Corporate SSL: ${caBundles[0].path}`);
