@@ -3,6 +3,7 @@ param(
     [string]$IndexTier = "default",
     [switch]$Check,
     [switch]$DryRun,
+    [switch]$Yes,
     [switch]$NoHeadroom,
     [switch]$CopilotOnly,
     [switch]$ClaudeOnly
@@ -38,7 +39,8 @@ Check-Node; Check-Git; Fetch-Repo
 Set-Location $RepoDir; npm install --silent
 
 $a = @("src/install.mjs")
-if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($NoHeadroom) { $a += "--no-headroom" }
+if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($Yes) { $a += "--yes" }
+if ($NoHeadroom) { $a += "--no-headroom" }
 if ($CopilotOnly) { $a += "--copilot-only" }; if ($ClaudeOnly) { $a += "--claude-only" }
 $a += "--profile", $Profile, "--index-tier", $IndexTier
 Write-Host "[myelin] Running installer..."
