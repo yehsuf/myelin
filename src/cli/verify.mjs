@@ -3,8 +3,27 @@ import { waitForHeadroom, headroomHealthUrl } from '../tools/headroom.mjs';
 import { detectTool } from '../detect/tools.mjs';
 import { serviceStatus, mitmServiceStatus } from '../service/index.mjs';
 import { which } from '../detect/which.mjs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+function ensureWindowsPath() {
+  if (process.platform !== 'win32') return;
+  const home = homedir();
+  const extra = [
+    join(home, '.local', 'bin'),
+    join(home, '.tokenstack', 'bin'),
+    join(home, 'AppData', 'Roaming', 'uv', 'bin'),
+    join(home, 'AppData', 'Local', 'uv', 'bin'),
+    ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
+    ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
+  ];
+  for (const p of extra) {
+    if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + (process.env.PATH || '');
+  }
+}
 
 export async function runVerify() {
+  ensureWindowsPath();
   const cfg = await loadConfig();
   const port = cfg.proxy.headroom.port;
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
