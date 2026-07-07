@@ -185,15 +185,22 @@ def _inject_cache_control(messages: list, fmt: str) -> list:
 
     msgs = [dict(m) for m in messages]
 
+    def _has_cc(msg: dict) -> bool:
+        """Return True if message already carries a cache_control marker (from Copilot CLI or prior injection)."""
+        if msg.get('cache_control'):
+            return True
+        content = msg.get('content')
+        if isinstance(content, list):
+            return any(isinstance(b, dict) and b.get('cache_control') for b in content)
+        return False
+
     if fmt == 'anthropic':
-        # Mark system message (passed separately in Anthropic API — handled below)
-        # Mark last assistant turn before current user input
         last_asst = None
         for i, m in enumerate(msgs):
             if m.get('role') == 'assistant':
                 last_asst = i
 
-        if last_asst is not None:
+        if last_asst is not None and not _has_cc(msgs[last_asst]):
             content = msgs[last_asst].get('content', '')
             if isinstance(content, str):
                 msgs[last_asst]['content'] = [{
@@ -206,16 +213,15 @@ def _inject_cache_control(messages: list, fmt: str) -> list:
                 msgs[last_asst]['content'] = list(content[:-1]) + [last_block]
 
     elif fmt == 'openai_compat':
-        # Non-standard but harmless: add cache_control at message level.
-        # Claude-backed gateways (Copilot → Claude) may honor these fields.
+        # Only inject where not already present — Copilot CLI sets its own markers.
         last_asst = None
         for i, m in enumerate(msgs):
-            if m.get('role') == 'system' and i == 0:
+            if m.get('role') == 'system' and i == 0 and not _has_cc(m):
                 msgs[i] = {**m, 'cache_control': {'type': 'ephemeral'}}
             if m.get('role') == 'assistant':
                 last_asst = i
 
-        if last_asst is not None:
+        if last_asst is not None and not _has_cc(msgs[last_asst]):
             msgs[last_asst] = {**msgs[last_asst], 'cache_control': {'type': 'ephemeral'}}
 
     return msgs
@@ -302,11 +308,28 @@ class MyelinAddon:
 
         original_size = len(body)
 
+        # --- RAG injection: inject relevant code context when serena not in tools ---
+        from .rag_injector import inject_rag_context
+        data = inject_rag_context(data)
+        messages = data.get('messages', messages)
+
+        # --- Tool filtering: remove low-relevance tools from the array ---
+        from .tool_filter import filter_tools
+        tools = data.get('tools')
+        if isinstance(tools, list):
+            filtered_tools, tools_changed = filter_tools(tools, messages)
+            if tools_changed:
+                data['tools'] = filtered_tools
+                ctx.log.info(
+                    f'[myelin] tools {len(tools)}→{len(filtered_tools)} '
+                    f'(filtered by relevance)'
+                )
+
         # --- Compression (shrinks prompts + tool results + history) ---
         if COMPRESS:
             messages = _compress_messages(messages, provider['fmt'])
 
-        # --- Cache-control injection (prompt caching anchor) ---
+        # --- Cache-control injection (prompt caching anchor, preserves existing) ---
         if CACHE_INJECT and provider.get('cache_fmt'):
             messages = _inject_cache_control(messages, provider['cache_fmt'])
 
