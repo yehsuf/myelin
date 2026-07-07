@@ -738,6 +738,9 @@ async function main() {
       for (const p of winPaths) {
         if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + process.env.PATH;
       }
+      // Also add node.exe's own directory (covers nvm4w, portable node)
+      const nodeDir = join(process.execPath, '..');
+      if (!process.env.PATH?.includes(nodeDir)) process.env.PATH = nodeDir + ';' + process.env.PATH;
     }
     let block;
     if (os === 'windows') {

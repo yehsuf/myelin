@@ -19,10 +19,19 @@ function ensureWindowsPath() {
     ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
     ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
   ];
+  // Also detect nvm/nvm4w managed node bin dirs dynamically
+  try {
+    const nvmDir = process.env.NVM_HOME || process.env.NVM_SYMLINK;
+    if (nvmDir) extra.push(nvmDir);
+    const nvm4w = process.env.NVM4W_HOME;
+    if (nvm4w) extra.push(join(nvm4w, 'nodejs'));
+    // Always include the directory where node.exe itself lives (covers nvm4w, nvm, portable)
+    const nodeDir = join(process.execPath, '..');
+    if (!extra.includes(nodeDir)) extra.push(nodeDir);
+  } catch {}
   for (const p of extra) {
     if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + (process.env.PATH || '');
   }
-}
 
 export async function runVerify() {
   ensureWindowsPath();
