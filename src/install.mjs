@@ -22,7 +22,7 @@ import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
 import { installService, installMitmService } from './service/index.mjs';
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
