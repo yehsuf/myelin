@@ -363,21 +363,30 @@ async function ensureMitmCA(home, mitmdumpBin) {
 
   ok('Generating mitmproxy CA (one-time)…');
   try {
+    // Run mitmdump briefly in background; poll for CA file (appears in ~0.5-2s)
     const proc = spawn(mitmdumpBin, ['--listen-port', '19876'], {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'ignore'],
     });
     proc.unref();
-    // Wait up to 10s for CA file to appear (first run can be slow on Linux)
-    for (let i = 0; i < 20; i++) {
+    const pid = proc.pid;
+    if (!pid) throw new Error('spawn failed — no PID');
+
+    // Poll up to 15s
+    for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 500));
       if (existsSync(caPath)) break;
     }
-    // Kill by PID (works cross-platform, no proc-group needed)
-    try { process.kill(proc.pid); } catch {}
-  } catch {}
+    try { process.kill(pid, 'SIGTERM'); } catch {}
+  } catch (e) {
+    warn(`CA generation failed: ${e.message}`);
+  }
 
-  return existsSync(caPath) ? caPath : null;
+  if (!existsSync(caPath)) {
+    skip(`mitmproxy CA not found — run manually: mitmdump --listen-port 19876 &; sleep 3; kill %1`);
+    return null;
+  }
+  return caPath;
 }
 
 /**
