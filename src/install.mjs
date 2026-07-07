@@ -216,12 +216,22 @@ async function installMitmproxyCA(home, interactive = true) {
     const fallback = join(home, '.tokenstack', 'ca-bundle.pem');
     if (!existsSync(fallback)) {
       mkdirSync(join(home, '.tokenstack'), { recursive: true });
-      try {
-        const sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null || cat /etc/ssl/cert.pem 2>/dev/null', { shell: true }).toString();
-        writeFileSync(fallback, sysCerts);
-      } catch {
-        writeFileSync(fallback, '');
+      // Read system CA bundle cross-platform
+      const sysCaPaths = [
+        '/etc/ssl/certs/ca-certificates.crt',  // Debian/Ubuntu
+        '/etc/pki/tls/certs/ca-bundle.crt',    // RHEL/CentOS
+        '/etc/ssl/ca-bundle.pem',               // OpenSUSE
+        '/etc/ssl/cert.pem',                    // macOS/Alpine
+      ];
+      let sysCerts = '';
+      for (const p of sysCaPaths) {
+        if (existsSync(p)) { sysCerts = readFileSync(p, 'utf8'); break; }
       }
+      if (!sysCerts) {
+        // macOS keychain fallback
+        try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true }).toString(); } catch {}
+      }
+      writeFileSync(fallback, sysCerts || '');
       ok(`Created new CA bundle at ${fallback}`);
     }
     candidates.add(fallback);
@@ -353,10 +363,18 @@ async function ensureMitmCA(home, mitmdumpBin) {
 
   ok('Generating mitmproxy CA (one-time)…');
   try {
-    const proc = spawn(mitmdumpBin, ['--listen-port', '19876'], { detached: true, stdio: 'ignore' });
-    await new Promise(r => setTimeout(r, 2500));
-    try { process.kill(-proc.pid); } catch {}
+    const proc = spawn(mitmdumpBin, ['--listen-port', '19876'], {
+      detached: true,
+      stdio: 'ignore',
+    });
     proc.unref();
+    // Wait up to 4s for CA file to appear
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      if (existsSync(caPath)) break;
+    }
+    // Kill by PID (works cross-platform, no proc-group needed)
+    try { process.kill(proc.pid); } catch {}
   } catch {}
 
   return existsSync(caPath) ? caPath : null;
