@@ -69,12 +69,13 @@ export async function runStats() {
       console.log(`\n  Copilot (via mitmproxy :8888)`);
       console.log(`  Requests compressed:  ${reqCount}`);
       console.log(`  Bytes sent:           ${(totalBefore/1024).toFixed(0)} KB → ${(totalAfter/1024).toFixed(0)} KB  (${pct}%)`);
-      if (tokCount > 0) {
+      if (tokCount > 0 && totalTokBefore !== totalTokAfter) {
         const tokSaved = totalTokBefore - totalTokAfter;
         const tokPct = (tokSaved / totalTokBefore * 100).toFixed(1);
         console.log(`  Tokens compressed:    ${(totalTokBefore/1000).toFixed(0)}K → ${(totalTokAfter/1000).toFixed(0)}K  (${tokPct}% reduction)`);
       } else {
-        console.log(`  Bytes saved:          ${savedKB} KB  (${pct}% — restart _copilot to see token counts)`);
+        // Byte savings come from tool filtering (tools removed before headroom sees messages)
+        console.log(`  Bytes saved:          ${savedKB} KB  (${pct}% — mainly from tool filtering)`);
       }
       if (usageCount > 0) {
         console.log(`  Actual API usage:     in=${(totalIn/1000).toFixed(0)}K  out=${(totalOut/1000).toFixed(0)}K  cache_read=${(totalCacheRead/1000).toFixed(0)}K  cache_write=${(totalCacheWrite/1000).toFixed(0)}K  (${usageCount} responses)`);
