@@ -22,7 +22,7 @@ import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
 import { installService, installMitmService } from './service/index.mjs';
-import { execSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -307,7 +307,7 @@ function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
  */
 function mitmAddonPath(_home) {
   // Resolve relative to the installer script so it works regardless of clone location.
-  return join(new URL('.', import.meta.url).pathname, 'mitm', 'copilot_addon.py');
+  return join(fileURLToPath(new URL('.', import.meta.url)), 'mitm', 'copilot_addon.py');
 }
 
 /**
@@ -715,7 +715,7 @@ async function main() {
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotAlias(os);
-    const repoRoot = join(new URL('..', import.meta.url).pathname);
+    const repoRoot = fileURLToPath(new URL('..', import.meta.url));
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
       : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
