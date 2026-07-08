@@ -67,15 +67,20 @@ function _reloadMacTerminals(sourceCmd) {
   let reloaded = false;
   const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-  // Terminal.app — only tabs where the shell is the only (idle) process
+  // Terminal.app — use the tab's own "busy" property (true while a foreground
+  // command is running). This is the reliable idle signal; counting
+  // `processes of t` is fragile (login shells often report 2+ processes,
+  // e.g. {"login", "-zsh"}, even while completely idle) and was causing
+  // reload to skip nearly every idle tab.
   try {
     const script = `tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
-      -- processes of t is a list; length=1 means shell is idle (no child running)
-      if (count of processes of t) is 1 then
-        do script "${cmd}" in t
-      end if
+      try
+        if not busy of t then
+          do script "${cmd}" in t
+        end if
+      end try
     end repeat
   end repeat
 end tell`;
@@ -83,18 +88,27 @@ end tell`;
     reloaded = true;
   } catch {}
 
-  // iTerm2 — only sessions where the foreground job is the shell itself
+  // iTerm2 — only sessions where the foreground job is the shell itself.
+  // NOTE: `variable named "jobName" of s` (property-of-object form) throws
+  // "Access not allowed (-1723)" whenever `s` is a loop-bound reference from
+  // `repeat with s in sessions of t` — verified live against real iTerm2
+  // sessions. Must use `tell s ... end tell` instead; that form works
+  // reliably. The previous code used an even more broken variant
+  // (`variable value of s named ...`), which threw on every run and
+  // aborted the whole tell-block, so nothing in iTerm2 ever got reloaded.
   try {
     const script = `tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
-        set jobName to variable value of s named "jobName"
-        if jobName is "zsh" or jobName is "bash" or jobName is "fish" then
+        try
           tell s
-            write text "${cmd}"
+            set jobName to variable named "jobName"
           end tell
-        end if
+          if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then
+            tell s to write text "${cmd}"
+          end if
+        end try
       end repeat
     end repeat
   end repeat
