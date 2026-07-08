@@ -11,10 +11,13 @@ export async function runDiagnose() {
   console.log(`\nMyelin Diagnostics\n${'─'.repeat(50)}`);
 
   const portFree = await isPortFree(port);
+  const headroomHealthy = await import('../tools/headroom.mjs').then(m => m.waitForHeadroom(port, 2000)).catch(() => false);
   if (portFree) {
     console.log(`✓ Port ${port}: free (proxy is not running)`);
+  } else if (headroomHealthy) {
+    console.log(`✓ Port ${port}: in use by headroom (healthy)`);
   } else {
-    console.log(`✗ Port ${port}: IN USE`);
+    console.log(`✗ Port ${port}: IN USE by unknown process`);
     try {
       const cmd = os === 'windows'
         ? `powershell -Command "Get-NetTCPConnection -LocalPort ${port} | Select-Object -First 1 | ForEach-Object { (Get-Process -Id $_.OwningProcess).Name }"`
