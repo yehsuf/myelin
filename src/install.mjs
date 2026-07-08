@@ -547,7 +547,9 @@ async function main() {
   // Migrate ~/.tokenstack → ~/.myelin (one-time rename)
   const oldDir = join(home, '.tokenstack');
   const newDir = join(home, '.myelin');
-  if (existsSync(oldDir) && !existsSync(newDir)) {
+  // Skip if running from inside the old dir (would be self-destructive)
+  const runningFromOld = process.argv[1]?.startsWith(oldDir);
+  if (existsSync(oldDir) && !existsSync(newDir) && !runningFromOld) {
     // On Windows, running processes lock the venv dir — stop them first
     if (os === 'windows') {
       try { execSync('powershell -Command "Stop-Process -Name headroom,mitmdump -ErrorAction SilentlyContinue"', { stdio: 'pipe' }); } catch {}
