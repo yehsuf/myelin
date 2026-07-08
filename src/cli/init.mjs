@@ -69,7 +69,7 @@ ${tools.map(t => `  ${t}: true`).join('\n')}
   }
 }
 
-
+const TOOLS = [
   {
     id: 'serena',
     label: 'Serena (LSP code index — symbol-precise navigation)',
