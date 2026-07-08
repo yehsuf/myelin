@@ -129,7 +129,7 @@ export async function runStats() {
     // Get cache hit rate from headroom perf text (not in /stats JSON)
     let cacheHitLine = '';
     try {
-      const perf = execSync(`"${headroomBin()}" perf`, { timeout: 5000 }).toString();
+      const perf = execSync(`"${headroomBin()}" perf`, { timeout: 5000, env: { ...process.env, PYTHONWARNINGS: 'ignore', LITELLM_LOG: 'ERROR' } }).toString();
       const hitMatch = perf.match(/Hit rate:\s+([\d.]+%)/);
       const readMatch = perf.match(/Cache read:\s+([\d,]+) tokens/);
       const writeMatch = perf.match(/Cache write:\s+([\d,]+) tokens/);
@@ -151,7 +151,7 @@ export async function runStats() {
   } catch {
     // Fall back to headroom perf CLI
     try {
-      const out = execSync(`"${headroomBin()}" perf`, { timeout: 5000 }).toString();
+      const out = execSync(`"${headroomBin()}" perf`, { timeout: 5000, env: { ...process.env, PYTHONWARNINGS: 'ignore', LITELLM_LOG: 'ERROR' } }).toString();
       const lines = out.split('\n')
         .filter(l => /Requests:|Tokens:|Total saved:|Window:|Hit rate:/.test(l))
         .map(l => '  ' + l.trim());
