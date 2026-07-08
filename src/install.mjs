@@ -24,6 +24,8 @@ import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
 import { installService, installMitmService } from './service/index.mjs';
+import { linkGlobalBin } from './service/npmlink.mjs';
+import { setUserEnvVars } from './service/windows.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
 
@@ -1134,6 +1136,37 @@ async function main() {
           }
         }
       }
+    }
+  }
+
+  // Global bin — expose `myelin` via npm's own bin-linking mechanism
+  // (package.json's "bin" field), the standard way to ship a Node CLI,
+  // additionally to the shell alias/function above. Still just executes
+  // the same source files (no bundling), so self-update via `git pull`
+  // keeps working unchanged. Gracefully skipped if the npm global bin dir
+  // isn't writable (some corp machines) — the shell alias/PS module above
+  // remains the reliable baseline either way.
+  {
+    const linkResult = linkGlobalBin({ repoRoot: resolveRepoRoot(home, os).replace(/[\\/]$/, ''), os });
+    if (linkResult.linked) {
+      ok(`myelin linked globally via npm (${linkResult.binDir})`);
+    } else {
+      skip(`npm global bin link skipped (${linkResult.reason}) — using shell alias only`);
+    }
+  }
+
+  // Windows: additionally persist env vars to the registry (HKCU\Environment)
+  // so new windows opened from Explorer (Start Menu, taskbar) pick them up
+  // immediately, even before any $PROFILE-equivalent runs — verified live
+  // that Explorer-spawned processes see this, unlike SSH-spawned ones,
+  // which cache their own session environment separately. Purely additive:
+  // the PowerShell module above remains the primary, proven mechanism.
+  if (os === 'windows') {
+    const registryVars = { HEADROOM_PORT: String(port), ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ...sslEnv };
+    if (setUserEnvVars(registryVars)) {
+      ok('Env vars persisted to registry (new windows pick them up without $PROFILE)');
+    } else {
+      warn('Could not persist env vars to registry — relying on PowerShell module only');
     }
   }
 
