@@ -14,10 +14,20 @@ appended before the current user turn — the LLM sees relevant code without
 needing to call any tool.
 
 Configuration (env vars):
-  MYELIN_RAG_INJECT       default: 1
+  MYELIN_RAG_INJECT       default: 0 (OFF — see cache-stability note below)
   MYELIN_RAG_SNIPPETS     default: 3   (number of code snippets to inject)
   MYELIN_RAG_SNIPPET_LINES default: 30 (max lines per snippet)
   MYELIN_SERENA_TIMEOUT   default: 3   (seconds to wait for serena response)
+
+Cache-stability note: the injected block is prepended before the LAST user
+turn and is NOT persisted client-side, so it only exists in the request that
+was actually sent to the provider — the client's next request re-sends its
+real (uninjected) history. This means the prompt-cache write for an injected
+turn diverges from what the following turn sends, forfeiting that turn's
+reusable prefix. Default is OFF until this is reworked to a cache-stable
+injection point (e.g. a stable system-tail block). Only relevant as a
+fallback anyway — it never fires when serena tools are already present in
+the request (the normal Myelin setup).
 
 The workspace root is detected from the system message (Claude Code embeds
 the cwd there) or from the first user message.
@@ -34,7 +44,7 @@ from typing import Optional
 # Config
 # ---------------------------------------------------------------------------
 
-RAG_ENABLED     = os.environ.get('MYELIN_RAG_INJECT',        '1') == '1'
+RAG_ENABLED     = os.environ.get('MYELIN_RAG_INJECT',        '0') == '1'
 MAX_SNIPPETS    = int(os.environ.get('MYELIN_RAG_SNIPPETS',         '3'))
 SNIPPET_LINES   = int(os.environ.get('MYELIN_RAG_SNIPPET_LINES',   '30'))
 SERENA_TIMEOUT  = float(os.environ.get('MYELIN_SERENA_TIMEOUT',     '3'))

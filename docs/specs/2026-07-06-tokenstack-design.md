@@ -258,7 +258,7 @@ learning:
 
 observability:
   helicone: false                   # opt-in, self-host Docker
-  token_optimizer: true
+  token_optimizer: false            # PolyForm Noncommercial license — opt-in only, conflicts with MIT distribution
   ai_engineering_coach: true
 
 stacklit:

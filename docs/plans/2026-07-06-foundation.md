@@ -258,7 +258,7 @@ export const DEFAULT_CONFIG = {
   },
   output_style: { caveman_rules: true, hooks: true },
   learning: { headroom_learn: true },
-  observability: { helicone: false, token_optimizer: true, ai_engineering_coach: true },
+  observability: { helicone: false, token_optimizer: false, ai_engineering_coach: true },
   stacklit: { enabled: false },
   semgrep: { enabled: false },
 };

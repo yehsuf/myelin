@@ -24,7 +24,7 @@ Myelin-specific env vars (all optional):
   MYELIN_COMPRESS            1/0
   MYELIN_CACHE_INJECT        1/0
   MYELIN_TOOL_FILTER         1/0
-  MYELIN_RAG_INJECT          1/0
+  MYELIN_RAG_INJECT          1/0 (default 0 — see rag_injector.py cache-stability note)
   MYELIN_VPN_DOMAINS_FILE    path to VPN routing file (feature disabled if unset)
   MYELIN_BLOCK_MARKER        body substring that confirms a network block page
   MYELIN_LOG_SAVINGS         1/0
@@ -66,7 +66,13 @@ HEADROOM_BASE   = f'http://127.0.0.1:{HEADROOM_PORT}'
 
 COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
 TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
-RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '1') == '1'
+# Default OFF (was '1'): the injector prepends a synthetic assistant block
+# before the last user turn, which is not persisted client-side — every
+# subsequent turn's cache-write diverges right after the prior turn,
+# forfeiting the reusable prefix on every injected request. Only re-enable
+# once the injection point is reworked to be cache-stable (e.g. system-tail
+# placement instead of mid-history). See docs/settings-reference.md.
+RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '0') == '1'
 LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 
 # Block detection + override proxy routing (opt-in).

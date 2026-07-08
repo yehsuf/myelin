@@ -544,7 +544,9 @@ tokenstack setup helicone   # starts Docker container + reconfigures proxy
 ---
 
 ### `observability.token_optimizer`
-**Type:** boolean | **Default:** `true` (Claude Code only)
+**Type:** boolean | **Default:** `false` (Claude Code only) — **opt-in only**
+
+**License note:** token-optimizer is [PolyForm Noncommercial](https://polyformproject.org/licenses/noncommercial/1.0.0/) licensed, which conflicts with Myelin's MIT license and its distributability to companies/teams. It is never installed by default and must be explicitly enabled by the user, who is responsible for confirming their own use case complies with that license.
 
 **What it does:** Installs the token-optimizer Claude Code plugin. Shows a live dashboard in Claude Code's status area: current session token count, estimated cost, context quality score (0.0–1.0), and autocompaction events.
 
@@ -552,7 +554,10 @@ tokenstack setup helicone   # starts Docker container + reconfigures proxy
 
 **Context quality score:** A score below 0.6 means the context is getting noisy (lots of repeated content, stale references). This is your signal to run `/compact` proactively.
 
-**When to disable:** Low-overhead environments where even the plugin's minimal footprint matters.
+**To enable (non-commercial use only):**
+```
+tokenstack enable observability.token_optimizer
+```
 
 ---
 

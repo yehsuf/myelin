@@ -173,6 +173,21 @@ def last_user_text(messages: list[dict]) -> str:
                 return '\n'.join(parts)
     return ''
 
+def _referenced_tool_names(messages: list[dict]) -> set[str]:
+    """Tool names referenced by a `tool_use` block anywhere in the visible
+    history. These must never be dropped by filtering: if a later turn's
+    tools[] omits a tool the model already invoked (visible in history),
+    providers may hard-reject the request (unrecognised tool reference) or
+    the model may hallucinate a call to a now-absent tool."""
+    names = set()
+    for m in messages:
+        c = m.get('content')
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get('type') == 'tool_use' and b.get('name'):
+                    names.add(b['name'])
+    return names
+
 def filter_tools(tools: list[dict], messages: list[dict]) -> tuple[list[dict], bool]:
     """
     Filter tools to the most relevant subset.
@@ -180,13 +195,15 @@ def filter_tools(tools: list[dict], messages: list[dict]) -> tuple[list[dict], b
     Returns (filtered_tools, changed) where changed=True means the set
     differs from the previous turn (caller should update the request body).
 
-    Always-on tools are kept regardless of score.
+    Always-on tools and any tool referenced by a prior `tool_use` block in
+    the visible history are kept regardless of score.
     If fewer than MIN_TOOLS tools total, returns original unchanged.
     """
     if not FILTER_ENABLED or len(tools) < MIN_TOOLS:
         return tools, False
 
     query = last_user_text(messages)
+    referenced = _referenced_tool_names(messages)
     always_on = [t for t in tools if t.get('name') in ALWAYS_ON]
     candidates = [t for t in tools if t.get('name') not in ALWAYS_ON]
 
@@ -206,14 +223,23 @@ def filter_tools(tools: list[dict], messages: list[dict]) -> tuple[list[dict], b
         ranked = bm25_ranks
 
     top_indices = set(ranked[:TOP_K])
-    # Emit selected tools in their ORIGINAL declaration order (not BM25 relevance
-    # order), so the serialized tools[] block stays byte-stable across turns
-    # whenever the selected set is unchanged. tools[] sits at the very front of
-    # the provider cache prefix (Anthropic: tools -> system -> messages), so any
-    # reordering here — even with an identical set — busts the entire downstream
-    # cache. Relevance ranking is only used to decide WHICH tools make top-K.
-    selected = [candidates[i] for i in range(len(candidates)) if i in top_indices]
-    filtered = always_on + selected
+    # Kept-name set = always-on ∪ BM25 top-K ∪ anything already referenced by
+    # a tool_use block in the visible history (the mutation guard above).
+    # Referenced tools bypass the top-K limit entirely — correctness (never
+    # orphan a dangling tool_use/tool_result reference) takes priority over
+    # the token savings from strictly enforcing TOP_K.
+    keep_names = {t.get('name') for t in always_on} \
+        | {candidates[i]['name'] for i in top_indices} \
+        | referenced
+    # Emit ALL kept tools in their ORIGINAL declaration order (not BM25
+    # relevance order, and not "always_on then selected" concatenation), so
+    # the serialized tools[] block stays maximally byte-stable across turns
+    # and never diverges from the client's own native ordering. tools[] sits
+    # at the very front of the provider cache prefix (Anthropic:
+    # tools -> system -> messages), so any reordering here — even with an
+    # identical set — busts the entire downstream cache. Relevance ranking
+    # only decides WHICH additional tools make top-K.
+    filtered = [t for t in tools if t.get('name') in keep_names]
 
     # Stability check: only signal changed if the name-set actually differs
     conv_key = _conversation_key(messages)

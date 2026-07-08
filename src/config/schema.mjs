@@ -74,7 +74,11 @@ export const DEFAULT_CONFIG = {
     token_efficiency: true,
   },
   learning: { headroom_learn: true },
-  observability: { helicone: false, token_optimizer: true, ai_engineering_coach: true },
+  // token_optimizer default is FALSE: it is PolyForm Noncommercial licensed,
+  // which conflicts with Myelin (MIT, distributable to companies/teams) —
+  // do not flip this default without a separate commercial license
+  // agreement. Opt-in only; see docs/settings-reference.md.
+  observability: { helicone: false, token_optimizer: false, ai_engineering_coach: true },
   stacklit: { enabled: false },
   semgrep: { enabled: false },
   copilot: {
