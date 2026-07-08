@@ -254,6 +254,47 @@ async function installMitmproxyCA(home, interactive = true) {
   if (!sysCerts && process.platform === 'darwin') {
     try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true, stdio: 'pipe' }).toString(); } catch {}
   }
+  // Corporate/MDM-installed interception CAs (e.g. NetFree) live in the
+  // general System keychain and/or the user's login keychain — NOT in
+  // SystemRootCertificates.keychain (Apple's built-in roots only). Must
+  // always be queried (not gated behind "sysCerts is empty"), since on
+  // macOS /etc/ssl/cert.pem often already exists and would otherwise skip
+  // this entirely, silently omitting the one CA that actually matters for
+  // TLS interception on this network. Missing it breaks any tool (pip,
+  // gem, serena/semble's downloads, etc.) that does verify=<this file>
+  // instead of trusting the OS keychain the way curl/Safari do.
+  //
+  // NOTE: `security find-certificate -a -p <keychain>` without a `-c` name
+  // filter does NOT reliably enumerate every cert in the keychain on this
+  // system (empirically confirmed: returns a partial subset, silently
+  // missing entries that ARE found when searched by name) — so we also
+  // explicitly search by the common names of known corporate TLS
+  // interception products, which is the only reliable way to find them.
+  if (process.platform === 'darwin') {
+    const KEYCHAINS = [
+      '/Library/Keychains/System.keychain',
+      join(home, 'Library', 'Keychains', 'login.keychain-db'),
+    ];
+    const KNOWN_INTERCEPTOR_NAMES = ['NetFree', 'Zscaler', 'Blue Coat', 'Bluecoat', 'Forcepoint', 'Netskope', 'Menlo Security', 'Palo Alto', 'Cisco Umbrella'];
+    for (const kc of KEYCHAINS) {
+      // Best-effort full dump first (may already catch some)
+      try {
+        const certs = execSync(`security find-certificate -a -p "${kc}" 2>/dev/null`, { shell: true, stdio: 'pipe' }).toString();
+        if (certs.trim()) sysCerts += '\n' + certs;
+      } catch {}
+      // Reliable targeted search for known interceptor CA names. Duplicates
+      // (if the dump above already had them) are harmless in a CA bundle —
+      // no need to dedup, and a naive text-prefix dedup check is unreliable
+      // since unrelated certs commonly share the same leading PEM header
+      // bytes, causing false-positive "already present" skips.
+      for (const name of KNOWN_INTERCEPTOR_NAMES) {
+        try {
+          const certs = execSync(`security find-certificate -a -c "${name}" -p "${kc}" 2>/dev/null`, { shell: true, stdio: 'pipe' }).toString();
+          if (certs.trim()) sysCerts += '\n' + certs;
+        } catch {}
+      }
+    }
+  }
   // Strip old mitmproxy CA entry, re-add fresh
   const withoutMitm = sysCerts.replace(/\n?# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
   writeFileSync(ourBundle,

@@ -1,6 +1,7 @@
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, readFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
 
 function findGitRoot(dir) {
@@ -69,40 +70,146 @@ ${tools.map(t => `  ${t}: true`).join('\n')}
   }
 }
 
+/** Strip proxy env vars — model/language-server downloads can stall indefinitely
+ *  behind our corporate-proxy chain (mitmproxy doesn't have every model-hub host
+ *  in --ignore-hosts). Always sets (not just repairs) the CA-bundle env vars to
+ *  our combined ~/.myelin/ca-bundle.pem: this corporate network does TLS
+ *  interception at the network level (NetFree), independent of any app-level
+ *  proxy setting, so *every* subprocess needs the corporate CA to verify
+ *  outbound HTTPS — a shell that never sourced ~/.zshrc (e.g. a spawned
+ *  non-interactive process) won't have these vars set at all, and a stale
+ *  leftover ~/.tokenstack path is just as broken as having none. Tool
+ *  indexing runs bypass the proxy and always use a valid cert path. */
+function noProxyEnv() {
+  const env = { ...process.env };
+  delete env.HTTPS_PROXY; delete env.https_proxy;
+  delete env.HTTP_PROXY;  delete env.http_proxy;
+  const validCaBundle = join(homedir(), '.myelin', 'ca-bundle.pem');
+  if (existsSync(validCaBundle)) {
+    for (const v of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'HEADROOM_CA_BUNDLE']) {
+      env[v] = validCaBundle; // always set — never rely on the parent shell having it right
+    }
+  }
+  return env;
+}
+
+/**
+ * Run a command asynchronously with a hard timeout, streaming output prefixed
+ * with a label. Using `spawn` (not `execSync`) is what makes real concurrency
+ * possible — multiple tool runs across repos can be in flight at once instead
+ * of blocking the Node event loop one at a time.
+ *
+ * `promptAnswerer(bufferedOutputSoFar)` — if provided, called on every output
+ * chunk; return a string to write to stdin (and reset the buffer) or null/
+ * undefined to keep waiting for more output. Used to answer serena's
+ * per-language prompts contextually instead of blindly accepting/declining.
+ */
+function spawnAsync(command, args, { cwd, env, input, timeout, prefix, promptAnswerer } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, env: env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let buf = '';
+
+    const emit = (data) => {
+      const text = data.toString();
+      for (const line of text.split('\n')) {
+        if (line.trim()) console.log(`      [${prefix}] ${line}`);
+      }
+      if (promptAnswerer) {
+        buf += text;
+        const answer = promptAnswerer(buf);
+        if (answer != null) { child.stdin.write(answer); buf = ''; }
+      }
+    };
+    child.stdout.on('data', emit);
+    child.stderr.on('data', emit);
+
+    if (input) child.stdin.write(input);
+    if (!promptAnswerer) child.stdin.end();
+
+    let timedOut = false;
+    const timer = timeout ? setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, timeout) : null;
+
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) { const e = new Error(`timed out after ${timeout}ms`); e.timedOut = true; return reject(e); }
+      if (signal)   { const e = new Error(`killed by ${signal}`); e.signal = signal; return reject(e); }
+      if (code !== 0) { const e = new Error(`exited with code ${code}`); e.code = code; return reject(e); }
+      resolve();
+    });
+  });
+}
+
+// serena always auto-enables the single dominant language without asking;
+// "Enable X?" prompts are only for SECONDARY languages, and serena's own
+// default when declined/blank is "No". These are Node/npm-based frontend
+// companion language servers — same ecosystem as typescript, so they install
+// the same way and don't need extra system-level deps (gems, native binary
+// downloads, etc). Anything NOT in this set (bash, ruby, python, go, java...)
+// is usually one or two incidental script/tooling files, not the repo's real
+// language, and its language server is exactly what tends to fail (missing
+// system deps, gem permissions, corporate CA not in that tool's own trust
+// store) and abort the *entire* index for no real navigation benefit.
+const SERENA_SAFE_COMPANION_LANGUAGES = new Set(['vue', 'svelte', 'javascript', 'typescript']);
+
+function serenaPromptAnswerer(buf) {
+  const m = buf.match(/Enable (\S+) \([\d.]+% of source files\)\?\s*\[y\/N\]\s*$/);
+  if (!m) return null;
+  return SERENA_SAFE_COMPANION_LANGUAGES.has(m[1].toLowerCase()) ? 'y\n' : 'n\n';
+}
+
 const TOOLS = [
   {
     id: 'serena',
     label: 'Serena (LSP code index — symbol-precise navigation)',
     check: (root) => existsSync(join(root, '.serena', 'project.yml')) || existsSync(join(root, '.myelin', 'project.yml')),
-    run:   (root, yes) => {
-      const cmd = `serena project create --index "${root}"`;
-      if (yes) {
-        // serena has no --yes flag; it asks one "Enable <language>?" prompt per
-        // additionally-detected language via Python input(). Feed enough
-        // canned "y" answers so -y is truly non-interactive.
-        execSync(cmd, { input: 'y\n'.repeat(10), stdio: ['pipe', 'inherit', 'inherit'] });
-      } else {
-        execSync(cmd, { stdio: 'inherit' });
-      }
+    // Synchronous path — used only in interactive mode where `stdio: inherit`
+    // lets the user answer serena's own per-language prompts directly.
+    run: (root) => {
+      const alreadyRegistered = existsSync(join(root, '.serena', 'project.yml'));
+      const cmd = alreadyRegistered ? `serena project index "${root}"` : `serena project create --index "${root}"`;
+      execSync(cmd, { env: noProxyEnv(), timeout: 240_000, stdio: 'inherit' });
+    },
+    // Async path — used for non-interactive concurrent (recursive --yes) runs.
+    // Answers each "Enable <language>?" prompt contextually (see
+    // SERENA_SAFE_COMPANION_LANGUAGES above) instead of blindly accepting or
+    // declining every one.
+    runAsync: (root, prefix) => {
+      const alreadyRegistered = existsSync(join(root, '.serena', 'project.yml'));
+      const args = alreadyRegistered ? ['project', 'index', root] : ['project', 'create', '--index', root];
+      return spawnAsync('serena', args, { env: noProxyEnv(), timeout: 240_000, prefix, promptAnswerer: serenaPromptAnswerer });
     },
   },
   {
     id: 'semble',
     label: 'Semble (semantic code search index)',
     check: (_root) => false,
-    run:   (root, _yes) => execSync(`semble --content code`, { cwd: root, stdio: 'inherit' }),
+    // NOTE: `semble --content code` (no subcommand) launches semble's MCP
+    // *server* mode (see semble/cli.py: any first arg not in the known
+    // subcommand set falls through to `_mcp_main()`), which blocks forever
+    // waiting for JSON-RPC on stdin. There is no dedicated `semble index`
+    // subcommand — building the index is a documented side effect of running
+    // a throwaway `search` query, which is what we do here instead.
+    run: (root, _yes) => {
+      execSync(`semble search "codebase overview" "${root}" --content code`, {
+        cwd: root, env: noProxyEnv(), stdio: ['ignore', 'ignore', 'inherit'], timeout: 300_000,
+      });
+    },
+    runAsync: (root, prefix) => spawnAsync(
+      'semble', ['search', 'codebase overview', root, '--content', 'code'],
+      { env: noProxyEnv(), timeout: 300_000, prefix }
+    ),
   },
 ];
 
-async function initRepo(root, yes, rl, enabledTools) {
+async function initRepoInteractive(root, rl, enabledTools) {
   const name = root.split(/[\\/]/).pop();
   console.log(`\n   📁 ${name}  (${root})`);
   const results = [];
   for (const tool of TOOLS.filter(t => enabledTools.includes(t.id))) {
     const alreadyDone = tool.check(root);
     const labelSuffix = alreadyDone ? ' (already done — re-run?)' : '';
-    let run = yes;
-    if (!yes) run = await confirm(rl, `      Run ${tool.id}${labelSuffix}?`, !alreadyDone);
+    const run = await confirm(rl, `      Run ${tool.id}${labelSuffix}?`, !alreadyDone);
     if (run) {
       // readline puts a TTY stdin into raw mode (no echo/canonical line
       // buffering) to support keypress events. That raw-mode state leaks into
@@ -113,21 +220,69 @@ async function initRepo(root, yes, rl, enabledTools) {
       const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw);
       if (wasRaw) process.stdin.setRawMode(false);
       try {
-        tool.run(root, yes);
+        tool.run(root);
         console.log(`      ✓ ${tool.id}`);
-        results.push({ ok: true });
+        results.push({ id: tool.id, ok: true });
       } catch (e) {
-        console.warn(`      ⚠ ${tool.id} failed: ${e.message.split('\n')[0]}`);
-        results.push({ ok: false });
+        const timedOut = e.timedOut || e.signal === 'SIGTERM';
+        console.warn(`      ⚠ ${tool.id} ${timedOut ? 'timed out — skipped' : `failed: ${e.message.split('\n')[0]}`}`);
+        results.push({ id: tool.id, ok: false });
       } finally {
         if (wasRaw) process.stdin.setRawMode(true);
       }
     } else {
       console.log(`      · ${tool.id} skipped`);
+      results.push({ id: tool.id, ok: false });
     }
   }
-  initMyelinDir(root, results.filter(r => r.ok).map((_, i) => enabledTools[i]));
+  finishRepo(root, results);
   return results;
+}
+
+/** Non-interactive: run every enabled tool for this repo concurrently — one
+ *  hung/slow tool must never delay the others (in-repo or cross-repo). */
+async function initRepoConcurrent(root, enabledTools) {
+  const name = root.split(/[\\/]/).pop();
+  console.log(`\n   📁 ${name}  (${root}) — running tools concurrently`);
+  const tools = TOOLS.filter(t => enabledTools.includes(t.id));
+  const settled = await Promise.allSettled(tools.map(async (tool) => {
+    const prefix = `${name}/${tool.id}`;
+    try {
+      await tool.runAsync(root, prefix);
+      console.log(`      ✓ ${prefix}`);
+      return { id: tool.id, ok: true };
+    } catch (e) {
+      const timedOut = e.timedOut || e.signal === 'SIGTERM';
+      console.warn(`      ⚠ ${prefix} ${timedOut ? 'timed out — skipped' : `failed: ${e.message.split('\n')[0]}`}`);
+      return { id: tool.id, ok: false };
+    }
+  }));
+  const results = settled.map(s => s.value ?? { id: '?', ok: false });
+  finishRepo(root, results);
+  return results;
+}
+
+function finishRepo(root, results) {
+  // Never let a failure here (e.g. permissions) abort the whole recursive run
+  try {
+    initMyelinDir(root, results.filter(r => r.ok).map(r => r.id));
+  } catch (e) {
+    console.warn(`      ⚠ could not write .myelin/project.yml: ${e.message.split('\n')[0]}`);
+  }
+}
+
+/** Run `fn` over `items` with at most `limit` in flight concurrently. */
+async function mapLimit(items, limit, fn) {
+  const ret = new Array(items.length);
+  let i = 0;
+  async function worker() {
+    while (i < items.length) {
+      const idx = i++;
+      ret[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return ret;
 }
 
 export async function runInit({ yes = false, recursive = false, dir = process.cwd(), depth = 4 } = {}) {
@@ -166,14 +321,39 @@ export async function runInit({ yes = false, recursive = false, dir = process.cw
     }
   }
 
-  let total = 0, ok = 0;
-  for (const root of repos) {
-    const results = await initRepo(root, yes, rl, enabledTools);
-    total += results.length;
-    ok += results.filter(r => r.ok).length;
+  let total = 0, ok = 0, reposFailed = 0;
+  const trackResults = (results) => { total += results.length; ok += results.filter(r => r.ok).length; };
+
+  if (yes) {
+    // Non-interactive: tools within a repo run concurrently, and repos run
+    // concurrently across a capped pool — nothing can delay anything else.
+    // Cap kept modest (not repos.length) because each repo already runs
+    // multiple tools concurrently, and serena itself spawns 2-3 LSP
+    // subprocesses per repo — too many repos at once causes resource
+    // contention (CPU/memory) that manifests as spurious language-server
+    // startup failures, even though each repo indexes fine in isolation.
+    const CONCURRENCY = 2;
+    await mapLimit(repos, CONCURRENCY, async (root) => {
+      try {
+        trackResults(await initRepoConcurrent(root, enabledTools));
+      } catch (e) {
+        reposFailed++;
+        console.warn(`      ⚠ ${root} failed unexpectedly: ${e.message.split('\n')[0]} — continuing`);
+      }
+    });
+  } else {
+    // Interactive: prompts are inherently sequential (single user, one terminal)
+    for (const root of repos) {
+      try {
+        trackResults(await initRepoInteractive(root, rl, enabledTools));
+      } catch (e) {
+        reposFailed++;
+        console.warn(`      ⚠ ${root} failed unexpectedly: ${e.message.split('\n')[0]} — continuing to next repo`);
+      }
+    }
   }
 
   if (rl) rl.close();
-  console.log(`\n   ✓ Init complete — ${ok}/${total} operations succeeded across ${repos.length} repo(s).\n`);
+  console.log(`\n   ✓ Init complete — ${ok}/${total} operations succeeded across ${repos.length} repo(s)${reposFailed ? ` (${reposFailed} repo(s) hit unexpected errors)` : ''}.\n`);
   return true;
 }
