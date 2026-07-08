@@ -17,19 +17,25 @@ function runPs(script) {
   }
 }
 
-export function installService({ headroomBin, port }) {
+/** Pure builder — returns the PowerShell script text without executing it. */
+export function generateHeadroomRunScript({ headroomBin, port }) {
   const bin = headroomBin.replace(/\//g, '\\');
   // Kill any existing headroom process, start fresh hidden, persist via registry
-  runPs(`
+  return `
 Stop-Process -Name headroom -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 Start-Process -FilePath '${bin}' -ArgumentList 'proxy --port ${port}' -WindowStyle Hidden
 Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" proxy --port ${port}'
 Write-Host "[myelin] headroom started (hidden)"
-`);
+`;
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
+export function installService({ headroomBin, port }) {
+  runPs(generateHeadroomRunScript({ headroomBin, port }));
+}
+
+/** Pure builder — returns the PowerShell script text without executing it. */
+export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {} }) {
   const bin   = mitmdumpBin.replace(/\//g, '\\');
   const addon = addonPath.replace(/\//g, '\\');
   const ca    = (envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '').replace(/\//g, '\\');
@@ -39,14 +45,18 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
   const envLines = Object.entries(envVars)
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${v.replace(/\\/g, '\\\\')}', 'User')`)
     .join('\n');
-  runPs(`
+  return `
 ${envLines}
 Stop-Process -Name mitmdump -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WindowStyle Hidden
 Set-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -Value '"${bin}" ${args}'
 Write-Host "[myelin] mitmproxy started (hidden)"
-`);
+`;
+}
+
+export function installMitmService(opts) {
+  runPs(generateMitmRunScript(opts));
 }
 
 export function mitmServiceStatus() {

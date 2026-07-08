@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { generatePlist } from '../src/service/launchd.mjs';
 import { generateSystemdUnit } from '../src/service/systemd.mjs';
-import { generateTaskXml } from '../src/service/windows.mjs';
+import { generateHeadroomRunScript } from '../src/service/windows.mjs';
 
 const OPTS = {
   headroomBin: '/home/user/.local/bin/headroom',
@@ -15,7 +15,7 @@ const OPTS = {
 describe('launchd plist generator', () => {
   it('contains the label', () => {
     const xml = generatePlist(OPTS);
-    assert.ok(xml.includes('com.tokenstack.headroom'));
+    assert.ok(xml.includes('com.myelin.headroom'));
   });
   it('contains the binary path', () => {
     const xml = generatePlist(OPTS);
@@ -54,17 +54,17 @@ describe('systemd unit generator', () => {
   });
 });
 
-describe('windows task xml generator', () => {
-  it('contains task name', () => {
-    const xml = generateTaskXml(OPTS);
-    assert.ok(xml.includes('TokenstackHeadroom'));
+describe('windows run-script generator', () => {
+  it('contains registry run key name', () => {
+    const script = generateHeadroomRunScript(OPTS);
+    assert.ok(script.includes('MyelinHeadroom'));
   });
   it('contains command path', () => {
-    const xml = generateTaskXml(OPTS);
-    assert.ok(xml.includes(OPTS.headroomBin));
+    const script = generateHeadroomRunScript(OPTS);
+    assert.ok(script.includes(OPTS.headroomBin.replace(/\//g, '\\')));
   });
   it('contains port argument', () => {
-    const xml = generateTaskXml(OPTS);
-    assert.ok(xml.includes('8787'));
+    const script = generateHeadroomRunScript(OPTS);
+    assert.ok(script.includes('8787'));
   });
 });
