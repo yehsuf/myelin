@@ -698,10 +698,9 @@ async function main() {
         ...sslEnv,
       },
       mcpServers: {
-        serena:    { command: 'serena', args: ['--project', '.'] },
+        serena:    { command: 'serena', args: ['start-mcp-server', '--project', '.'] },
         semble:    { command: 'semble', args: ['mcp'] },
-        'mcp-git': { command: 'uvx', args: ['mcp-server-git', '--repository', '.'] },
-        mem0:      { command: 'uvx', args: ['mem0-mcp'] },
+        'mcp-git': { command: 'uvx', args: ['mcp-server-git'] },
       },
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
@@ -712,10 +711,9 @@ async function main() {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
       mergeJsonFile(mcp, { mcpServers: {
-        serena:    { type: 'local', command: 'serena', args: ['--project', '.'], env: {}, tools: ['*'] },
+        serena:    { type: 'local', command: 'serena', args: ['start-mcp-server', '--project', '.'], env: {}, tools: ['*'] },
         semble:    { type: 'local', command: 'semble', args: ['mcp'],            env: {}, tools: ['*'] },
-        'mcp-git': { type: 'local', command: 'uvx', args: ['mcp-server-git', '--repository', '.'], env: {}, tools: ['*'] },
-        mem0:      { type: 'local', command: 'uvx', args: ['mem0-mcp'],          env: {}, tools: ['*'] },
+        'mcp-git': { type: 'local', command: 'uvx', args: ['mcp-server-git'],   env: {}, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }
