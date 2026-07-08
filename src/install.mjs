@@ -552,13 +552,21 @@ async function main() {
   const runningFromOld = process.argv[1]?.startsWith(oldDir) || process.argv[1]?.startsWith(nestedOld);
 
   if (existsSync(nestedOld) && !runningFromOld) {
-    // Move contents of .myelin/.tokenstack up into .myelin
+    // Move contents of .myelin/.tokenstack up into .myelin, then re-clone repo
     try {
       const { readdirSync, renameSync } = await import('node:fs');
       for (const entry of readdirSync(nestedOld)) {
+        if (entry === 'repo') continue; // skip repo — will re-clone to correct location
         const src = join(nestedOld, entry);
         const dst = join(newDir, entry);
         if (!existsSync(dst)) renameSync(src, dst);
+      }
+      // Move repo to correct location if not already there
+      const nestedRepo = join(nestedOld, 'repo');
+      const correctRepo = join(newDir, 'repo');
+      if (existsSync(nestedRepo) && !existsSync(correctRepo)) {
+        const { renameSync } = await import('node:fs');
+        renameSync(nestedRepo, correctRepo);
       }
       const { rmSync } = await import('node:fs');
       rmSync(nestedOld, { recursive: true, force: true });
