@@ -31,6 +31,22 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has index_tier = default', () => {
     assert.equal(DEFAULT_CONFIG.index_tier, 'default');
   });
+  it('DEFAULT_CONFIG has proxy.mitm.port = 8888', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.mitm.port, 8888);
+  });
+  it('DEFAULT_CONFIG has proxy.mitm.egress_port = 8889', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.mitm.egress_port, 8889);
+  });
+  it('DEFAULT_CONFIG has proxy.copilot_headroom.enabled = false (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.enabled, false);
+  });
+  it('DEFAULT_CONFIG has proxy.copilot_headroom.port = 8788', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.port, 8788);
+  });
+  it('DEFAULT_CONFIG has proxy.copilot_headroom target URLs pointed at Copilot Business', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, 'https://api.business.githubcopilot.com');
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, 'https://api.business.githubcopilot.com');
+  });
   it('mergeDeep overwrites leaf values', () => {
     const result = mergeDeep({ a: { b: 1 } }, { a: { b: 2, c: 3 } });
     assert.deepEqual(result, { a: { b: 2, c: 3 } });

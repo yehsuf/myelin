@@ -23,7 +23,7 @@ import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
-import { installService, installMitmService } from './service/index.mjs';
+import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
 import { setUserEnvVars } from './service/windows.mjs';
 import { fileURLToPath } from 'node:url';
@@ -951,6 +951,8 @@ async function main() {
       try {
         // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
         const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
+        const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
+        const egressPort = copilotHeadroomCfg.enabled ? (mitmCfg.egress_port ?? 8889) : undefined;
         await installMitmService({
           mitmdumpBin,
           port: mitmPort,
@@ -959,8 +961,36 @@ async function main() {
           upstreamProxy: safeUpstream,
           logPath: join(home, '.myelin', 'mitmproxy.log'),
           home,
+          egressPort,
         });
-        ok(`mitmproxy service registered (port ${mitmPort})`);
+        ok(`mitmproxy service registered (port ${mitmPort}${egressPort ? ` + egress ${egressPort}` : ''})`);
+
+        // Copilot-Headroom: a SEPARATE, dedicated instance that gives Copilot
+        // CLI traffic the same full pipeline treatment Claude Code already
+        // gets (cache-mode, content_router, TOIN, stats) instead of the
+        // stateless /v1/compress-only sidecar call. Opt-in — disabled by
+        // default until validated on your own install (see schema.mjs).
+        if (copilotHeadroomCfg.enabled) {
+          const copilotHeadroomPort = copilotHeadroomCfg.port ?? 8788;
+          try {
+            await installCopilotHeadroomService({
+              headroomBin: binPath,
+              port: copilotHeadroomPort,
+              envVars: {
+                ANTHROPIC_TARGET_API_URL: copilotHeadroomCfg.anthropic_target_url ?? 'https://api.business.githubcopilot.com',
+                OPENAI_TARGET_API_URL: copilotHeadroomCfg.openai_target_url ?? 'https://api.business.githubcopilot.com',
+                HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
+                HTTPS_PROXY: `http://127.0.0.1:${egressPort}`,
+                NO_PROXY: '127.0.0.1,localhost,::1',
+                ...sslEnv,
+              },
+              home,
+            });
+            ok(`copilot-headroom service registered (port ${copilotHeadroomPort})`);
+          } catch (e) {
+            warn(`copilot-headroom service registration failed: ${e.message}`);
+          }
+        }
       } catch (e) {
         warn(`mitmproxy service registration failed: ${e.message}`);
       }
@@ -968,7 +998,14 @@ async function main() {
       // (macOS crash-loop protection can disable a KeepAlive job with no log trace)
       try {
         const { installWatchdog } = await import('./service/index.mjs');
-        const installed = await installWatchdog({ home, headroomPort: port, mitmPort });
+        const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
+        const installed = await installWatchdog({
+          home, headroomPort: port, mitmPort,
+          ...(copilotHeadroomCfg.enabled ? {
+            copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
+            egressPort: mitmCfg.egress_port ?? 8889,
+          } : {}),
+        });
         if (installed) ok('watchdog installed — auto-revives dropped services every 90s');
       } catch (e) {
         warn(`watchdog install failed: ${e.message}`);

@@ -43,6 +43,32 @@ export const DEFAULT_CONFIG = {
       vpn_domains_file: '',
       // extra_providers: JSON object extending the built-in provider map.
       extra_providers: '',
+      // egress_port: second listener on the same mitmproxy process, used only
+      // when copilot_headroom.enabled is true. This is the leg that owns real
+      // network egress for the dedicated Copilot-Headroom instance's own
+      // outbound calls (block-bypass/CA/corp-upstream logic applies here too —
+      // never on the loopback redirect leg, which can't be network-blocked).
+      egress_port: 8889,
+    },
+    // copilot_headroom: a SEPARATE, dedicated Headroom instance (distinct from
+    // proxy.headroom above, which serves Claude Code) that gives Copilot CLI
+    // traffic the same full pipeline treatment (cache-mode, content_router,
+    // TOIN, stats) instead of the stateless /v1/compress-only sidecar call.
+    // Disabled by default — opt-in until validated on your own install.
+    // See docs/copilot-headroom-architecture.md (if present) for the full
+    // design: mitmproxy redirects /v1/messages and /chat/completions to this
+    // instance's loopback port; its own outbound call tunnels back out
+    // through proxy.mitm.egress_port so mitmproxy remains the sole owner of
+    // real network egress (NetFree bypass, corp CA, etc.).
+    copilot_headroom: {
+      enabled: false,
+      port: 8788,
+      mode: 'cache',
+      // anthropic/openai_target_url: Copilot's real API host. Use
+      // api.business.githubcopilot.com for Business/Enterprise accounts,
+      // api.githubcopilot.com for individual accounts.
+      anthropic_target_url: 'https://api.business.githubcopilot.com',
+      openai_target_url: 'https://api.business.githubcopilot.com',
     },
   },
   index_tier: 'default',

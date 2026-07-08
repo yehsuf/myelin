@@ -1,7 +1,7 @@
 import { loadConfig } from '../config/reader.mjs';
 import { waitForHeadroom, headroomHealthUrl } from '../tools/headroom.mjs';
 import { detectTool } from '../detect/tools.mjs';
-import { serviceStatus, mitmServiceStatus } from '../service/index.mjs';
+import { serviceStatus, mitmServiceStatus, copilotHeadroomServiceStatus } from '../service/index.mjs';
 import { which } from '../detect/which.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +76,24 @@ export async function runVerify() {
     } catch {
       results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
     }
+  }
+
+  // Copilot-Headroom (opt-in — only checked when enabled in config, so this
+  // doesn't show a confusing failing row for installs that haven't opted in)
+  if (cfg.proxy?.copilot_headroom?.enabled) {
+    const copilotHeadroomPort = cfg.proxy.copilot_headroom.port ?? 8788;
+    const chSvc = await copilotHeadroomServiceStatus();
+    results.push({
+      name: 'Copilot-Headroom service',
+      ok: chSvc.running,
+      detail: chSvc.running ? `running${chSvc.label ? ` (${chSvc.label})` : ''}` : 'not running — try: myelin diagnose',
+    });
+    const chHealthy = await waitForHeadroom(copilotHeadroomPort, 3000);
+    results.push({
+      name: `Copilot-Headroom health (:${copilotHeadroomPort})`,
+      ok: chHealthy,
+      detail: chHealthy ? headroomHealthUrl(copilotHeadroomPort) : `no response on :${copilotHeadroomPort}`,
+    });
   }
 
   for (const tool of ['uv', 'serena']) {

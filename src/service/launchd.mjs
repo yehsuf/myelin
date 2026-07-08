@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 const WATCHDOG_LABEL = 'com.myelin.watchdog';
+const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';
 
 export function generatePlist({ headroomBin, port, envVars = {}, logPath, interceptToolResults }) {
   const envEntries = Object.entries(envVars)
@@ -54,13 +55,16 @@ export function mitmPlistPath() {
 }
 
 /** Generic plist generator — use for any long-running LaunchAgent. */
-export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath }) {
+export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory }) {
   const envEntries = Object.entries(envVars)
     .map(([k, v]) => `        <key>${k}</key>\n        <string>${v}</string>`)
     .join('\n');
   const argItems = [command, ...args]
     .map(a => `        <string>${a}</string>`)
     .join('\n');
+  const workingDirEntry = workingDirectory
+    ? `\n    <key>WorkingDirectory</key>\n    <string>${workingDirectory}</string>`
+    : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,7 +88,7 @@ ${envEntries}
     <key>StandardOutPath</key>
     <string>${logPath ?? '/tmp/myelin.log'}</string>
     <key>StandardErrorPath</key>
-    <string>${logPath ?? '/tmp/myelin.log'}</string>
+    <string>${logPath ?? '/tmp/myelin.log'}</string>${workingDirEntry}
 </dict>
 </plist>`;
 }
@@ -92,10 +96,19 @@ ${envEntries}
 /** Install mitmproxy as a LaunchAgent running the Myelin addon.
  *  If an enterprise upstream proxy is set (via envVars.HTTPS_PROXY),
  *  mitmproxy is started in upstream mode so it chains through it.
+ *
+ *  When egressPort is provided, a SECOND listener is added to the SAME
+ *  mitmdump process (--mode regular@PORT twice) instead of --listen-port.
+ *  This is the egress-only leg used by a dedicated Copilot-Headroom
+ *  instance's own outbound calls (see copilot_headroom config) — it never
+ *  redirects (arrival-port gating in the addon itself), it only owns real
+ *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort }) {
   const p = mitmPlistPath();
-  const args = ['--listen-port', String(port), '-s', addonPath];
+  const args = egressPort
+    ? ['--mode', `regular@${port}`, '--mode', `regular@${egressPort}`, '-s', addonPath]
+    : ['--listen-port', String(port), '-s', addonPath];
 
   // Chain through corporate/upstream proxy if set
   const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
@@ -134,6 +147,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     args,
     envVars: {
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
+      ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
     },
     logPath: logPath ?? join(home ?? homedir(), '.myelin', 'mitmproxy.log'),
@@ -166,6 +180,51 @@ export function installService(opts) {
   execSync(`launchctl bootstrap gui/${uid} ${p}`);
 }
 
+export function copilotHeadroomPlistPath() {
+  return join(homedir(), 'Library', 'LaunchAgents', `${COPILOT_HEADROOM_LABEL}.plist`);
+}
+
+/**
+ * Install a SEPARATE, dedicated Headroom instance for Copilot CLI traffic
+ * (distinct from the Claude-Headroom instance installed by installService).
+ * Given its own isolated WorkingDirectory so its memory/cache/stats state
+ * ({cwd}/.headroom/...) never collides with the Claude-Headroom instance's
+ * own state — headroom has no dedicated HEADROOM_HOME-style env var, so
+ * WorkingDirectory is the isolation mechanism (confirmed against headroom's
+ * own --memory-db-path default of "{cwd}/.headroom/memory.db").
+ */
+export function installCopilotHeadroomService({ headroomBin, port, envVars = {}, logPath, home }) {
+  home = home ?? homedir();
+  const workingDirectory = join(home, '.myelin', 'copilot-headroom');
+  mkdirSync(workingDirectory, { recursive: true });
+  const args = ['proxy', '--port', String(port), '--mode', envVars.HEADROOM_MODE ?? 'cache',
+    '--connect-timeout-seconds', '10'];
+  const content = generateGenericPlist({
+    label: COPILOT_HEADROOM_LABEL,
+    command: headroomBin,
+    args,
+    envVars,
+    logPath: logPath ?? join(home, '.myelin', 'copilot-headroom.log'),
+    workingDirectory,
+  });
+  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
+  const p = copilotHeadroomPlistPath();
+  writeFileSync(p, content, 'utf8');
+  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
+  try { execSync(`launchctl bootout gui/${uid}/${COPILOT_HEADROOM_LABEL}`, { stdio: 'ignore' }); } catch {}
+  execSync('sleep 1');
+  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+}
+
+export function copilotHeadroomServiceStatus() {
+  try {
+    const out = execSync(`launchctl list ${COPILOT_HEADROOM_LABEL} 2>&1`).toString();
+    return { running: !out.includes('Could not find service'), label: COPILOT_HEADROOM_LABEL, raw: out };
+  } catch {
+    return { running: false, raw: '' };
+  }
+}
+
 /**
  * Install a watchdog LaunchAgent that periodically checks headroom + mitmproxy
  * ports and re-bootstraps any service that's down.
@@ -177,7 +236,7 @@ export function installService(opts) {
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, headroomPort = 8787, mitmPort = 8888 } = {}) {
+export function installWatchdog({ home, headroomPort = 8787, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
   const binDir = join(home, '.myelin', 'bin');
   mkdirSync(binDir, { recursive: true });
@@ -207,6 +266,8 @@ check_and_revive() {
 
 check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'
 check_and_revive ${headroomPort} headroom '*.headroom.plist'
+${copilotHeadroomPort ? `check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'` : ''}
+${egressPort ? `check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'` : ''}
 `;
   writeFileSync(scriptPath, script, 'utf8');
   execSync(`chmod +x "${scriptPath}"`);

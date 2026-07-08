@@ -43,6 +43,39 @@ export async function installWatchdog(opts) {
   return null;
 }
 
+/**
+ * Install a SEPARATE, dedicated Headroom instance for Copilot CLI traffic
+ * (opt-in via config.proxy.copilot_headroom.enabled). Distinct from
+ * installService() above, which serves Claude Code.
+ */
+export async function installCopilotHeadroomService(opts) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const { installCopilotHeadroomService } = await import('./launchd.mjs');
+    return installCopilotHeadroomService(opts);
+  } else if (os === 'linux') {
+    const { installCopilotHeadroomService } = await import('./systemd.mjs');
+    return installCopilotHeadroomService(opts);
+  } else {
+    const { installCopilotHeadroomService } = await import('./windows.mjs');
+    return installCopilotHeadroomService(opts);
+  }
+}
+
+export async function copilotHeadroomServiceStatus() {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const { copilotHeadroomServiceStatus } = await import('./launchd.mjs');
+    return copilotHeadroomServiceStatus();
+  } else if (os === 'linux') {
+    const { copilotHeadroomServiceStatus } = await import('./systemd.mjs');
+    return copilotHeadroomServiceStatus();
+  } else {
+    const { copilotHeadroomServiceStatus } = await import('./windows.mjs');
+    return copilotHeadroomServiceStatus();
+  }
+}
+
 export async function serviceStatus() {
   const os = detectOS();
   if (os === 'darwin') {

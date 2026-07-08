@@ -6,6 +6,7 @@ import { join } from 'node:path';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const HEADROOM_KEY  = 'MyelinHeadroom';
 const MITM_KEY      = 'MyelinMitmproxy';
+const COPILOT_HEADROOM_KEY = 'MyelinCopilotHeadroom';
 
 function runPs(script) {
   const tmp = join(tmpdir(), `myelin-${Date.now()}.ps1`);
@@ -17,13 +18,25 @@ function runPs(script) {
   }
 }
 
+/** Build a PowerShell snippet that stops only the process instance whose
+ *  command line matches a specific --port value (not all processes sharing
+ *  the same binary name) — needed once more than one headroom instance can
+ *  run at once (Claude-Headroom + Copilot-Headroom both run headroom.exe).
+ *  NOT live-tested on Windows (Mac is this project's primary dev/test
+ *  platform) — review carefully before relying on it in production.
+ */
+function stopByPortScript(processExeName, port) {
+  return `Get-CimInstance Win32_Process -Filter "Name = '${processExeName}'" | Where-Object { $_.CommandLine -like '*--port ${port}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+}
+
 /** Pure builder — returns the PowerShell script text without executing it. */
 export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults }) {
   const bin = headroomBin.replace(/\//g, '\\');
+  const exeName = bin.split('\\').pop();
   const extraArgs = interceptToolResults ? ' --intercept-tool-results' : '';
-  // Kill any existing headroom process, start fresh hidden, persist via registry
+  // Kill only the existing instance on this exact port, start fresh hidden, persist via registry
   return `
-Stop-Process -Name headroom -ErrorAction SilentlyContinue
+${stopByPortScript(exeName, port)}
 Start-Sleep -Milliseconds 500
 Start-Process -FilePath '${bin}' -ArgumentList 'proxy --port ${port}${extraArgs}' -WindowStyle Hidden
 Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" proxy --port ${port}${extraArgs}'
@@ -35,15 +48,67 @@ export function installService({ headroomBin, port, interceptToolResults }) {
   runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults }));
 }
 
-/** Pure builder — returns the PowerShell script text without executing it. */
-export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {} }) {
+/**
+ * Pure builder — returns the PowerShell script text for the dedicated
+ * Copilot-Headroom instance (distinct from the Claude-Headroom instance
+ * above). Gives it its own working directory (via Set-Location before
+ * Start-Process) so its memory/cache/stats state never collides with the
+ * Claude-Headroom instance's own state (headroom has no dedicated
+ * HEADROOM_HOME-style env var — WorkingDirectory/cwd is the isolation
+ * mechanism, matching the launchd.mjs implementation).
+ * NOT live-tested on Windows — review carefully before relying on it.
+ */
+export function generateCopilotHeadroomRunScript({ headroomBin, port, mode, workingDirectory, envVars = {} }) {
+  const bin = headroomBin.replace(/\//g, '\\');
+  const exeName = bin.split('\\').pop();
+  const workDir = (workingDirectory ?? '').replace(/\//g, '\\');
+  const args = `proxy --port ${port} --mode ${mode ?? 'cache'} --connect-timeout-seconds 10`;
+  const envLines = Object.entries(envVars)
+    .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'Process')`)
+    .join('\n');
+  return `
+${envLines}
+New-Item -ItemType Directory -Force -Path '${workDir}' | Out-Null
+${stopByPortScript(exeName, port)}
+Start-Sleep -Milliseconds 500
+Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WorkingDirectory '${workDir}' -WindowStyle Hidden
+Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -Value '"${bin}" ${args}'
+Write-Host "[myelin] copilot-headroom started (hidden)"
+`;
+}
+
+export function installCopilotHeadroomService({ headroomBin, port, envVars = {}, home }) {
+  const workingDirectory = join(home ?? process.env.USERPROFILE ?? '.', '.myelin', 'copilot-headroom');
+  runPs(generateCopilotHeadroomRunScript({ headroomBin, port, mode: envVars.HEADROOM_MODE, workingDirectory, envVars }));
+}
+
+export function copilotHeadroomServiceStatus() {
+  try {
+    const out = execSync(`powershell -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'headroom.exe'\\" | Where-Object { $_.CommandLine -like '*copilot-headroom*' -or $_.CommandLine -like '*--port 8788*' } | Select-Object -First 1 -ExpandProperty ProcessId"`, { stdio: 'pipe' }).toString().trim();
+    return { running: !!out, state: out ? 'Running' : 'Stopped' };
+  } catch {
+    return { running: false, state: 'Unknown' };
+  }
+}
+
+/** Pure builder — returns the PowerShell script text without executing it.
+ *  When egressPort is provided, mitmdump gets a SECOND --mode regular@PORT
+ *  listener (egress-only leg for a dedicated Copilot-Headroom instance's
+ *  own outbound calls) instead of --listen-port. See launchd.mjs for the
+ *  same dual-listener design on macOS.
+ */
+export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
   const bin   = mitmdumpBin.replace(/\//g, '\\');
   const addon = addonPath.replace(/\//g, '\\');
   const ca    = (envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '').replace(/\//g, '\\');
   const caArg    = ca ? ` --set ssl_verify_upstream_trusted_ca="${ca}"` : '';
   const proxyArg = (envVars.HTTPS_PROXY && !envVars.HTTPS_PROXY.includes('127.0.0.1') && !envVars.HTTPS_PROXY.includes('localhost')) ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
-  const args     = `--listen-port ${port} -s "${addon}"${proxyArg}${caArg}`;
-  const envLines = Object.entries(envVars)
+  const listenArg = egressPort ? `--mode regular@${port} --mode regular@${egressPort}` : `--listen-port ${port}`;
+  const args     = `${listenArg} -s "${addon}"${proxyArg}${caArg}`;
+  const envLines = Object.entries({
+    ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
+    ...envVars,
+  })
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${v.replace(/\\/g, '\\\\')}', 'User')`)
     .join('\n');
   return `
