@@ -74,13 +74,23 @@ const TOOLS = [
     id: 'serena',
     label: 'Serena (LSP code index — symbol-precise navigation)',
     check: (root) => existsSync(join(root, '.serena', 'project.yml')) || existsSync(join(root, '.myelin', 'project.yml')),
-    run:   (root) => execSync(`serena project create --index "${root}"`, { stdio: 'inherit' }),
+    run:   (root, yes) => {
+      const cmd = `serena project create --index "${root}"`;
+      if (yes) {
+        // serena has no --yes flag; it asks one "Enable <language>?" prompt per
+        // additionally-detected language via Python input(). Feed enough
+        // canned "y" answers so -y is truly non-interactive.
+        execSync(cmd, { input: 'y\n'.repeat(10), stdio: ['pipe', 'inherit', 'inherit'] });
+      } else {
+        execSync(cmd, { stdio: 'inherit' });
+      }
+    },
   },
   {
     id: 'semble',
     label: 'Semble (semantic code search index)',
     check: (_root) => false,
-    run:   (root) => execSync(`semble --content code`, { cwd: root, stdio: 'inherit' }),
+    run:   (root, _yes) => execSync(`semble --content code`, { cwd: root, stdio: 'inherit' }),
   },
 ];
 
@@ -94,8 +104,24 @@ async function initRepo(root, yes, rl, enabledTools) {
     let run = yes;
     if (!yes) run = await confirm(rl, `      Run ${tool.id}${labelSuffix}?`, !alreadyDone);
     if (run) {
-      try { tool.run(root); console.log(`      ✓ ${tool.id}`); results.push({ ok: true }); }
-      catch (e) { console.warn(`      ⚠ ${tool.id} failed: ${e.message.split('\n')[0]}`); results.push({ ok: false }); }
+      // readline puts a TTY stdin into raw mode (no echo/canonical line
+      // buffering) to support keypress events. That raw-mode state leaks into
+      // any child process we spawn with stdio 'inherit'/'pipe' below, which
+      // breaks tools (e.g. serena) doing blocking canonical reads via
+      // input() — the terminal looks completely unresponsive. Restore
+      // cooked mode for the duration of the child process call.
+      const wasRaw = Boolean(process.stdin.isTTY && process.stdin.isRaw);
+      if (wasRaw) process.stdin.setRawMode(false);
+      try {
+        tool.run(root, yes);
+        console.log(`      ✓ ${tool.id}`);
+        results.push({ ok: true });
+      } catch (e) {
+        console.warn(`      ⚠ ${tool.id} failed: ${e.message.split('\n')[0]}`);
+        results.push({ ok: false });
+      } finally {
+        if (wasRaw) process.stdin.setRawMode(true);
+      }
     } else {
       console.log(`      · ${tool.id} skipped`);
     }
