@@ -250,8 +250,8 @@ async function installMitmproxyCA(home, interactive = true) {
       try { sysCerts += readFileSync(p, 'utf8') + '\n'; } catch {}
     }
   }
-  if (!sysCerts) {
-    try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true }).toString(); } catch {}
+  if (!sysCerts && os === 'darwin') {
+    try { sysCerts = execSync('security find-certificate -a -p /Library/Keychains/SystemRootCertificates.keychain 2>/dev/null', { shell: true, stdio: 'pipe' }).toString(); } catch {}
   }
   // Strip old mitmproxy CA entry, re-add fresh
   const withoutMitm = sysCerts.replace(/\n?# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
