@@ -12,7 +12,7 @@ function upgradeCommands(os) {
     headroom: { upgrade: `uv pip install --python "${venv}" --upgrade "headroom-ai[all]"` },
     // serena installed via uv tool as 'serena-agent'
     serena:   { upgrade: 'uv tool install --python 3.12 --force "serena-agent @ git+https://github.com/oraios/serena.git"' },
-    semble:   { upgrade: 'uv tool upgrade semble' },
+    semble:   { upgrade: 'uv tool install --force "semble[mcp]"' },
     rtk: {
       upgrade: os === 'darwin' ? 'brew upgrade rtk'
              : os === 'windows' ? null   // GitHub release — handled separately

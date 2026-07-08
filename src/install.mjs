@@ -557,7 +557,7 @@ async function main() {
   } else { skip(`serena (${tools.serena.version})`); }
 
   if (!tools.semble.installed) {
-    console.log('  Installing Semble...'); uvToolInstall('semble');
+    console.log('  Installing Semble...'); uvToolInstall('semble[mcp]');
     try {
       execSync(`semble install ${claudeCC ? '--agent claude --type mcp subagent' : ''} --yes`, { stdio: 'pipe' });
     } catch {}
@@ -717,7 +717,7 @@ async function main() {
       },
       mcpServers: {
         serena:    { command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'] },
-        semble:    { command: toolPaths.semble, args: ['mcp'] },
+        semble:    { command: toolPaths.semble, args: [] },
         'mcp-git': { command: toolPaths.uvx,    args: ['mcp-server-git'] },
       },
     }, {});
@@ -730,7 +730,7 @@ async function main() {
     if (existsSync(mcp)) {
       mergeJsonFile(mcp, { mcpServers: {
         serena:    { type: 'local', command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'], env: {}, tools: ['*'] },
-        semble:    { type: 'local', command: toolPaths.semble, args: ['mcp'],            env: {}, tools: ['*'] },
+        semble:    { type: 'local', command: toolPaths.semble, args: [],            env: {}, tools: ['*'] },
         'mcp-git': { type: 'local', command: toolPaths.uvx,    args: ['mcp-server-git'], env: {}, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
