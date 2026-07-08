@@ -4,7 +4,7 @@ import { DEFAULT_CONFIG, mergeDeep } from './schema.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.tokenstack', 'config.yaml');
+export const DEFAULT_CONFIG_PATH = join(homedir(), '.myelin', 'config.yaml');
 
 export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
   let userConfig = {};
@@ -26,11 +26,11 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
       console.warn(`[myelin] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
     }
   }
-  if (process.env.TOKENSTACK_PROFILE) {
-    merged._profile = process.env.TOKENSTACK_PROFILE;
+  if (process.env.MYELIN_PROFILE) {
+    merged._profile = process.env.MYELIN_PROFILE;
   }
-  if (process.env.TOKENSTACK_INDEX_TIER) {
-    merged.index_tier = process.env.TOKENSTACK_INDEX_TIER;
+  if (process.env.MYELIN_INDEX_TIER) {
+    merged.index_tier = process.env.MYELIN_INDEX_TIER;
   }
 
   return merged;

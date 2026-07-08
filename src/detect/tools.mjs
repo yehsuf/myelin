@@ -11,7 +11,7 @@ function ensureWindowsPath() {
   const home = homedir();
   const extra = [
     join(home, '.local', 'bin'),
-    join(home, '.tokenstack', 'bin'),
+    join(home, '.myelin', 'bin'),
     join(home, 'AppData', 'Roaming', 'uv', 'bin'),
     join(home, 'AppData', 'Local', 'uv', 'bin'),
     join(home, 'AppData', 'Roaming', 'npm'),

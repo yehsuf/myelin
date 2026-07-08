@@ -81,8 +81,8 @@ winget install Python.Python.3.12 # if python missing
 
 **Clone, check, and install:**
 ```powershell
-git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\repo"
-cd "$env:USERPROFILE\.tokenstack\repo"
+git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.myelin\repo"
+cd "$env:USERPROFILE\.myelin\repo"
 npm install
 node src/install.mjs --check     # shows what's present vs missing
 node src/install.mjs --dry-run   # preview what would be installed
@@ -91,7 +91,7 @@ node src/install.mjs --yes       # install everything missing
 ```
 
 What the installer does on Windows:
-- Registers **headroom** as a Scheduled Task (`TokenstackHeadroom`) — starts at logon, restarts on failure
+- Registers **headroom** as a Scheduled Task (`MyelinHeadroom`) — starts at logon, restarts on failure
 - Registers **mitmproxy** as a Scheduled Task (`MyelinMitmproxy`) — starts at logon
 - Writes `$env:ANTHROPIC_BASE_URL`, `$env:HEADROOM_PORT`, CA bundle env vars to `~\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`
 - Adds `_copilot` PowerShell function (health-checks :8888, falls back gracefully)
@@ -111,8 +111,8 @@ claude                 # Claude Code through headroom (compressed)
 
 ### macOS / Linux
 ```bash
-git clone https://github.com/yehsuf/myelin.git ~/.tokenstack/repo
-cd ~/.tokenstack/repo
+git clone https://github.com/yehsuf/myelin.git ~/.myelin/repo
+cd ~/.myelin/repo
 npm install
 node src/install.mjs --check      # shows what's present vs missing
 node src/install.mjs --dry-run    # preview what would be installed
@@ -124,8 +124,8 @@ source ~/.bashrc       # Linux (bash)
 
 ### Windows (PowerShell)
 ```powershell
-git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.tokenstack\repo"
-cd "$env:USERPROFILE\.tokenstack\repo"
+git clone https://github.com/yehsuf/myelin.git "$env:USERPROFILE\.myelin\repo"
+cd "$env:USERPROFILE\.myelin\repo"
 npm install
 node src/install.mjs --yes
 . $PROFILE    # reload profile in current window
@@ -199,7 +199,7 @@ copilot    # direct, uncompressed (still works if mitmproxy is down)
 
 ## Configuration
 
-Config: `~/.tokenstack/config.yaml`
+Config: `~/.myelin/config.yaml`
 
 ```yaml
 proxy:
@@ -225,7 +225,7 @@ export HEADROOM_CA_BUNDLE=/path/to/corporate-ca.pem
 ```bash
 myelin config set proxy.mitm.block_bypass true
 myelin config set proxy.mitm.override_proxy socks5://10.8.0.1:1080
-node ~/.tokenstack/repo/src/install.mjs --yes   # re-registers service
+node ~/.myelin/repo/src/install.mjs --yes   # re-registers service
 ```
 
 ---
@@ -243,7 +243,7 @@ node src/install.mjs --profile minimal  # Serena + RTK only
 ## Update
 
 ```bash
-cd ~/.tokenstack/repo
+cd ~/.myelin/repo
 git fetch origin && git reset --hard origin/main
 npm install
 node src/install.mjs --yes
@@ -256,21 +256,21 @@ node src/install.mjs --yes
 ```bash
 # macOS
 launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
-launchctl bootout gui/$(id -u)/com.tokenstack.headroom 2>/dev/null
+launchctl bootout gui/$(id -u)/com.myelin.headroom 2>/dev/null
 rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
-rm ~/Library/LaunchAgents/com.tokenstack.headroom.plist
+rm ~/Library/LaunchAgents/com.myelin.headroom.plist
 
 # Linux
-systemctl --user disable --now myelin-mitmproxy.service tokenstack-headroom.service
-rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/tokenstack-headroom.service
+systemctl --user disable --now myelin-mitmproxy.service myelin-headroom.service
+rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom.service
 systemctl --user daemon-reload
 
 # Windows
 Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
-Unregister-ScheduledTask -TaskName "TokenstackHeadroom" -Confirm:$false
+Unregister-ScheduledTask -TaskName "MyelinHeadroom" -Confirm:$false
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
-rm -rf ~/.tokenstack
+rm -rf ~/.myelin
 ```
 
 ---

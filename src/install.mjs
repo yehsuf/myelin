@@ -168,7 +168,7 @@ async function buildCombinedCaCert(rootCaPath, home) {
   if (!rootCaPath) return null;
   // Skip on Windows — openssl/awk not available; ca-bundle.pem already built by installMitmproxyCA
   if (detectOS() === 'windows') return rootCaPath;
-  const combinedPath = join(home, '.tokenstack', 'ca-bundle.pem');
+  const combinedPath = join(home, '.myelin', 'ca-bundle.pem');
 
   try {
     const intermediate = execSync(
@@ -199,7 +199,7 @@ async function buildCombinedCaCert(rootCaPath, home) {
  * Install mitmproxy CA into all PEM bundles referenced by env vars.
  * Detects locations from NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE,
  * HEADROOM_CA_BUNDLE, GIT_SSL_CAINFO, CURL_CA_BUNDLE. Prompts user per file.
- * Creates ~/.tokenstack/ca-bundle.pem if none exists.
+ * Creates ~/.myelin/ca-bundle.pem if none exists.
  *
  * Interactive: shows exact file path and asks Y/n for each.
  */
@@ -233,8 +233,8 @@ async function installMitmproxyCA(home, interactive = true) {
   }
 
   // --- 2. Always rebuild our own bundle (fresh system content + mitmproxy CA) ---
-  const ourBundle = join(home, '.tokenstack', 'ca-bundle.pem');
-  mkdirSync(join(home, '.tokenstack'), { recursive: true });
+  const ourBundle = join(home, '.myelin', 'ca-bundle.pem');
+  mkdirSync(join(home, '.myelin'), { recursive: true });
 
   // Seed from: read-only discovered files + well-known system paths
   let sysCerts = '';
@@ -317,7 +317,7 @@ function mitmAddonPath(_home) {
  * Solves Copilot launching MCP servers from a generic CWD instead of the project dir.
  */
 function writeSerenaWrapper(home, serenaBin) {
-  const binDir = join(home, '.tokenstack', 'bin');
+  const binDir = join(home, '.myelin', 'bin');
   mkdirSync(binDir, { recursive: true });
   if (process.platform === 'win32') {
     const ps1 = join(binDir, 'serena-mcp.ps1');
@@ -325,7 +325,7 @@ function writeSerenaWrapper(home, serenaBin) {
 $dir = (Get-Location).Path
 while ($dir -ne [System.IO.Path]::GetPathRoot($dir)) {
   if (Test-Path (Join-Path $dir '.git')) { break }
-  if (Test-Path (Join-Path $dir '.serena\\project.yml')) { break }
+  if (Test-Path (Join-Path $dir '.serena\project.yml') -or (Test-Path (Join-Path $dir '.myelin\project.yml'))) { break }
   $dir = Split-Path $dir -Parent
 }
 & '${serenaBin.replace(/\\/g, '\\\\')}' start-mcp-server --project $dir @args
@@ -340,6 +340,7 @@ dir="$PWD"
 while [ "$dir" != "/" ]; do
   [ -d "$dir/.git" ] && break
   [ -f "$dir/.serena/project.yml" ] && break
+  [ -f "$dir/.myelin/project.yml" ] && break
   dir="$(dirname "$dir")"
 done
 exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
@@ -551,7 +552,7 @@ async function main() {
 
   if (flags.check) { printStateTable(tools, caBundles, corpProxy); process.exit(0); }
 
-  mkdirSync(join(home, '.tokenstack'), { recursive: true });
+  mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   let port = existingCfg.proxy.headroom.port;
   if (!(await isPortFree(port))) {
@@ -630,7 +631,7 @@ async function main() {
   if (!flags['no-headroom']) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
-      const venv = join(home, '.tokenstack', 'venv');
+      const venv = join(home, '.myelin', 'venv');
       if (!existsSync(join(venv, 'pyvenv.cfg'))) {
         execSync(`uv venv ${venv}`, { stdio: 'pipe' });
       }
@@ -679,7 +680,7 @@ async function main() {
     const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
     if (!alreadyHealthy) {
       await installService({ headroomBin: binPath, port, envVars,
-        logPath: join(home, '.tokenstack', 'headroom.log') });
+        logPath: join(home, '.myelin', 'headroom.log') });
       ok(`service registered (port ${port})`);
       console.log('  Waiting for proxy...');
       const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
@@ -710,7 +711,7 @@ async function main() {
           addonPath,
           envVars: mitmEnv,
           upstreamProxy: corpProxy || '',
-          logPath: join(home, '.tokenstack', 'mitmproxy.log'),
+          logPath: join(home, '.myelin', 'mitmproxy.log'),
           home,
         });
         ok(`mitmproxy service registered (port ${mitmPort})`);
@@ -725,7 +726,7 @@ async function main() {
   // 5. Config files
   step('[5/7] Configuration files...');
 
-  // ~/.tokenstack/config.yaml
+  // ~/.myelin/config.yaml
   if (!existsSync(DEFAULT_CONFIG_PATH)) {
     await writeConfig(mergeDeep(DEFAULT_CONFIG, {
       proxy: { headroom: { port, corporate_proxy: corpProxy } },
@@ -802,13 +803,13 @@ async function main() {
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
       : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
-    const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.tokenstack/bin:$PATH"';
+    const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"';
 
     // On Windows, add key bin dirs to process.env.PATH now so tool invocations work
     if (os === 'windows') {
       const winPaths = [
         join(home, '.local', 'bin'),
-        join(home, '.tokenstack', 'bin'),
+        join(home, '.myelin', 'bin'),
         join(home, 'AppData', 'Roaming', 'uv', 'bin'),
         join(home, 'AppData', 'Local', 'uv', 'bin'),
         join(home, 'AppData', 'Roaming', 'npm'),
@@ -829,7 +830,7 @@ async function main() {
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
       const psPaths = [
         `$env:USERPROFILE\\.local\\bin`,
-        `$env:USERPROFILE\\.tokenstack\\bin`,
+        `$env:USERPROFILE\\.myelin\\bin`,
         `$env:APPDATA\\uv\\bin`,
         `$env:LOCALAPPDATA\\uv\\bin`,
         `$env:APPDATA\\npm`,

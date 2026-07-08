@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
-const LABEL      = 'com.tokenstack.headroom';
+const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 
 export function generatePlist({ headroomBin, port, envVars = {}, logPath }) {
@@ -122,7 +122,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...envVars,
     },
-    logPath: logPath ?? join(home ?? homedir(), '.tokenstack', 'mitmproxy.log'),
+    logPath: logPath ?? join(home ?? homedir(), '.myelin', 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
   writeFileSync(p, content, 'utf8');

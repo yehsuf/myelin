@@ -9,9 +9,9 @@ param(
     [switch]$ClaudeOnly
 )
 $ErrorActionPreference = "Stop"
-$TokenstackDir = if ($env:TOKENSTACK_DIR) { $env:TOKENSTACK_DIR } else { "$env:USERPROFILE\.tokenstack" }
-$RepoDir = Join-Path $TokenstackDir "repo"
-$RepoUrl = if ($env:TOKENSTACK_REPO_URL) { $env:TOKENSTACK_REPO_URL } else { "https://github.com/yehsuf/myelin" }
+$MyelinDir = if ($env:MYELIN_DIR) { $env:MYELIN_DIR } else { "$env:USERPROFILE\.myelin" }
+$RepoDir = Join-Path $MyelinDir "repo"
+$RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://github.com/yehsuf/myelin" }
 
 function Check-Node {
     try {
@@ -32,7 +32,7 @@ function Fetch-Repo {
     }
 }
 
-try { $binDir = "$env:USERPROFILE\.tokenstack\bin"; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
+try { $binDir = "$env:USERPROFILE\.myelin\bin"; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
 # Allow node.exe through Controlled Folder Access (needed to write PowerShell profile)
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications (Get-Command node -ErrorAction SilentlyContinue).Source -ErrorAction SilentlyContinue } catch {}
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}

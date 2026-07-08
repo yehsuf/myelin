@@ -13,7 +13,7 @@ export function headroomHealthUrl(port = 8787) {
 }
 
 export function headroomVenvPath() {
-  return join(homedir(), '.tokenstack', 'venv');
+  return join(homedir(), '.myelin', 'venv');
 }
 
 export function headroomBinPath() {
@@ -26,7 +26,7 @@ export function headroomBinPath() {
 
 export async function installHeadroom() {
   const venv = headroomVenvPath();
-  mkdirSync(join(homedir(), '.tokenstack'), { recursive: true });
+  mkdirSync(join(homedir(), '.myelin'), { recursive: true });
   execSync(`uv venv ${venv}`, { stdio: 'inherit' });
   execSync(`uv pip install --python ${venv} "headroom-ai[all]"`, { stdio: 'inherit' });
   return { binPath: headroomBinPath(), ok: existsSync(headroomBinPath()) };

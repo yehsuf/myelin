@@ -13,12 +13,12 @@ export async function runRestart() {
   // --- headroom ---
   if (os === 'darwin') {
     try {
-      execSync('launchctl unload ~/Library/LaunchAgents/com.tokenstack.headroom.plist 2>/dev/null; launchctl load ~/Library/LaunchAgents/com.tokenstack.headroom.plist', { shell: true, stdio: 'pipe' });
+      execSync('launchctl unload ~/Library/LaunchAgents/com.myelin.headroom.plist 2>/dev/null; launchctl load ~/Library/LaunchAgents/com.myelin.headroom.plist', { shell: true, stdio: 'pipe' });
       console.log('  ✓ headroom restarted (launchd)');
     } catch { console.warn('  ⚠ headroom launchd restart failed — trying direct'); }
   } else if (os === 'linux') {
     try {
-      execSync('systemctl --user restart tokenstack-headroom.service', { stdio: 'pipe' });
+      execSync('systemctl --user restart myelin-headroom.service', { stdio: 'pipe' });
       console.log('  ✓ headroom restarted (systemd)');
     } catch { console.warn('  ⚠ systemd restart failed'); }
   } else {

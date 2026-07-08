@@ -1,8 +1,8 @@
 #!/usr/bin/env sh
 set -e
-TOKENSTACK_DIR="${TOKENSTACK_DIR:-$HOME/.tokenstack}"
-REPO_DIR="$TOKENSTACK_DIR/repo"
-REPO_URL="${TOKENSTACK_REPO_URL:-https://github.com/yehsuf/myelin}"
+MYELIN_DIR="${MYELIN_DIR:-$HOME/.myelin}"
+REPO_DIR="$MYELIN_DIR/repo"
+REPO_URL="${MYELIN_REPO_URL:-https://github.com/yehsuf/myelin}"
 
 check_node() {
   if ! command -v node >/dev/null 2>&1; then

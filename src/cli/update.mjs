@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 function upgradeCommands(os) {
-  const venv = join(homedir(), '.tokenstack', 'venv');
+  const venv = join(homedir(), '.myelin', 'venv');
   return {
     uv:       { upgrade: 'uv self update' },
     // headroom installed via uv pip in venv, not uv tool

@@ -5,7 +5,7 @@ import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
 
 function headroomBin() {
-  const venv = join(homedir(), '.tokenstack', 'venv');
+  const venv = join(homedir(), '.myelin', 'venv');
   const win = join(venv, 'Scripts', 'headroom.exe');
   const nix = join(venv, 'bin', 'headroom');
   const local = join(homedir(), '.local', 'bin', 'headroom');
@@ -17,7 +17,7 @@ function headroomBin() {
 
 export async function runStats() {
   const home = homedir();
-  const logPath = join(home, '.tokenstack', 'mitmproxy.log');
+  const logPath = join(home, '.myelin', 'mitmproxy.log');
 
   // --- mitmproxy stats (Copilot) ---
   console.log('\nMyelin Compression Statistics\n' + '─'.repeat(60));

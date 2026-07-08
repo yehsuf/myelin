@@ -24,7 +24,7 @@ export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars =
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   return `[Unit]
 Description=Myelin mitmproxy LLM compression proxy
-After=network.target tokenstack-headroom.service
+After=network.target myelin-headroom.service
 
 [Service]
 ExecStart=${mitmdumpBin} ${execArgs.join(' ')}
@@ -37,7 +37,7 @@ WantedBy=default.target`;
 }
 
 export function unitPath() {
-  return join(homedir(), '.config', 'systemd', 'user', 'tokenstack-headroom.service');
+  return join(homedir(), '.config', 'systemd', 'user', 'myelin-headroom.service');
 }
 
 export function mitmUnitPath() {
@@ -50,7 +50,7 @@ export function installService(opts) {
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
-  execSync('systemctl --user enable --now tokenstack-headroom.service');
+  execSync('systemctl --user enable --now myelin-headroom.service');
 }
 
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
@@ -79,7 +79,7 @@ export function mitmServiceStatus() {
 
 export function serviceStatus() {
   try {
-    execSync('systemctl --user is-active tokenstack-headroom.service', { stdio: 'ignore' });
+    execSync('systemctl --user is-active myelin-headroom.service', { stdio: 'ignore' });
     return { running: true };
   } catch {
     return { running: false };

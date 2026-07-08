@@ -62,7 +62,7 @@ async function tryGithubRelease() {
     const { platform, arch } = await import('node:os').then(m => ({ platform: m.platform(), arch: m.arch() }));
     const res = await fetch('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
     const data = await res.json();
-    const binDir = join(homedir(), '.tokenstack', 'bin');
+    const binDir = join(homedir(), '.myelin', 'bin');
     mkdirSync(binDir, { recursive: true });
 
     if (platform === 'win32') {
