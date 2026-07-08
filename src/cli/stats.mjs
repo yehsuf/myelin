@@ -4,6 +4,17 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
 
+function headroomBin() {
+  const venv = join(homedir(), '.tokenstack', 'venv');
+  const win = join(venv, 'Scripts', 'headroom.exe');
+  const nix = join(venv, 'bin', 'headroom');
+  const local = join(homedir(), '.local', 'bin', 'headroom');
+  if (existsSync(win)) return win;
+  if (existsSync(nix)) return nix;
+  if (existsSync(local)) return local;
+  return 'headroom'; // fallback to PATH
+}
+
 export async function runStats() {
   const home = homedir();
   const logPath = join(home, '.tokenstack', 'mitmproxy.log');
@@ -118,7 +129,7 @@ export async function runStats() {
     // Get cache hit rate from headroom perf text (not in /stats JSON)
     let cacheHitLine = '';
     try {
-      const perf = execSync(`headroom perf 2>/dev/null`, { timeout: 5000 }).toString();
+      const perf = execSync(`"${headroomBin()}" perf`, { timeout: 5000 }).toString();
       const hitMatch = perf.match(/Hit rate:\s+([\d.]+%)/);
       const readMatch = perf.match(/Cache read:\s+([\d,]+) tokens/);
       const writeMatch = perf.match(/Cache write:\s+([\d,]+) tokens/);
@@ -140,7 +151,7 @@ export async function runStats() {
   } catch {
     // Fall back to headroom perf CLI
     try {
-      const out = execSync(`headroom perf 2>/dev/null`, { timeout: 5000 }).toString();
+      const out = execSync(`"${headroomBin()}" perf`, { timeout: 5000 }).toString();
       const lines = out.split('\n')
         .filter(l => /Requests:|Tokens:|Total saved:|Window:|Hit rate:/.test(l))
         .map(l => '  ' + l.trim());

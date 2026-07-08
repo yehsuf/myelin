@@ -711,7 +711,7 @@ async function main() {
   if (copilot) {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
-      mergeJsonFile(mcp, { servers: {
+      mergeJsonFile(mcp, { mcpServers: {
         serena:    { type: 'local', command: 'serena', args: ['--project', '.'], env: {}, tools: ['*'] },
         semble:    { type: 'local', command: 'semble', args: ['mcp'],            env: {}, tools: ['*'] },
         'mcp-git': { type: 'local', command: 'uvx', args: ['mcp-server-git', '--repository', '.'], env: {}, tools: ['*'] },
