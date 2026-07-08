@@ -18,6 +18,8 @@ import { isPortFree, findFreePort } from './detect/port.mjs';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
+import { renderManagedBlock } from './config/instruction-snippets.mjs';
+import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk } from './tools/rtk.mjs';
@@ -54,22 +56,6 @@ function mergeJsonFile(path, updates, createIfMissing = {}) {
   backup(path);
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, JSON.stringify(mergeDeepPlain(current, updates), null, 2), 'utf8');
-}
-
-const MS = '# >>> myelin managed >>>';
-const ME = '# <<< myelin managed <<<';
-function writeManagedSection(filePath, content) {
-  mkdirSync(join(filePath, '..'), { recursive: true });
-  let existing = existsSync(filePath) ? readFileSync(filePath, 'utf8') : '';
-  const block = `${MS}\n${content}\n${ME}`;
-  const si = existing.indexOf(MS), ei = existing.indexOf(ME);
-  if (si !== -1 && ei !== -1) {
-    existing = existing.slice(0, si) + block + existing.slice(ei + ME.length);
-  } else {
-    existing = existing + (existing.endsWith('\n') ? '' : '\n') + '\n' + block + '\n';
-  }
-  backup(filePath);
-  writeFileSync(filePath, existing, 'utf8');
 }
 
 async function detectHeadroomFork() {
@@ -1015,8 +1001,15 @@ async function main() {
 
   // CLAUDE.md managed section
   if (claudeCC) {
-    writeManagedSection(join(home, '.claude', 'CLAUDE.md'),
-`\n## Code Navigation Protocol (Myelin)\n1. Before ANY file read or grep, call \`serena_find_symbol\` or \`serena_get_symbols_overview\`.\n2. For semantic/intent queries, call \`semble_search\`.\n3. For cross-file patterns, use astgrep — not grep loops.\n4. For code review, call \`mcp-git.git_diff\` / \`mcp-git.git_show\` instead of reading both files.\n5. Never use raw \`cat\`, \`grep\`, \`find\`, \`head\`, \`tail\` in Bash.\n\n## Output Protocol\n- Terse. No preamble. Patch format. No emoji.\n\n## Session\n- /compact when context > 50%. Headroom proxy on port ${port}.`);
+    const instrCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+    const claudeBlock = renderManagedBlock({
+      target: 'global',
+      provider: 'claude',
+      model: instrCfg.copilot?.model,
+      cfg: instrCfg,
+      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${port}.`],
+    });
+    writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
   }
 

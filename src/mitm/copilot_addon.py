@@ -191,20 +191,29 @@ def _detect_provider(host: str, path: str) -> Optional[dict]:
 # Body codec
 # ---------------------------------------------------------------------------
 
-def _decode_body(flow: http.HTTPFlow) -> Optional[bytes]:
-    raw = flow.request.content
+def _decompress_body(raw: bytes, encoding: str) -> bytes:
+    """Decompress a raw HTTP body given its content-encoding. Used for both
+    request and response bodies. Falls back to the raw bytes on any error
+    (e.g. unknown/absent encoding)."""
     if not raw:
-        return None
-    enc = flow.request.headers.get('content-encoding', '')
+        return raw
     try:
-        if 'gzip' in enc:
+        if 'gzip' in encoding:
             return gzip.decompress(raw)
-        if 'br' in enc:
+        if 'br' in encoding:
             import brotli
             return brotli.decompress(raw)
     except Exception:
         pass
     return raw
+
+
+def _decode_body(flow: http.HTTPFlow) -> Optional[bytes]:
+    raw = flow.request.content
+    if not raw:
+        return None
+    enc = flow.request.headers.get('content-encoding', '')
+    return _decompress_body(raw, enc)
 
 
 def _encode_body(data: bytes, original_encoding: str) -> bytes:

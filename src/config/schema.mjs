@@ -62,7 +62,17 @@ export const DEFAULT_CONFIG = {
     complex_model: 'claude-opus-4-7',
     cheap_threshold: 0.3,
   },
-  output_style: { caveman_rules: true, hooks: true },
+  output_style: {
+    caveman_rules: true,
+    hooks: true,
+    code_navigation: true,
+    // token_efficiency: injects a "Token efficiency" instruction block
+    // (top-priority placement) into the managed section of both
+    // ~/.claude/CLAUDE.md (global) and repo-level AGENTS.md. See
+    // src/config/instruction-snippets.mjs for scoping (global/repo,
+    // provider, model) and placement rules.
+    token_efficiency: true,
+  },
   learning: { headroom_learn: true },
   observability: { helicone: false, token_optimizer: true, ai_engineering_coach: true },
   stacklit: { enabled: false },

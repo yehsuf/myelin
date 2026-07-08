@@ -3,6 +3,10 @@ import { existsSync, readdirSync, statSync, mkdirSync, writeFileSync, readFileSy
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { load as parseYaml } from 'js-yaml';
+import { DEFAULT_CONFIG, mergeDeep } from '../config/schema.mjs';
+import { renderManagedBlock } from '../config/instruction-snippets.mjs';
+import { writeManagedSection } from '../config/managed-section.mjs';
 
 function findGitRoot(dir) {
   let d = dir;
@@ -269,6 +273,40 @@ function finishRepo(root, results) {
   } catch (e) {
     console.warn(`      ⚠ could not write .myelin/project.yml: ${e.message.split('\n')[0]}`);
   }
+  try {
+    writeAgentsInstructions(root);
+  } catch (e) {
+    console.warn(`      ⚠ could not write AGENTS.md: ${e.message.split('\n')[0]}`);
+  }
+}
+
+/** Repo-level instruction file (Copilot CLI, and other AGENTS.md-aware
+ *  agents, read this at the repo root). This is the "repo" scope
+ *  counterpart to install.mjs's global ~/.claude/CLAUDE.md write — see
+ *  src/config/instruction-snippets.mjs for the shared snippet registry and
+ *  scope/provider/model rules. */
+function writeAgentsInstructions(root) {
+  const cfg = _loadConfigSync();
+  const block = renderManagedBlock({ target: 'repo', provider: 'copilot', model: cfg.copilot?.model, cfg });
+  if (!block) return;
+  writeManagedSection(join(root, 'AGENTS.md'), `\n${block}`);
+}
+
+let _cachedCfg = null;
+function _loadConfigSync() {
+  // init.mjs's callers are synchronous (finishRepo runs inside both the
+  // interactive and concurrent per-repo paths); config.yaml is small and
+  // rarely present at this stage, so a plain sync read/parse keeps this
+  // dependency-free rather than threading an async loadConfig() through.
+  if (_cachedCfg) return _cachedCfg;
+  const configPath = join(homedir(), '.myelin', 'config.yaml');
+  let userConfig = {};
+  if (existsSync(configPath)) {
+    try { userConfig = parseYaml(readFileSync(configPath, 'utf8')) ?? {}; }
+    catch { /* fall back to defaults */ }
+  }
+  _cachedCfg = mergeDeep(DEFAULT_CONFIG, userConfig);
+  return _cachedCfg;
 }
 
 /** Run `fn` over `items` with at most `limit` in flight concurrently. */
