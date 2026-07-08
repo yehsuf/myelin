@@ -266,6 +266,56 @@ async function initRepoConcurrent(root, enabledTools) {
   return results;
 }
 
+/** Copilot CLI hook config content — see src/hooks/copilot-serena-guard.mjs
+ * for why this bridges through `myelin serena-guard` instead of calling
+ * `serena-hooks` directly (schema mismatch between Serena's Claude/VSCode
+ * output envelope and Copilot CLI's flat decision schema). Mirrors the
+ * PascalCase/matcher structure Serena's own docs use for their "VSCode"
+ * hooks file, which Serena explicitly documents as also being the file to
+ * reuse for Copilot CLI. */
+export function copilotSerenaHooksConfig() {
+  const hook = (event) => ({
+    matcher: '',
+    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event}`, timeoutSec: 10 }],
+  });
+  return JSON.stringify({
+    version: 1,
+    hooks: {
+      PreToolUse: [hook('preToolUse')],
+      SessionStart: [hook('sessionStart')],
+      Stop: [hook('stop')],
+    },
+  }, null, 2) + '\n';
+}
+
+/** Wire the Copilot CLI <-> Serena hook bridge at project level, but ONLY
+ * for repos where Serena has actually been set up (`.serena/project.yml`
+ * present) — nudging toward tools that were never configured for this repo
+ * would be worse than doing nothing. Written to `.github/hooks/`, the
+ * documented per-repo hook location for Copilot CLI. Not gitignored
+ * globally like `.myelin/`, because this specific file is deliberately
+ * excluded from commits below: the `myelin` command it invokes only
+ * resolves on machines that have Myelin installed, and Copilot CLI's
+ * preToolUse hooks are fail-CLOSED on a missing-command spawn error — for a
+ * teammate without Myelin, a committed copy of this file would silently
+ * deny every single tool call. It must stay personal, uncommitted state. */
+export function writeCopilotSerenaHooks(root) {
+  if (!existsSync(join(root, '.serena', 'project.yml'))) return;
+
+  const hooksDir = join(root, '.github', 'hooks');
+  mkdirSync(hooksDir, { recursive: true });
+  writeFileSync(join(hooksDir, 'copilot-serena-guard.json'), copilotSerenaHooksConfig(), 'utf8');
+
+  const gitignore = join(root, '.gitignore');
+  const marker = '.github/hooks/copilot-serena-guard.json';
+  if (existsSync(gitignore)) {
+    const content = readFileSync(gitignore, 'utf8');
+    if (!content.includes(marker)) appendFileSync(gitignore, `\n# Myelin: machine-specific Copilot CLI hook (requires Myelin installed)\n${marker}\n`);
+  } else {
+    writeFileSync(gitignore, `# Myelin: machine-specific Copilot CLI hook (requires Myelin installed)\n${marker}\n`);
+  }
+}
+
 function finishRepo(root, results) {
   // Never let a failure here (e.g. permissions) abort the whole recursive run
   try {
@@ -277,6 +327,11 @@ function finishRepo(root, results) {
     writeAgentsInstructions(root);
   } catch (e) {
     console.warn(`      ⚠ could not write AGENTS.md: ${e.message.split('\n')[0]}`);
+  }
+  try {
+    writeCopilotSerenaHooks(root);
+  } catch (e) {
+    console.warn(`      ⚠ could not write Copilot Serena hook config: ${e.message.split('\n')[0]}`);
   }
 }
 
