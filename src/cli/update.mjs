@@ -55,3 +55,28 @@ export async function runUpdate(options = {}) {
   }
   else console.log('  Run: myelin verify to confirm.\n');
 }
+
+export async function runSelfUpdate() {
+  const { execSync } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const { join, dirname } = await import('node:path');
+  const repoDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+  console.log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
+  try {
+    const current = execSync('git rev-parse --short HEAD', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    execSync('git fetch origin', { cwd: repoDir, stdio: 'pipe' });
+    const latest = execSync('git rev-parse --short origin/main', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    if (current === latest) {
+      console.log(`  ✓ Already up to date (${current})\n`);
+      return;
+    }
+    console.log(`  Updating ${current} → ${latest}...`);
+    execSync('git reset --hard origin/main', { cwd: repoDir, stdio: 'pipe' });
+    execSync('npm install --registry https://registry.npmjs.org', { cwd: repoDir, stdio: 'pipe' });
+    console.log(`  ✓ Updated to ${latest}`);
+    console.log(`  ↳ Run: node src/install.mjs --yes  to apply config changes\n`);
+  } catch (e) {
+    console.warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
+  }
+}

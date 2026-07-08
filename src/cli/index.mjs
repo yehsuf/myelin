@@ -24,8 +24,10 @@ program.command('diagnose')
 program.command('update')
   .description('Update all Myelin tools')
   .option('--check', 'Show what would be updated without making changes')
+  .option('--self', 'Update Myelin itself (git pull + npm install)')
   .action(async (opts) => {
-    const { runUpdate } = await import('./update.mjs');
+    const { runUpdate, runSelfUpdate } = await import('./update.mjs');
+    if (opts.self) { await runSelfUpdate(); return; }
     await runUpdate({ check: opts.check });
   });
 
