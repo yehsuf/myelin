@@ -542,7 +542,43 @@ async function main() {
   const claudeCC = !flags['copilot-only'];
   const copilot  = !flags['claude-only'];
 
-  console.log('\n\ud83e\uddec Myelin Installer \u2014 ' + os + '\n');
+  console.log('\n🧬 Myelin Installer — ' + os + '\n');
+
+  // Migrate ~/.tokenstack → ~/.myelin (one-time rename)
+  const oldDir = join(home, '.tokenstack');
+  const newDir = join(home, '.myelin');
+  if (existsSync(oldDir) && !existsSync(newDir)) {
+    try {
+      const { renameSync } = await import('node:fs');
+      renameSync(oldDir, newDir);
+      ok('Migrated ~/.tokenstack → ~/.myelin');
+    } catch (e) {
+      warn(`Could not rename ~/.tokenstack → ~/.myelin: ${e.message} — continuing`);
+    }
+  } else if (existsSync(oldDir) && existsSync(newDir)) {
+    // Both exist — remove old one (already migrated or fresh install created new)
+    try {
+      const { rmSync } = await import('node:fs');
+      rmSync(oldDir, { recursive: true, force: true });
+      ok('Removed legacy ~/.tokenstack (already migrated to ~/.myelin)');
+    } catch {}
+  }
+
+  // Migrate old launchd/systemd service names
+  if (os === 'darwin') {
+    try {
+      execSync('launchctl bootout gui/$(id -u)/com.tokenstack.headroom 2>/dev/null || true', { shell: true, stdio: 'pipe' });
+      const oldPlist = join(home, 'Library', 'LaunchAgents', 'com.tokenstack.headroom.plist');
+      if (existsSync(oldPlist)) { const { unlinkSync } = await import('node:fs'); unlinkSync(oldPlist); ok('Removed legacy com.tokenstack.headroom launchd service'); }
+    } catch {}
+  } else if (os === 'linux') {
+    try {
+      execSync('systemctl --user disable --now tokenstack-headroom.service 2>/dev/null || true', { stdio: 'pipe' });
+      const oldUnit = join(home, '.config', 'systemd', 'user', 'tokenstack-headroom.service');
+      if (existsSync(oldUnit)) { const { unlinkSync } = await import('node:fs'); unlinkSync(oldUnit); ok('Removed legacy tokenstack-headroom systemd service'); }
+    } catch {}
+  }
+
   console.log('Detecting existing installations...');
 
   const tools     = await detectAll();
