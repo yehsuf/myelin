@@ -18,20 +18,21 @@ function runPs(script) {
 }
 
 /** Pure builder — returns the PowerShell script text without executing it. */
-export function generateHeadroomRunScript({ headroomBin, port }) {
+export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults }) {
   const bin = headroomBin.replace(/\//g, '\\');
+  const extraArgs = interceptToolResults ? ' --intercept-tool-results' : '';
   // Kill any existing headroom process, start fresh hidden, persist via registry
   return `
 Stop-Process -Name headroom -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
-Start-Process -FilePath '${bin}' -ArgumentList 'proxy --port ${port}' -WindowStyle Hidden
-Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" proxy --port ${port}'
+Start-Process -FilePath '${bin}' -ArgumentList 'proxy --port ${port}${extraArgs}' -WindowStyle Hidden
+Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" proxy --port ${port}${extraArgs}'
 Write-Host "[myelin] headroom started (hidden)"
 `;
 }
 
-export function installService({ headroomBin, port }) {
-  runPs(generateHeadroomRunScript({ headroomBin, port }));
+export function installService({ headroomBin, port, interceptToolResults }) {
+  runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults }));
 }
 
 /** Pure builder — returns the PowerShell script text without executing it. */

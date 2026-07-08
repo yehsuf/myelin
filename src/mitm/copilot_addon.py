@@ -342,8 +342,16 @@ class MyelinAddon:
                 tools = data.get('tools')
                 if isinstance(tools, list):
                     filtered, changed = filter_tools(tools, messages)
+                    # Apply the filtered set every request — not just when it
+                    # changed from the previous turn. Only gating on `changed`
+                    # meant the full, unfiltered tool list (front of the
+                    # prompt, inside the cached prefix) shipped whenever this
+                    # turn's BM25 pick happened to match the last one, causing
+                    # the tool-defs block length to alternate turn-to-turn and
+                    # busting the provider's prompt cache. `changed` is now
+                    # only used to decide whether to log.
+                    data['tools'] = filtered
                     if changed:
-                        data['tools'] = filtered
                         ctx.log.info(f'[myelin] tools {len(tools)}→{len(filtered)}')
             except Exception as e:
                 ctx.log.debug(f'[myelin] tool_filter skipped: {e}')

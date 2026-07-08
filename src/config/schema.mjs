@@ -6,6 +6,18 @@ export const DEFAULT_CONFIG = {
       port: 8787,
       bind: '127.0.0.1',
       backend: 'kompress-base',
+      // cache: freeze prior turns to maximise provider prompt-cache hit rate.
+      // token: recompress prior turns for max text compression (default in
+      // headroom itself, but measurably worse for Anthropic — cache reads are
+      // ~0.1x cost and writes ~1.25-2x, so recompressing to save a few % text
+      // loses to caching within 2-3 reused turns). See docs/specs.
+      mode: 'cache',
+      // ast-grep-based outlining of large Read/tool-result payloads before
+      // they enter the prompt. Off by default in headroom itself ("while
+      // this feature ships") — we opt in since it has no cache-stability
+      // downside (outlined content is new, gets cached once) and 35-55%
+      // measured savings on large-repo reads.
+      intercept_tool_results: true,
       thrash_cache: true,
       diff_enforcer: true,
       corporate_proxy: '',

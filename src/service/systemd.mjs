@@ -3,14 +3,15 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
-export function generateSystemdUnit({ headroomBin, port, envVars = {} }) {
+export function generateSystemdUnit({ headroomBin, port, envVars = {}, interceptToolResults }) {
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const extraArgs = interceptToolResults ? ' --intercept-tool-results' : '';
   return `[Unit]
 Description=Myelin Headroom AI Proxy
 After=network.target
 
 [Service]
-ExecStart=${headroomBin} proxy --port ${port}
+ExecStart=${headroomBin} proxy --port ${port}${extraArgs}
 Restart=always
 RestartSec=10
 ${envLines}
@@ -61,6 +62,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
   if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
   args.push('--ignore-hosts', String.raw`.*\.akamai\.com|.*\.corp\.akamai\.com|.*\.akamaized\.net|.*\.akamaihd\.net`);
+  const content = generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars });
   const p = mitmUnitPath();
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');

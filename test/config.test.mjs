@@ -22,6 +22,12 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.headroom.backend = kompress-base', () => {
     assert.equal(DEFAULT_CONFIG.proxy.headroom.backend, 'kompress-base');
   });
+  it('DEFAULT_CONFIG has proxy.headroom.mode = cache (prefix-stable, cache-hit optimized)', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.headroom.mode, 'cache');
+  });
+  it('DEFAULT_CONFIG has proxy.headroom.intercept_tool_results = true', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.headroom.intercept_tool_results, true);
+  });
   it('DEFAULT_CONFIG has index_tier = default', () => {
     assert.equal(DEFAULT_CONFIG.index_tier, 'default');
   });

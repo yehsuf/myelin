@@ -206,7 +206,13 @@ def filter_tools(tools: list[dict], messages: list[dict]) -> tuple[list[dict], b
         ranked = bm25_ranks
 
     top_indices = set(ranked[:TOP_K])
-    selected = [candidates[i] for i in ranked if i in top_indices]
+    # Emit selected tools in their ORIGINAL declaration order (not BM25 relevance
+    # order), so the serialized tools[] block stays byte-stable across turns
+    # whenever the selected set is unchanged. tools[] sits at the very front of
+    # the provider cache prefix (Anthropic: tools -> system -> messages), so any
+    # reordering here — even with an identical set — busts the entire downstream
+    # cache. Relevance ranking is only used to decide WHICH tools make top-K.
+    selected = [candidates[i] for i in range(len(candidates)) if i in top_indices]
     filtered = always_on + selected
 
     # Stability check: only signal changed if the name-set actually differs

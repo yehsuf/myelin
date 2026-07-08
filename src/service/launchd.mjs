@@ -111,13 +111,19 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
 
   // Bypass TLS interception for mTLS hosts (Akamai internal tools, etc.)
   // client certs cannot survive CONNECT proxy — these get raw TCP tunnel
+  //
+  // IMPORTANT: *.githubcopilot.com must NEVER be in this list — that is the
+  // exact Copilot LLM API host this proxy exists to intercept and compress.
+  // A prior commit (75ae072) accidentally added it alongside api.github.com/
+  // *.github.com (added for git/gh-cli passthrough, unrelated to mTLS), which
+  // silently disabled 100% of Copilot compression. api.github.com/*.github.com
+  // are left as-is pending confirmation of their original intent.
   const IGNORE_HOSTS = [
     String.raw`.*\.akamai\.com`,
     String.raw`.*\.corp\.akamai\.com`,
     String.raw`.*\.akamaized\.net`,
     String.raw`.*\.akamaihd\.net`,
     String.raw`api\.github\.com`,
-    String.raw`.*\.githubcopilot\.com`,
     String.raw`.*\.github\.com`,
   ].join('|');
   args.push('--ignore-hosts', IGNORE_HOSTS);

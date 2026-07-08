@@ -31,6 +31,10 @@ export async function runUpdate(options = {}) {
   const os = detectOS();
   const tools = await detectAll();
   const cmds = upgradeCommands(os);
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const repoDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const installerCmd = `node "${join(repoDir, 'src', 'install.mjs')}" --yes`;
   console.log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
   for (const [name, r] of Object.entries(tools)) {
     const cmd = cmds[name];
@@ -40,7 +44,7 @@ export async function runUpdate(options = {}) {
     const status = r.installed ? `${r.version ?? 'installed'}` : 'not installed';
     console.log(`  ${icon} ${label.padEnd(14)} ${status}`);
     if (!check) {
-      if (!cmd.upgrade) { console.log(`    · no auto-update — reinstall: node src/install.mjs --yes`); continue; }
+      if (!cmd.upgrade) { console.log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
       try { execSync(cmd.upgrade, { stdio: 'inherit' }); console.log('    ✓ done'); }
       catch (e) { console.warn(`    ✗ failed: ${e.message.split('\n')[0]}`); }
     } else {
@@ -101,7 +105,7 @@ export async function runSelfUpdate() {
       execSync(`node "${join(repoDir, 'src', 'install.mjs')}" --yes`, { stdio: 'inherit', cwd: repoDir });
     } catch (e) {
       console.warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
-      console.warn(`  ↳ Run manually: node src/install.mjs --yes`);
+      console.warn(`  ↳ Run manually: node "${join(repoDir, 'src', 'install.mjs')}" --yes`);
     }
     console.log();
   } catch (e) {

@@ -33,6 +33,14 @@ describe('launchd plist generator', () => {
     const xml = generatePlist(OPTS);
     assert.ok(xml.includes('HEADROOM_PORT'));
   });
+  it('omits --intercept-tool-results by default', () => {
+    const xml = generatePlist(OPTS);
+    assert.ok(!xml.includes('--intercept-tool-results'));
+  });
+  it('adds --intercept-tool-results when requested', () => {
+    const xml = generatePlist({ ...OPTS, interceptToolResults: true });
+    assert.ok(xml.includes('--intercept-tool-results'));
+  });
 });
 
 describe('systemd unit generator', () => {
@@ -52,6 +60,14 @@ describe('systemd unit generator', () => {
     const unit = generateSystemdUnit(OPTS);
     assert.ok(unit.includes('HEADROOM_PORT'));
   });
+  it('omits --intercept-tool-results by default', () => {
+    const unit = generateSystemdUnit(OPTS);
+    assert.ok(!unit.includes('--intercept-tool-results'));
+  });
+  it('adds --intercept-tool-results when requested', () => {
+    const unit = generateSystemdUnit({ ...OPTS, interceptToolResults: true });
+    assert.ok(unit.includes('--intercept-tool-results'));
+  });
 });
 
 describe('windows run-script generator', () => {
@@ -66,5 +82,13 @@ describe('windows run-script generator', () => {
   it('contains port argument', () => {
     const script = generateHeadroomRunScript(OPTS);
     assert.ok(script.includes('8787'));
+  });
+  it('omits --intercept-tool-results by default', () => {
+    const script = generateHeadroomRunScript(OPTS);
+    assert.ok(!script.includes('--intercept-tool-results'));
+  });
+  it('adds --intercept-tool-results when requested', () => {
+    const script = generateHeadroomRunScript({ ...OPTS, interceptToolResults: true });
+    assert.ok(script.includes('--intercept-tool-results'));
   });
 });
