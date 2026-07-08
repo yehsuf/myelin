@@ -36,6 +36,14 @@ program.command('stats')
     await runStats();
   });
 
+program.command('init')
+  .description('Initialize current git repo with Serena + Semble (register + index)')
+  .option('-y, --yes', 'Auto-accept all prompts')
+  .action(async (opts) => {
+    const { runInit } = await import('./init.mjs');
+    await runInit({ yes: opts.yes });
+  });
+
 program.command('restart')
   .description('Restart headroom and mitmproxy services')
   .action(async () => {
