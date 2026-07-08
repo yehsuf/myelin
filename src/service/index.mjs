@@ -28,6 +28,21 @@ export async function installMitmService(opts) {
   }
 }
 
+/**
+ * Install a watchdog that periodically revives dropped services.
+ * macOS only for now — systemd's Restart=always + Linux's lack of the
+ * silent crash-loop-disable behavior make it less critical there; Windows
+ * has no equivalent yet (tracked separately).
+ */
+export async function installWatchdog(opts) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const { installWatchdog } = await import('./launchd.mjs');
+    return installWatchdog(opts);
+  }
+  return null;
+}
+
 export async function serviceStatus() {
   const os = detectOS();
   if (os === 'darwin') {

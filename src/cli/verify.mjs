@@ -67,6 +67,17 @@ export async function runVerify() {
       : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
   });
 
+  // Watchdog (macOS only) — auto-revives services if launchd silently drops them
+  if (process.platform === 'darwin') {
+    try {
+      const { execSync } = await import('node:child_process');
+      execSync(`launchctl list com.myelin.watchdog`, { stdio: 'ignore' });
+      results.push({ name: 'Watchdog', ok: true, detail: 'active — checks every 90s' });
+    } catch {
+      results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
+    }
+  }
+
   for (const tool of ['uv', 'serena']) {
     const r = await detectTool(tool, '--version');
     results.push({ name: tool, ok: r.installed, detail: r.installed ? r.version : 'not found — run: myelin update' });

@@ -164,7 +164,7 @@ function printStateTable(tools, caBundles, proxy) {
  * Returns the path to the combined cert, or the original path if no
  * interception is detected or extraction fails.
  */
-async function buildCombinedCaCert(rootCaPath, home) {
+async function buildCombinedCaCert(rootCaPath, home, { force = false } = {}) {
   if (!rootCaPath) return null;
   // Skip on Windows — openssl/awk not available; ca-bundle.pem already built by installMitmproxyCA
   if (detectOS() === 'windows') return rootCaPath;
@@ -172,17 +172,18 @@ async function buildCombinedCaCert(rootCaPath, home) {
 
   try {
     const intermediate = execSync(
-      `echo | openssl s_client -connect api.github.com:443 -showcerts 2>/dev/null | ` +
+      // Unset proxy vars so openssl connects directly (sees real corp TLS chain, not mitmproxy's)
+      `unset HTTPS_PROXY https_proxy; echo | openssl s_client -connect api.github.com:443 -showcerts 2>/dev/null | ` +
       `awk '/-----BEGIN CERTIFICATE-----/{i++} i==2{print} /-----END CERTIFICATE-----/ && i==2{exit}'`,
-      { shell: true, timeout: 10000 }
+      { shell: true, timeout: 12000 }
     ).toString().trim();
 
     if (!intermediate.includes('BEGIN CERTIFICATE')) return rootCaPath;
 
     const rootContent = readFileSync(rootCaPath, 'utf8');
-    // Check if intermediate is already present (avoid duplicates)
+    // Skip dedup check when force=true (e.g. post-migration rebuild)
     const intermediateLine = intermediate.split('\n')[1]?.trim() ?? '';
-    if (intermediateLine && rootContent.includes(intermediateLine)) return rootCaPath;
+    if (!force && intermediateLine && rootContent.includes(intermediateLine)) return rootCaPath;
 
     writeFileSync(
       combinedPath,
@@ -549,28 +550,37 @@ async function main() {
   const newDir = join(home, '.myelin');
   // Also handle the case where Move-Item put .tokenstack *inside* .myelin
   const nestedOld = join(newDir, '.tokenstack');
-  const runningFromOld = process.argv[1]?.startsWith(oldDir) || process.argv[1]?.startsWith(nestedOld);
+  const runningFromOld = process.argv[1]?.startsWith(oldDir);
+  const runningFromNested = process.argv[1]?.startsWith(nestedOld);
+  let didMigrate = false;
 
-  if (existsSync(nestedOld) && !runningFromOld) {
-    // Move contents of .myelin/.tokenstack up into .myelin, then re-clone repo
+  if (existsSync(nestedOld)) {
+    // Move non-repo contents of .myelin/.tokenstack up into .myelin
+    // Safe to run even when running from inside nestedOld — we skip repo and don't delete if locked
     try {
       const { readdirSync, renameSync } = await import('node:fs');
       for (const entry of readdirSync(nestedOld)) {
-        if (entry === 'repo') continue; // skip repo — will re-clone to correct location
+        if (entry === 'repo') continue; // repo may be locked if running from it
         const src = join(nestedOld, entry);
         const dst = join(newDir, entry);
         if (!existsSync(dst)) renameSync(src, dst);
       }
-      // Move repo to correct location if not already there
+      // Move repo to correct location only if not currently running from it
       const nestedRepo = join(nestedOld, 'repo');
       const correctRepo = join(newDir, 'repo');
-      if (existsSync(nestedRepo) && !existsSync(correctRepo)) {
+      if (!runningFromNested && existsSync(nestedRepo) && !existsSync(correctRepo)) {
         const { renameSync } = await import('node:fs');
         renameSync(nestedRepo, correctRepo);
       }
-      const { rmSync } = await import('node:fs');
-      rmSync(nestedOld, { recursive: true, force: true });
-      ok('Cleaned up nested ~/.myelin/.tokenstack → ~/.myelin');
+      // Only delete nestedOld if not running from it
+      if (!runningFromNested) {
+        const { rmSync } = await import('node:fs');
+        rmSync(nestedOld, { recursive: true, force: true });
+        ok('Cleaned up nested ~/.myelin/.tokenstack → ~/.myelin');
+      } else {
+        ok('Migrated runtime files from nested .tokenstack (repo stays until next install from correct path)');
+      }
+      didMigrate = true;
     } catch (e) { warn(`Nested migration failed: ${e.message.split('\n')[0]}`); }
   }
 
@@ -584,6 +594,7 @@ async function main() {
       const { renameSync } = await import('node:fs');
       renameSync(oldDir, newDir);
       ok('Migrated ~/.tokenstack → ~/.myelin');
+      didMigrate = true;
     } catch {
       // Fallback: copy + delete (handles cross-device or locked files)
       try {
@@ -592,6 +603,7 @@ async function main() {
           : `cp -r "${oldDir}" "${newDir}" && rm -rf "${oldDir}"`,
           { stdio: 'pipe', shell: true });
         ok('Migrated ~/.tokenstack → ~/.myelin (via copy)');
+        didMigrate = true;
       } catch (e2) {
         warn(`Could not migrate ~/.tokenstack → ~/.myelin: ${e2.message.split('\n')[0]} — continuing`);
       }
@@ -610,6 +622,20 @@ async function main() {
       execSync('launchctl bootout gui/$(id -u)/com.tokenstack.headroom 2>/dev/null || true', { shell: true, stdio: 'pipe' });
       const oldPlist = join(home, 'Library', 'LaunchAgents', 'com.tokenstack.headroom.plist');
       if (existsSync(oldPlist)) { const { unlinkSync } = await import('node:fs'); unlinkSync(oldPlist); ok('Removed legacy com.tokenstack.headroom launchd service'); }
+    } catch {}
+    // Patch any headroom plist that still references ~/.tokenstack CA paths
+    try {
+      const { readdirSync, readFileSync } = await import('node:fs');
+      const la = join(home, 'Library', 'LaunchAgents');
+      const plists = readdirSync(la).filter(f => f.endsWith('.headroom.plist') && !f.includes('.bak'));
+      for (const pf of plists) {
+        const fp = join(la, pf);
+        const raw = readFileSync(fp, 'utf8');
+        if (raw.includes('.tokenstack')) {
+          writeFileSync(fp, raw.replaceAll('.tokenstack', '.myelin'), 'utf8');
+          ok(`Patched ${pf}: .tokenstack → .myelin CA paths`);
+        }
+      }
     } catch {}
   } else if (os === 'linux') {
     try {
@@ -686,6 +712,24 @@ async function main() {
     ok('semble installed');
   } else { skip('semble (installed)'); }
 
+  // agentcairn — best-in-class local memory MCP (Obsidian vault + DuckDB, LongMemEval top score)
+  {
+    const cairnInstalled = (() => { try { execSync('uv tool run --from agentcairn cairn --version', { stdio: 'pipe', timeout: 5000 }); return true; } catch { return false; } })();
+    if (!cairnInstalled) {
+      console.log('  Installing agentcairn...');
+      try {
+        execSync('uv tool install --python 3.12 agentcairn', { stdio: 'inherit' });
+        ok('agentcairn installed');
+      } catch { warn('agentcairn install failed — will use uvx fallback'); }
+    } else { skip('agentcairn (installed)'); }
+    // Claude Code plugin gives richer auto-recall hooks — install if claude CLI is available
+    if (claudeCC) {
+      try {
+        execSync('claude plugin list 2>/dev/null | grep -q agentcairn || (claude plugin marketplace add ccf/agentcairn 2>/dev/null && claude plugin install agentcairn@agentcairn --yes 2>/dev/null)', { shell: true, stdio: 'pipe', timeout: 30000 });
+      } catch {}
+    }
+  }
+
   if (!tools.astgrep.installed) {
     console.log('  Installing ast-grep...');
     if (os === 'darwin') {
@@ -726,7 +770,7 @@ async function main() {
   // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain
   // This is required when a corporate SSL interceptor (e.g. NetFree/Hot) uses an intermediate
   // CA that isn't in the system trust store. We extract it from the live connection.
-  const combinedCert = await buildCombinedCaCert(caBundles[0]?.path ?? null, home);
+  const combinedCert = await buildCombinedCaCert(caBundles[0]?.path ?? null, home, { force: didMigrate });
   if (combinedCert && combinedCert !== caBundles[0]?.path) {
     // Update sslEnv to point to the combined cert
     Object.keys(sslEnv).forEach(k => { sslEnv[k] = combinedCert; });
@@ -757,10 +801,12 @@ async function main() {
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
+    envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
     // Skip re-registration if already healthy (avoids false "no response" on re-run)
     const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
     if (!alreadyHealthy) {
       await installService({ headroomBin: binPath, port, envVars,
+        interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
         logPath: join(home, '.myelin', 'headroom.log') });
       ok(`service registered (port ${port})`);
       console.log('  Waiting for proxy...');
@@ -786,18 +832,29 @@ async function main() {
         ...sslEnv,
       };
       try {
+        // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
+        const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
         await installMitmService({
           mitmdumpBin,
           port: mitmPort,
           addonPath,
           envVars: mitmEnv,
-          upstreamProxy: corpProxy || '',
+          upstreamProxy: safeUpstream,
           logPath: join(home, '.myelin', 'mitmproxy.log'),
           home,
         });
         ok(`mitmproxy service registered (port ${mitmPort})`);
       } catch (e) {
         warn(`mitmproxy service registration failed: ${e.message}`);
+      }
+      // Watchdog: revives headroom/mitmproxy if launchd silently drops them
+      // (macOS crash-loop protection can disable a KeepAlive job with no log trace)
+      try {
+        const { installWatchdog } = await import('./service/index.mjs');
+        const installed = await installWatchdog({ home, headroomPort: port, mitmPort });
+        if (installed) ok('watchdog installed — auto-revives dropped services every 90s');
+      } catch (e) {
+        warn(`watchdog install failed: ${e.message}`);
       }
     }
   } else {
@@ -850,6 +907,7 @@ async function main() {
         semble:    { command: toolPaths.semble, args: [] },
         'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
         memory:    { command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile } },
+        cairn:     { command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'] },
       },
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
@@ -864,6 +922,7 @@ async function main() {
         semble:    { type: 'local', command: toolPaths.semble, args: [],          env: {}, tools: ['*'] },
         'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
         memory:    { type: 'local', command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile }, tools: ['*'] },
+        cairn:     { type: 'local', command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'], env: {}, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }

@@ -64,6 +64,15 @@ export async function runSelfUpdate() {
 
   console.log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
   try {
+    // Safety gate 1: refuse to touch a dirty working tree — a hard reset
+    // would silently discard any uncommitted edits.
+    const dirty = execSync('git status --porcelain', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    if (dirty) {
+      console.warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
+      console.warn('    Commit or stash your changes, then re-run: myelin update --self\n');
+      return;
+    }
+
     const current = execSync('git rev-parse --short HEAD', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
     execSync('git fetch origin', { cwd: repoDir, stdio: 'pipe' });
     const latest = execSync('git rev-parse --short origin/main', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
@@ -71,11 +80,30 @@ export async function runSelfUpdate() {
       console.log(`  ✓ Already up to date (${current})\n`);
       return;
     }
+
+    // Safety gate 2: refuse to discard unpushed local commits.
+    const unpushed = execSync('git log origin/main..HEAD --oneline', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    if (unpushed) {
+      console.warn('  ✗ Local commits not on origin/main would be lost — aborting self-update:');
+      unpushed.split('\n').forEach(l => console.warn(`      ${l}`));
+      console.warn('    Push these commits first, then re-run: myelin update --self\n');
+      return;
+    }
+
     console.log(`  Updating ${current} → ${latest}...`);
-    execSync('git reset --hard origin/main', { cwd: repoDir, stdio: 'pipe' });
+    // Fast-forward only — never force-discard history. Fails safely if diverged.
+    execSync('git merge --ff-only origin/main', { cwd: repoDir, stdio: 'pipe' });
     execSync('npm install --registry https://registry.npmjs.org', { cwd: repoDir, stdio: 'pipe' });
     console.log(`  ✓ Updated to ${latest}`);
-    console.log(`  ↳ Run: node src/install.mjs --yes  to apply config changes\n`);
+    // Re-run installer to apply config changes (service files, shell profile, MCP config)
+    console.log(`  ↳ Applying config changes...`);
+    try {
+      execSync(`node "${join(repoDir, 'src', 'install.mjs')}" --yes`, { stdio: 'inherit', cwd: repoDir });
+    } catch (e) {
+      console.warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
+      console.warn(`  ↳ Run manually: node src/install.mjs --yes`);
+    }
+    console.log();
   } catch (e) {
     console.warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
   }

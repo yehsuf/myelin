@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { readdirSync } from 'node:fs';
 import { detectOS } from '../detect/os.mjs';
 import { waitForHeadroom } from '../tools/headroom.mjs';
 import { headroomBinPath } from '../tools/headroom.mjs';
@@ -13,7 +14,18 @@ export async function runRestart() {
   // --- headroom ---
   if (os === 'darwin') {
     try {
-      execSync('launchctl unload ~/Library/LaunchAgents/com.myelin.headroom.plist 2>/dev/null; launchctl load ~/Library/LaunchAgents/com.myelin.headroom.plist', { shell: true, stdio: 'pipe' });
+      const uid = execSync('id -u').toString().trim();
+      const la = join(homedir(), 'Library', 'LaunchAgents');
+      // Accept any headroom plist — prefer com.myelin.headroom, fall back to any match
+      const allHeadroom = readdirSync(la).filter(f => f.endsWith('.headroom.plist') && !f.includes('.bak'));
+      const canonical = allHeadroom.find(f => f === 'com.myelin.headroom.plist') ?? allHeadroom[0];
+      if (!canonical) throw new Error('no headroom plist found');
+      // Bootout all variants first
+      for (const pf of allHeadroom) {
+        try { execSync(`launchctl bootout gui/${uid}/${pf.replace('.plist', '')}`, { stdio: 'ignore' }); } catch {}
+      }
+      execSync('sleep 1');
+      execSync(`launchctl bootstrap gui/${uid} ${join(la, canonical)}`, { stdio: 'pipe' });
       console.log('  ✓ headroom restarted (launchd)');
     } catch { console.warn('  ⚠ headroom launchd restart failed — trying direct'); }
   } else if (os === 'linux') {
@@ -36,7 +48,11 @@ export async function runRestart() {
   // --- mitmproxy ---
   if (os === 'darwin') {
     try {
-      execSync('launchctl unload ~/Library/LaunchAgents/com.myelin.mitmproxy.plist 2>/dev/null; launchctl load ~/Library/LaunchAgents/com.myelin.mitmproxy.plist', { shell: true, stdio: 'pipe' });
+      const uid = execSync('id -u').toString().trim();
+      const mp = `${homedir()}/Library/LaunchAgents/com.myelin.mitmproxy.plist`;
+      try { execSync(`launchctl bootout gui/${uid}/com.myelin.mitmproxy`, { stdio: 'ignore' }); } catch {}
+      execSync('sleep 1');
+      execSync(`launchctl bootstrap gui/${uid} ${mp}`, { stdio: 'pipe' });
       console.log('  ✓ mitmproxy restarted (launchd)');
     } catch { console.warn('  ⚠ mitmproxy launchd restart failed'); }
   } else if (os === 'linux') {
@@ -64,7 +80,7 @@ export async function runRestart() {
 
   // Health check
   const port = 8787;
-  const healthy = await waitForHeadroom(port, 8000);
+  const healthy = await waitForHeadroom(port, 20000);
   healthy ? console.log(`  ✓ headroom healthy on :${port}`) : console.warn(`  ⚠ headroom not responding on :${port}`);
   console.log();
 }

@@ -65,14 +65,17 @@ export async function runReload({ silent = false } = {}) {
 
 function _reloadMacTerminals(sourceCmd) {
   let reloaded = false;
+  const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-  // Terminal.app — all tabs in all windows
+  // Terminal.app — only tabs where the shell is the only (idle) process
   try {
-    const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
-      do script "${cmd}" in t
+      -- processes of t is a list; length=1 means shell is idle (no child running)
+      if (count of processes of t) is 1 then
+        do script "${cmd}" in t
+      end if
     end repeat
   end repeat
 end tell`;
@@ -80,16 +83,18 @@ end tell`;
     reloaded = true;
   } catch {}
 
-  // iTerm2 — all sessions in all tabs in all windows
+  // iTerm2 — only sessions where the foreground job is the shell itself
   try {
-    const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = `tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
-        tell s
-          write text "${cmd}"
-        end tell
+        set jobName to variable value of s named "jobName"
+        if jobName is "zsh" or jobName is "bash" or jobName is "fish" then
+          tell s
+            write text "${cmd}"
+          end tell
+        end if
       end repeat
     end repeat
   end repeat
