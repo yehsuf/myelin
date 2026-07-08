@@ -551,7 +551,8 @@ async function main() {
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
     // serena on PyPI is an unrelated AMQP package — must install from GitHub as serena-agent
-    execSync('uv tool install "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
+    // Force Python 3.12: Pydantic V1 (used by serena) is incompatible with Python 3.14+
+    execSync('uv tool install --python 3.12 "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
     ok('serena installed');
   } else { skip(`serena (${tools.serena.version})`); }
 
