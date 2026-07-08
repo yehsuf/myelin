@@ -107,10 +107,10 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   // Bypass TLS interception for mTLS hosts (Akamai internal tools, etc.)
   // client certs cannot survive CONNECT proxy — these get raw TCP tunnel
   const IGNORE_HOSTS = [
-    r`.*\.akamai\.com`,
-    r`.*\.corp\.akamai\.com`,
-    r`.*\.akamaized\.net`,
-    r`.*\.akamaihd\.net`,
+    String.raw`.*\.akamai\.com`,
+    String.raw`.*\.corp\.akamai\.com`,
+    String.raw`.*\.akamaized\.net`,
+    String.raw`.*\.akamaihd\.net`,
   ].join('|');
   args.push('--ignore-hosts', IGNORE_HOSTS);
 

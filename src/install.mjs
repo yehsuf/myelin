@@ -619,6 +619,11 @@ async function main() {
     } catch {}
   }
 
+  // Clear stale SSL env vars pointing to old ~/.tokenstack path
+  for (const v of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'HEADROOM_CA_BUNDLE', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO']) {
+    if (process.env[v]?.includes('.tokenstack')) delete process.env[v];
+  }
+
   console.log('Detecting existing installations...');
 
   const tools     = await detectAll();
