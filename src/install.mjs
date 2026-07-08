@@ -553,6 +553,8 @@ async function main() {
     // serena on PyPI is an unrelated AMQP package — must install from GitHub as serena-agent
     // Force Python 3.12: Pydantic V1 (used by serena) is incompatible with Python 3.14+
     execSync('uv tool install --python 3.12 "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
+    // bottle 0.13+ installs as a pyzapp (no .py module) — webview requires the .py file
+    execSync('uv pip install --python "$(uv tool dir)/serena-agent" "bottle<0.13"', { stdio: 'pipe', shell: true });
     ok('serena installed');
   } else { skip(`serena (${tools.serena.version})`); }
 
