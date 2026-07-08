@@ -550,13 +550,15 @@ async function main() {
   step('[2/7] Code discovery tools...');
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
-    // serena on PyPI is an unrelated AMQP package — must install from GitHub as serena-agent
-    // Force Python 3.12: Pydantic V1 (used by serena) is incompatible with Python 3.14+
     execSync('uv tool install --python 3.12 "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
-    // bottle 0.13+ installs as a pyzapp (no .py module) — webview requires the .py file
-    execSync('uv pip install --python "$(uv tool dir)/serena-agent" "bottle<0.13"', { stdio: 'pipe', shell: true });
     ok('serena installed');
   } else { skip(`serena (${tools.serena.version})`); }
+  // Always ensure bottle<0.13 in serena env — 0.13+ is pyzapp (no .py), breaks webview
+  try {
+    const serenaEnv = execSync('uv tool dir', { stdio: 'pipe' }).toString().trim();
+    const bottlePath = join(serenaEnv, 'serena-agent');
+    execSync(`uv pip install --python "${bottlePath}" "bottle<0.13"`, { stdio: 'pipe' });
+  } catch {}
 
   if (!tools.semble.installed) {
     console.log('  Installing Semble...'); uvToolInstall('semble[mcp]');
