@@ -51,7 +51,13 @@ export function installService(opts) {
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
-  execSync('systemctl --user enable --now myelin-headroom.service');
+  execSync('systemctl --user enable myelin-headroom.service');
+  // `enable --now` only starts a unit if it isn't already active — it does
+  // NOT restart an already-running service, so a changed ExecStart (e.g.
+  // a repo path migration) would silently keep the OLD process running
+  // forever with stale arguments. `restart` starts it if stopped and
+  // cleanly restarts it if running, so it's always correct here.
+  execSync('systemctl --user restart myelin-headroom.service');
 }
 
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
@@ -67,7 +73,14 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
-  execSync('systemctl --user enable --now myelin-mitmproxy.service');
+  execSync('systemctl --user enable myelin-mitmproxy.service');
+  // See installService() above — `enable --now` doesn't restart an
+  // already-running unit, which left a stale mitmdump process (pointing at
+  // a deleted ~/.tokenstack path) running for 7+ hours after today's
+  // ~/.tokenstack -> ~/.myelin migration, silently failing every TLS
+  // connection to api.business.githubcopilot.com. `restart` is always
+  // correct: starts if stopped, cleanly restarts if already running.
+  execSync('systemctl --user restart myelin-mitmproxy.service');
 }
 
 export function mitmServiceStatus() {
