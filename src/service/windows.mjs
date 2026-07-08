@@ -34,7 +34,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} 
   const addon = addonPath.replace(/\//g, '\\');
   const ca    = (envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '').replace(/\//g, '\\');
   const caArg    = ca ? ` --set ssl_verify_upstream_trusted_ca="${ca}"` : '';
-  const proxyArg = envVars.HTTPS_PROXY ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
+  const proxyArg = (envVars.HTTPS_PROXY && !envVars.HTTPS_PROXY.includes('127.0.0.1') && !envVars.HTTPS_PROXY.includes('localhost')) ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
   const args     = `--listen-port ${port} -s "${addon}"${proxyArg}${caArg}`;
   const envLines = Object.entries(envVars)
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${v.replace(/\\/g, '\\\\')}', 'User')`)

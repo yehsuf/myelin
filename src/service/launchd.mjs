@@ -95,7 +95,8 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
 
   // Chain through corporate/upstream proxy if set
   const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
-  if (proxy) args.push('--mode', `upstream:${proxy}`);
+  // Never route mitmproxy through itself — skip 127.0.0.1 upstream
+  if (proxy && !proxy.includes('127.0.0.1') && !proxy.includes('localhost')) args.push('--mode', `upstream:${proxy}`);
 
   // Pass our CA bundle to mitmproxy's upstream TLS verifier.
   // Required when a corporate SSL interceptor (MITM proxy) sits between
@@ -111,6 +112,9 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     String.raw`.*\.corp\.akamai\.com`,
     String.raw`.*\.akamaized\.net`,
     String.raw`.*\.akamaihd\.net`,
+    String.raw`api\.github\.com`,
+    String.raw`.*\.githubcopilot\.com`,
+    String.raw`.*\.github\.com`,
   ].join('|');
   args.push('--ignore-hosts', IGNORE_HOSTS);
 

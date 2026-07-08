@@ -56,7 +56,7 @@ export function installService(opts) {
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {} }) {
   const args = ['--listen-port', String(port), '-s', addonPath];
   const proxy = envVars.HTTPS_PROXY || envVars.https_proxy || '';
-  if (proxy) args.push('--mode', `upstream:${proxy}`);
+  if (proxy && !proxy.includes('127.0.0.1') && !proxy.includes('localhost')) args.push('--mode', `upstream:${proxy}`);
   const caBundle = envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE ||
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
   if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
