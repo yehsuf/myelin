@@ -313,6 +313,42 @@ function mitmAddonPath(_home) {
 }
 
 /**
+ * Write a serena MCP wrapper script that detects the git root from CWD at spawn time.
+ * Solves Copilot launching MCP servers from a generic CWD instead of the project dir.
+ */
+function writeSerenaWrapper(home, serenaBin) {
+  const binDir = join(home, '.tokenstack', 'bin');
+  mkdirSync(binDir, { recursive: true });
+  if (process.platform === 'win32') {
+    const ps1 = join(binDir, 'serena-mcp.ps1');
+    writeFileSync(ps1, `# Detect git root from CWD and pass to serena
+$dir = (Get-Location).Path
+while ($dir -ne [System.IO.Path]::GetPathRoot($dir)) {
+  if (Test-Path (Join-Path $dir '.git')) { break }
+  if (Test-Path (Join-Path $dir '.serena\\project.yml')) { break }
+  $dir = Split-Path $dir -Parent
+}
+& '${serenaBin.replace(/\\/g, '\\\\')}' start-mcp-server --project $dir @args
+`, 'utf8');
+    const cmd = join(binDir, 'serena-mcp.cmd');
+    writeFileSync(cmd, `@echo off\npowershell -ExecutionPolicy Bypass -File "${ps1}" %*\n`, 'utf8');
+    return cmd;
+  }
+  const sh = join(binDir, 'serena-mcp');
+  writeFileSync(sh, `#!/bin/sh
+dir="$PWD"
+while [ "$dir" != "/" ]; do
+  [ -d "$dir/.git" ] && break
+  [ -f "$dir/.serena/project.yml" ] && break
+  dir="$(dirname "$dir")"
+done
+exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
+`, 'utf8');
+  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  return sh;
+}
+
+/**
  * Detect the mitmdump binary path (cross-platform).
  * Checks existence for absolute paths, then tries running --version.
  */
@@ -709,6 +745,10 @@ async function main() {
     } catch { toolPaths[t] = t; }
   }
 
+  // Write serena wrapper that detects git root from CWD at spawn time
+  const serenaWrapper = writeSerenaWrapper(home, toolPaths.serena);
+  toolPaths.serenaWrapper = serenaWrapper;
+
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
@@ -720,9 +760,9 @@ async function main() {
         ...sslEnv,
       },
       mcpServers: {
-        serena:    { command: toolPaths.serena, args: ['start-mcp-server', '--project-from-cwd'] },
+        serena:    { command: serenaWrapper, args: [] },
         semble:    { command: toolPaths.semble, args: [] },
-        'mcp-git': { command: toolPaths.uvx,    args: ['mcp-server-git'] },
+        'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
       },
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
@@ -733,9 +773,9 @@ async function main() {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
       mergeJsonFile(mcp, { mcpServers: {
-        serena:    { type: 'local', command: toolPaths.serena, args: ['start-mcp-server', '--project-from-cwd'], env: {}, tools: ['*'] },
-        semble:    { type: 'local', command: toolPaths.semble, args: [],            env: {}, tools: ['*'] },
-        'mcp-git': { type: 'local', command: toolPaths.uvx,    args: ['mcp-server-git'], env: {}, tools: ['*'] },
+        serena:    { type: 'local', command: serenaWrapper, args: [],             env: {}, tools: ['*'] },
+        semble:    { type: 'local', command: toolPaths.semble, args: [],          env: {}, tools: ['*'] },
+        'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }
