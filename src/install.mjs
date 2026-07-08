@@ -110,7 +110,7 @@ function installWindowsAutoloadModule(appData, profilePath) {
   const tmp = join(tmpdir(), `myelin-psmodulepath-${Date.now()}.ps1`);
   writeFileSync(tmp, `
 $existing = [Environment]::GetEnvironmentVariable('PSModulePath', 'User')
-$target = '${modulesParent.replace(/\\/g, '\\\\')}'
+$target = '${modulesParent}'
 if (-not $existing) { $existing = '' }
 if ($existing -notlike "*$target*") {
   $new = if ($existing) { "$target;$existing" } else { $target }
