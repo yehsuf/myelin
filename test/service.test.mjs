@@ -1,8 +1,12 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { generatePlist } from '../src/service/launchd.mjs';
 import { generateSystemdUnit } from '../src/service/systemd.mjs';
-import { generateHeadroomRunScript } from '../src/service/windows.mjs';
+import { generateHeadroomRunScript, generateSetUserEnvVarsScript } from '../src/service/windows.mjs';
+import { resolveGlobalBinDir, linkGlobalBin } from '../src/service/npmlink.mjs';
 
 const OPTS = {
   headroomBin: '/home/user/.local/bin/headroom',
@@ -90,5 +94,52 @@ describe('windows run-script generator', () => {
   it('adds --intercept-tool-results when requested', () => {
     const script = generateHeadroomRunScript({ ...OPTS, interceptToolResults: true });
     assert.ok(script.includes('--intercept-tool-results'));
+  });
+});
+
+describe('windows registry env var script generator', () => {
+  it('sets each var via [Environment]::SetEnvironmentVariable with User scope', () => {
+    const script = generateSetUserEnvVarsScript({ HEADROOM_PORT: '8787' });
+    assert.ok(script.includes("[Environment]::SetEnvironmentVariable('HEADROOM_PORT', '8787', 'User')"));
+  });
+  it('does not double backslashes (single-quoted PS strings need none)', () => {
+    const script = generateSetUserEnvVarsScript({ SSL_CERT_FILE: 'C:\\Users\\yehsuf\\ca-bundle.pem' });
+    assert.ok(script.includes("'C:\\Users\\yehsuf\\ca-bundle.pem'"));
+    assert.ok(!script.includes('\\\\'));
+  });
+  it('doubles a literal single-quote in a value', () => {
+    const script = generateSetUserEnvVarsScript({ WEIRD: "it's a test" });
+    assert.ok(script.includes("'it''s a test'"));
+  });
+  it('handles multiple vars, one line each', () => {
+    const script = generateSetUserEnvVarsScript({ A: '1', B: '2' });
+    assert.equal(script.trim().split('\n').length, 2);
+  });
+});
+
+describe('npm global bin dir resolver', () => {
+  it('appends bin/ on posix', () => {
+    assert.equal(resolveGlobalBinDir('/usr/local', 'darwin'), '/usr/local/bin');
+    assert.equal(resolveGlobalBinDir('/usr/local', 'linux'), '/usr/local/bin');
+  });
+  it('uses the prefix directly on windows (no bin/ subfolder)', () => {
+    assert.equal(resolveGlobalBinDir('C:\\nvm4w\\nodejs', 'windows'), 'C:\\nvm4w\\nodejs');
+  });
+});
+
+describe('linkGlobalBin', () => {
+  it('gracefully reports failure (not throwing) for a non-writable prefix', () => {
+    const roDir = mkdtempSync(join(tmpdir(), 'myelin-ro-'));
+    const binDir = join(roDir, 'bin');
+    mkdirSync(binDir);
+    chmodSync(binDir, 0o555);
+    try {
+      const result = linkGlobalBin({ repoRoot: process.cwd(), os: 'darwin', prefix: roDir });
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('no write access'));
+    } finally {
+      chmodSync(binDir, 0o755);
+      rmSync(roDir, { recursive: true, force: true });
+    }
   });
 });
