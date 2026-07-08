@@ -346,12 +346,28 @@ async function promptYN(question) {
 function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
 /**
+ * Resolve the canonical repo root to use for generated paths (shell alias,
+ * service configs, etc.). Prefers ~/.myelin/repo once it actually contains
+ * a working checkout — this is where the shell alias will point future
+ * `myelin` invocations — falling back to wherever *this* script instance
+ * currently lives (e.g. still ~/.tokenstack/repo mid-migration). Always
+ * consulting the canonical path first, rather than blindly using
+ * import.meta.url, means generated configs stay valid even after a legacy
+ * ~/.tokenstack checkout is deleted on a later run.
+ */
+function resolveRepoRoot(home, os) {
+  const sep = os === 'windows' ? '\\' : '/';
+  const canonical = join(home, '.myelin', 'repo');
+  if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
+  return fileURLToPath(new URL('..', import.meta.url));
+}
+
+/**
  * Return the path to the Myelin mitmproxy addon script.
  * Resolves relative to the myelin repo root so it works on all platforms.
  */
-function mitmAddonPath(_home) {
-  // Resolve relative to the installer script so it works regardless of clone location.
-  return join(fileURLToPath(new URL('.', import.meta.url)), 'mitm', 'copilot_addon.py');
+function mitmAddonPath(home, os) {
+  return join(resolveRepoRoot(home, os), 'src', 'mitm', 'copilot_addon.py');
 }
 
 /**
@@ -650,11 +666,39 @@ async function main() {
       }
     }
   } else if (existsSync(oldDir) && existsSync(newDir)) {
-    try {
-      const { rmSync } = await import('node:fs');
-      rmSync(oldDir, { recursive: true, force: true });
-      ok('Removed legacy ~/.tokenstack');
-    } catch {}
+    const oldRepo = join(oldDir, 'repo');
+    const newRepoDir = join(newDir, 'repo');
+    if (runningFromOld) {
+      // The currently-executing script's own files live under oldDir —
+      // deleting it now would pull the source tree out from under this
+      // very process (dynamic imports later in this run would then fail
+      // with MODULE_NOT_FOUND). Defer cleanup to the next run.
+      // Instead, pre-populate the canonical ~/.myelin/repo location with a
+      // COPY (not move — oldDir must stay intact for the rest of this run)
+      // so resolveRepoRoot() below picks it up immediately: the shell
+      // alias/service configs generated later in *this same run* will
+      // already point at newRepoDir, and the *next* invocation (now
+      // running from newRepoDir) will finish removing oldDir.
+      if (existsSync(oldRepo) && !existsSync(newRepoDir)) {
+        try {
+          execSync(os === 'windows'
+            ? `robocopy "${oldRepo}" "${newRepoDir}" /E /NFL /NDL /NJH /NJS`
+            : `cp -r "${oldRepo}" "${newRepoDir}"`,
+            { stdio: 'pipe', shell: true });
+          ok('Copied repo to ~/.myelin/repo (removing ~/.tokenstack next run)');
+        } catch (e) {
+          warn(`Could not pre-copy repo to ~/.myelin/repo: ${e.message.split('\n')[0]}`);
+        }
+      } else {
+        ok('~/.tokenstack still in use by this run — will remove on next install/update');
+      }
+    } else {
+      try {
+        const { rmSync } = await import('node:fs');
+        rmSync(oldDir, { recursive: true, force: true });
+        ok('Removed legacy ~/.tokenstack');
+      } catch {}
+    }
   }
 
   // Migrate old launchd/systemd service names
@@ -860,7 +904,7 @@ async function main() {
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
-      const addonPath = mitmAddonPath(home);
+      const addonPath = mitmAddonPath(home, os);
       const mitmCfg = cfg.proxy?.mitm ?? {};
       const mitmPort = mitmCfg.port ?? 8888;
       const mitmEnv = {
@@ -986,7 +1030,7 @@ async function main() {
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotAlias(os);
-    const repoRoot = fileURLToPath(new URL('..', import.meta.url));
+    const repoRoot = resolveRepoRoot(home, os);
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
       : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
