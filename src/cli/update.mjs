@@ -49,5 +49,9 @@ export async function runUpdate(options = {}) {
   }
   console.log('─'.repeat(55));
   if (check) console.log('  Run without --check to apply updates.\n');
+  if (!check) {
+    const { runRestart } = await import('./restart.mjs');
+    await runRestart();
+  }
   else console.log('  Run: myelin verify to confirm.\n');
 }

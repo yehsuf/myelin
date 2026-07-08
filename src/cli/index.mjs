@@ -36,6 +36,13 @@ program.command('stats')
     await runStats();
   });
 
+program.command('restart')
+  .description('Restart headroom and mitmproxy services')
+  .action(async () => {
+    const { runRestart } = await import('./restart.mjs');
+    await runRestart();
+  });
+
 program.command('reload')
   .description('Reload shell profiles in all open terminal windows')
   .action(async () => {
