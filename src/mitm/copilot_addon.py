@@ -46,6 +46,7 @@ import gzip
 import http.client as http_client
 import json
 import logging
+import re
 import socket
 import ssl
 import struct
@@ -106,6 +107,33 @@ BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MAR
 # Keep domain-file fallback for backwards compat (deprecated, prefer OVERRIDE_PROXY)
 _VPN_FILE_RAW = os.environ.get('MYELIN_VPN_DOMAINS_FILE', '')
 VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else None
+
+# ---------------------------------------------------------------------------
+# Copilot-Headroom redirect (full-pipeline routing)
+#
+# Instead of the stateless /v1/compress sidecar call, Copilot completion
+# traffic can be redirected to a dedicated Headroom instance (its own
+# ANTHROPIC_TARGET_API_URL/OPENAI_TARGET_API_URL point at the real Copilot
+# API) so it gets Headroom's full pipeline (cache-mode, content_router,
+# TOIN, stats) — the same treatment Claude Code already gets.
+#
+# MYELIN_COPILOT_HEADROOM_PORT: local port of the dedicated instance.
+#   Unset/0 = feature disabled, falls back to the existing /v1/compress path.
+# MYELIN_EGRESS_PORT: the arrival port that identifies a flow as the
+#   *egress* leg (e.g. a dedicated Headroom instance's own outbound call
+#   tunneling back through this same mitmdump process). Flows arriving on
+#   this port are never redirected — they must reach the real internet.
+# ---------------------------------------------------------------------------
+
+COPILOT_HEADROOM_PORT = int(os.environ.get('MYELIN_COPILOT_HEADROOM_PORT', '0')) or None
+EGRESS_PORT           = int(os.environ.get('MYELIN_EGRESS_PORT', '0')) or None
+
+_COPILOT_HOST_PATTERN = re.compile(r'(^|\.)githubcopilot\.com$')
+
+
+def _is_copilot_host(host: str) -> bool:
+    return bool(_COPILOT_HOST_PATTERN.search(host))
+
 
 # ---------------------------------------------------------------------------
 # Provider detection
@@ -416,10 +444,27 @@ class MyelinAddon:
         if flow.request.method != 'POST':
             return
 
+        # Arrival-port gating: this same addon may run on both an ingress
+        # listener (tool-filter/compress/redirect) and a dedicated egress-only
+        # listener (pure tunnel + block-bypass) within one mitmdump process.
+        # A flow arriving on the egress port is itself outbound traffic
+        # (e.g. a dedicated Headroom instance's own upstream call tunneling
+        # back through here) and must never be redirected again.
+        arrival_port = flow.client_conn.sockname[1] if flow.client_conn.sockname else None
+        is_egress_leg = EGRESS_PORT is not None and arrival_port == EGRESS_PORT
+
         # Auto-detect provider from host pattern + path — no hardcoded subdomains
         provider = _detect_provider(host, path)
         if not provider:
             return
+
+        # Eligible for full-pipeline redirect to a dedicated Copilot-Headroom
+        # instance instead of the stateless /v1/compress sidecar call.
+        redirect_eligible = (
+            not is_egress_leg
+            and COPILOT_HEADROOM_PORT is not None
+            and _is_copilot_host(host)
+        )
 
         raw_encoding = flow.request.headers.get('content-encoding', '')
         body = _decode_body(flow)
@@ -450,7 +495,9 @@ class MyelinAddon:
             except Exception as e:
                 ctx.log.debug(f'[myelin] rag_inject skipped: {e}')
 
-        # 2. Tool filtering: BM25 + optional embeddings
+        # 2. Tool filtering: BM25 + optional embeddings — stays in the mitm
+        # addon even for redirected flows (reduces CLI-facing tokens before
+        # Headroom's own pipeline runs; matches Claude Code's path today).
         if TOOL_FILTER:
             try:
                 from tool_filter import filter_tools
@@ -470,6 +517,33 @@ class MyelinAddon:
                         ctx.log.info(f'[myelin] tools {len(tools)}→{len(filtered)}')
             except Exception as e:
                 ctx.log.debug(f'[myelin] tool_filter skipped: {e}')
+
+        if redirect_eligible:
+            # Headroom's own pipeline (cache-mode, content_router, TOIN)
+            # compresses this request in full downstream — do NOT also call
+            # the stateless /v1/compress sidecar (would double-compress).
+            fmt = provider['fmt']
+            new_body = json.dumps(data, separators=(',', ':')).encode()
+            encoded_body = _encode_body(new_body, raw_encoding)
+            if 'gzip' not in raw_encoding and 'br' not in raw_encoding:
+                flow.request.headers.pop('content-encoding', None)
+            flow.request.content = encoded_body
+            flow.request.headers['content-length'] = str(len(encoded_body))
+
+            # Bare /chat/completions -> /v1/chat/completions: Headroom
+            # registers the /v1-prefixed route; its own Copilot URL builder
+            # strips /v1 again before it hits the real endpoint, so the
+            # round-trip nets out correctly. /v1/messages needs no rewrite.
+            if fmt == 'openai' and not path.startswith('/v1/'):
+                flow.request.path = '/v1' + path
+
+            flow.metadata['myelin_redirected'] = True
+            flow.request.scheme = 'http'
+            flow.request.host = '127.0.0.1'
+            flow.request.port = COPILOT_HEADROOM_PORT
+            if LOG_SAVINGS:
+                ctx.log.info(f'[myelin] → redirected {host}{path} to Copilot-Headroom :{COPILOT_HEADROOM_PORT}')
+            return
 
         # 3. Compress messages (all roles including tool results)
         if COMPRESS:
