@@ -45,10 +45,21 @@ export async function runRestart() {
       console.log('  ✓ mitmproxy restarted (systemd)');
     } catch { console.warn('  ⚠ systemd restart failed'); }
   } else {
+    // Windows — kill and restart via registry Run key entry
     try {
-      execSync('powershell -Command "Stop-Process -Name mitmdump -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
-      console.log('  ✓ mitmproxy stopped (will restart at next logon or run myelin install)');
-    } catch {}
+      execSync('powershell -Command "Stop-Process -Name mitmdump -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
+      // Read the registered command from registry and restart hidden
+      const regVal = execSync(
+        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+      if (regVal) {
+        execSync(`powershell -Command "Start-Process -FilePath 'powershell.exe' -ArgumentList '-WindowStyle Hidden -ExecutionPolicy Bypass -Command & { ${regVal.replace(/'/g, "''")} }' -WindowStyle Hidden"`, { stdio: 'pipe' });
+        console.log('  ✓ mitmproxy restarted (hidden)');
+      } else {
+        console.warn('  ⚠ mitmproxy registry entry not found — run: node src/install.mjs --yes');
+      }
+    } catch { console.warn('  ⚠ mitmproxy restart failed'); }
   }
 
   // Health check
