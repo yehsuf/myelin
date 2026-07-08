@@ -544,11 +544,28 @@ async function main() {
 
   console.log('\n🧬 Myelin Installer — ' + os + '\n');
 
-  // Migrate ~/.tokenstack → ~/.myelin (one-time rename)
+  // Migrate ~/.tokenstack → ~/.myelin (one-time)
   const oldDir = join(home, '.tokenstack');
   const newDir = join(home, '.myelin');
-  // Skip if running from inside the old dir (would be self-destructive)
-  const runningFromOld = process.argv[1]?.startsWith(oldDir);
+  // Also handle the case where Move-Item put .tokenstack *inside* .myelin
+  const nestedOld = join(newDir, '.tokenstack');
+  const runningFromOld = process.argv[1]?.startsWith(oldDir) || process.argv[1]?.startsWith(nestedOld);
+
+  if (existsSync(nestedOld) && !runningFromOld) {
+    // Move contents of .myelin/.tokenstack up into .myelin
+    try {
+      const { readdirSync, renameSync } = await import('node:fs');
+      for (const entry of readdirSync(nestedOld)) {
+        const src = join(nestedOld, entry);
+        const dst = join(newDir, entry);
+        if (!existsSync(dst)) renameSync(src, dst);
+      }
+      const { rmSync } = await import('node:fs');
+      rmSync(nestedOld, { recursive: true, force: true });
+      ok('Cleaned up nested ~/.myelin/.tokenstack → ~/.myelin');
+    } catch (e) { warn(`Nested migration failed: ${e.message.split('\n')[0]}`); }
+  }
+
   if (existsSync(oldDir) && !existsSync(newDir) && !runningFromOld) {
     // On Windows, running processes lock the venv dir — stop them first
     if (os === 'windows') {
