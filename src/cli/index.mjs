@@ -39,9 +39,11 @@ program.command('stats')
 program.command('init')
   .description('Initialize current git repo with Serena + Semble (register + index)')
   .option('-y, --yes', 'Auto-accept all prompts')
+  .option('-r, --recursive', 'Find and init all git repos under current directory')
+  .option('-d, --depth <n>', 'Max search depth for --recursive', '4')
   .action(async (opts) => {
     const { runInit } = await import('./init.mjs');
-    await runInit({ yes: opts.yes });
+    await runInit({ yes: opts.yes, recursive: opts.recursive, depth: parseInt(opts.depth) });
   });
 
 program.command('restart')

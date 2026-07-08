@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
@@ -10,6 +10,27 @@ function findGitRoot(dir) {
     d = join(d, '..');
   }
   return null;
+}
+
+/** Find all git repos under a directory (non-recursive into nested git repos) */
+function findGitRepos(root, maxDepth = 4, depth = 0) {
+  if (depth > maxDepth) return [];
+  const repos = [];
+  try {
+    for (const entry of readdirSync(root)) {
+      if (entry.startsWith('.')) continue;
+      const full = join(root, entry);
+      try {
+        if (!statSync(full).isDirectory()) continue;
+        if (existsSync(join(full, '.git'))) {
+          repos.push(full); // don't recurse into nested git repos
+        } else {
+          repos.push(...findGitRepos(full, maxDepth, depth + 1));
+        }
+      } catch { /* skip permission errors */ }
+    }
+  } catch {}
+  return repos;
 }
 
 async function prompt(rl, question) {
@@ -25,66 +46,81 @@ async function confirm(rl, question, defaultYes = true) {
 const TOOLS = [
   {
     id: 'serena',
-    label: 'Serena (LSP code index — enables symbol-precise navigation)',
+    label: 'Serena (LSP code index — symbol-precise navigation)',
     check: (root) => existsSync(join(root, '.serena', 'project.yml')),
-    run: (root) => execSync(`serena project create --index "${root}"`, { stdio: 'inherit' }),
+    run:   (root) => execSync(`serena project create --index "${root}"`, { stdio: 'inherit' }),
   },
   {
     id: 'semble',
     label: 'Semble (semantic code search index)',
-    check: (_root) => false, // always offer re-index
-    run: (root) => execSync(`semble --content code`, { cwd: root, stdio: 'inherit' }),
+    check: (_root) => false,
+    run:   (root) => execSync(`semble --content code`, { cwd: root, stdio: 'inherit' }),
   },
 ];
 
-export async function runInit({ yes = false, dir = process.cwd() } = {}) {
-  const gitRoot = findGitRoot(dir);
+async function initRepo(root, yes, rl, enabledTools) {
+  const name = root.split(/[\\/]/).pop();
+  console.log(`\n   📁 ${name}  (${root})`);
+  const results = [];
+  for (const tool of TOOLS.filter(t => enabledTools.includes(t.id))) {
+    const alreadyDone = tool.check(root);
+    const labelSuffix = alreadyDone ? ' (already done — re-run?)' : '';
+    let run = yes;
+    if (!yes) run = await confirm(rl, `      Run ${tool.id}${labelSuffix}?`, !alreadyDone);
+    if (run) {
+      try { tool.run(root); console.log(`      ✓ ${tool.id}`); results.push({ ok: true }); }
+      catch (e) { console.warn(`      ⚠ ${tool.id} failed: ${e.message.split('\n')[0]}`); results.push({ ok: false }); }
+    } else {
+      console.log(`      · ${tool.id} skipped`);
+    }
+  }
+  return results;
+}
 
-  if (!gitRoot) {
-    console.log(`\n⚠  Not inside a git repository (cwd: ${dir})\n`);
-    return false;
+export async function runInit({ yes = false, recursive = false, dir = process.cwd(), depth = 4 } = {}) {
+  let rl;
+
+  // Collect repos to init
+  let repos = [];
+  if (recursive) {
+    repos = findGitRepos(dir, depth);
+    if (repos.length === 0) {
+      console.log(`\n⚠  No git repositories found under ${dir}\n`); return false;
+    }
+    console.log(`\n🧬 Myelin Init (recursive) — found ${repos.length} repo(s) under ${dir}`);
+    repos.forEach((r, i) => console.log(`   ${i + 1}. ${r.replace(dir, '.')}`));
+  } else {
+    const root = findGitRoot(dir);
+    if (!root) { console.log(`\n⚠  Not inside a git repository (cwd: ${dir})\n`); return false; }
+    repos = [root];
+    console.log(`\n🧬 Myelin Init — ${root.split(/[\\/]/).pop()}  (${root})`);
   }
 
-  const name = gitRoot.split(/[\\/]/).pop();
-  console.log(`\n🧬 Myelin Init — ${name}`);
-  console.log(`   Git root: ${gitRoot}\n`);
-
-  let rl;
   if (!yes) {
     rl = createInterface({ input: process.stdin, output: process.stdout });
-    const proceed = await confirm(rl, `   Initialize "${name}" with Myelin tools?`);
+    const proceed = await confirm(rl, `\n   Initialize ${repos.length} repo(s)?`);
     if (!proceed) { rl.close(); console.log('   Cancelled.\n'); return false; }
   }
 
-  const results = [];
-
-  for (const tool of TOOLS) {
-    const alreadyDone = tool.check(gitRoot);
-    const label = alreadyDone ? `${tool.label} (already initialised — re-run?)` : tool.label;
-
-    let run = yes;
-    if (!yes) {
-      run = await confirm(rl, `   Run: ${label}`, !alreadyDone);
-    }
-
-    if (run) {
-      console.log(`   Running ${tool.id}...`);
-      try {
-        tool.run(gitRoot);
-        console.log(`   ✓ ${tool.id} done`);
-        results.push({ tool: tool.id, ok: true });
-      } catch (e) {
-        console.warn(`   ⚠ ${tool.id} failed: ${e.message.split('\n')[0]}`);
-        results.push({ tool: tool.id, ok: false });
-      }
-    } else {
-      console.log(`   · ${tool.id} skipped`);
+  // Choose tools (once, applies to all repos)
+  let enabledTools = TOOLS.map(t => t.id);
+  if (!yes && rl) {
+    console.log('\n   Select tools to run:');
+    enabledTools = [];
+    for (const tool of TOOLS) {
+      const run = await confirm(rl, `     ${tool.label}?`);
+      if (run) enabledTools.push(tool.id);
     }
   }
 
-  if (rl) rl.close();
+  let total = 0, ok = 0;
+  for (const root of repos) {
+    const results = await initRepo(root, yes, rl, enabledTools);
+    total += results.length;
+    ok += results.filter(r => r.ok).length;
+  }
 
-  const ok = results.filter(r => r.ok).length;
-  console.log(`\n   ✓ Init complete (${ok}/${results.length} tools ran).\n`);
+  if (rl) rl.close();
+  console.log(`\n   ✓ Init complete — ${ok}/${total} operations succeeded across ${repos.length} repo(s).\n`);
   return true;
 }
