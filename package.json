@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Token-efficient AI workspace installer and manager",
   "bin": {
-    "tokenstack": "./bin/tokenstack"
+    "myelin": "./bin/myelin"
   },
   "scripts": {
     "test": "node --test test/**/*.test.mjs",

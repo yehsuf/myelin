@@ -77,3 +77,35 @@ export function serviceStatus() {
     return { running: false, state: 'Unknown' };
   }
 }
+
+/**
+ * Pure builder — returns PowerShell script text that persists environment
+ * variables via the registry (HKCU\Environment, through .NET's
+ * [Environment]::SetEnvironmentVariable(..., 'User')). This is what lets
+ * new PowerShell/cmd windows pick up HEADROOM_PORT/ANTHROPIC_BASE_URL/CA
+ * bundle vars automatically WITHOUT ever touching $PROFILE — critical on
+ * machines where Windows Defender's Controlled Folder Access blocks writes
+ * into Documents\WindowsPowerShell (confirmed live: $PROFILE always
+ * resolves there, and CFA silently blocks New-Item/Add-Content into it
+ * with no thrown error, even with full NTFS control). A registry write
+ * via .NET isn't a protected-folder filesystem write, so CFA doesn't apply.
+ *
+ * Only single-quotes need escaping in PowerShell single-quoted strings
+ * (double them) — backslashes are literal and must NOT be doubled (a
+ * mistake made and fixed earlier in this same file's history).
+ */
+export function generateSetUserEnvVarsScript(vars) {
+  return Object.entries(vars)
+    .map(([k, v]) => `[Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'User')`)
+    .join('\n') + '\n';
+}
+
+/** Persist env vars to the registry so new sessions inherit them without $PROFILE. */
+export function setUserEnvVars(vars) {
+  try {
+    runPs(generateSetUserEnvVarsScript(vars));
+    return true;
+  } catch {
+    return false;
+  }
+}
