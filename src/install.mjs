@@ -826,6 +826,10 @@ async function main() {
   const serenaWrapper = writeSerenaWrapper(home, toolPaths.serena);
   toolPaths.serenaWrapper = serenaWrapper;
 
+  const memoryFile = os === 'windows'
+    ? join(home, '.myelin', 'memory.jsonl').replace(/\//g, '\\')
+    : join(home, '.myelin', 'memory.jsonl');
+
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
@@ -840,6 +844,7 @@ async function main() {
         serena:    { command: serenaWrapper, args: [] },
         semble:    { command: toolPaths.semble, args: [] },
         'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
+        memory:    { command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile } },
       },
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
@@ -853,6 +858,7 @@ async function main() {
         serena:    { type: 'local', command: serenaWrapper, args: [],             env: {}, tools: ['*'] },
         semble:    { type: 'local', command: toolPaths.semble, args: [],          env: {}, tools: ['*'] },
         'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
+        memory:    { type: 'local', command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile }, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }
