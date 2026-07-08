@@ -720,7 +720,7 @@ async function main() {
         ...sslEnv,
       },
       mcpServers: {
-        serena:    { command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'] },
+        serena:    { command: toolPaths.serena, args: ['start-mcp-server', '--project-from-cwd'] },
         semble:    { command: toolPaths.semble, args: [] },
         'mcp-git': { command: toolPaths.uvx,    args: ['mcp-server-git'] },
       },
@@ -733,7 +733,7 @@ async function main() {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
       mergeJsonFile(mcp, { mcpServers: {
-        serena:    { type: 'local', command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'], env: {}, tools: ['*'] },
+        serena:    { type: 'local', command: toolPaths.serena, args: ['start-mcp-server', '--project-from-cwd'], env: {}, tools: ['*'] },
         semble:    { type: 'local', command: toolPaths.semble, args: [],            env: {}, tools: ['*'] },
         'mcp-git': { type: 'local', command: toolPaths.uvx,    args: ['mcp-server-git'], env: {}, tools: ['*'] },
       }});
