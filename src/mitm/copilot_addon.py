@@ -43,15 +43,19 @@ if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
 
 import gzip
+import http.client as http_client
 import json
 import logging
 import socket
+import ssl
+import struct
 import subprocess
 import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from mitmproxy import ctx, http
 
@@ -303,6 +307,102 @@ def _poll_reachable(hostname: str, timeout: float = 30.0, interval: float = 1.0)
             pass
     return False
 
+
+# ---------------------------------------------------------------------------
+# SOCKS5 override-proxy relay (stdlib-only)
+#
+# mitmproxy's own upstream-chaining mechanism (server_conn.via, fed by
+# mitmproxy.net.server_spec.parse) only understands http/https/http3/tls/
+# dtls/tcp/udp/dns/quic schemes — there is no native SOCKS5 upstream support,
+# in mitmproxy itself (mitmproxy's "socks5" mode is listen-side only: it lets
+# mitmproxy *act as* a SOCKS5 server, not connect *through* one). Passing
+# 'socks5' as the via scheme raises "Invalid server scheme: socks5".
+#
+# For a socks5:// MYELIN_OVERRIDE_PROXY we therefore perform our own minimal
+# SOCKS5 CONNECT handshake + TLS wrap + HTTP/1.1 request/response using only
+# the standard library, and set flow.response directly — bypassing
+# mitmproxy's replay/via mechanism entirely for this one bypass path.
+# ---------------------------------------------------------------------------
+
+def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int) -> None:
+    """Minimal no-auth SOCKS5 CONNECT handshake (RFC 1928) on an open socket."""
+    sock.sendall(b'\x05\x01\x00')  # ver=5, 1 auth method offered, no-auth
+    reply = sock.recv(2)
+    if len(reply) != 2 or reply[0] != 0x05 or reply[1] != 0x00:
+        raise ConnectionError(f'SOCKS5 method negotiation rejected: {reply!r}')
+
+    addr = target_host.encode('ascii')
+    req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', target_port)
+    sock.sendall(req)
+
+    header = sock.recv(4)
+    if len(header) != 4 or header[0] != 0x05:
+        raise ConnectionError(f'SOCKS5 CONNECT reply malformed: {header!r}')
+    if header[1] != 0x00:
+        raise ConnectionError(f'SOCKS5 CONNECT failed, reply code {header[1]}')
+
+    atype = header[3]
+    if atype == 0x01:        # IPv4
+        sock.recv(4 + 2)
+    elif atype == 0x03:      # domain name
+        n = sock.recv(1)[0]
+        sock.recv(n + 2)
+    elif atype == 0x04:      # IPv6
+        sock.recv(16 + 2)
+    else:
+        raise ConnectionError(f'SOCKS5 CONNECT unknown address type {atype}')
+
+
+def _replay_via_socks5(flow: http.HTTPFlow, proxy_host: str, proxy_port: int,
+                        timeout: float = 15.0) -> bool:
+    """
+    Re-send flow.request directly through a SOCKS5 proxy and populate
+    flow.response on success. Returns True/False.
+    """
+    host = flow.request.pretty_host
+    port = flow.request.port or 443
+    raw_sock: Optional[socket.socket] = None
+    try:
+        raw_sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
+        raw_sock.settimeout(timeout)
+        _socks5_handshake(raw_sock, host, port)
+
+        ssl_ctx = ssl.create_default_context(cafile=os.environ.get('SSL_CERT_FILE') or None)
+        tls_sock = ssl_ctx.wrap_socket(raw_sock, server_hostname=host)
+        raw_sock = None  # ownership transferred to tls_sock, avoid double-close
+
+        conn = http_client.HTTPSConnection(host, port, timeout=timeout)
+        conn.sock = tls_sock
+
+        # Note: duplicate header names (rare — e.g. multiple Cookie headers)
+        # collapse last-wins here; acceptable for a best-effort bypass retry.
+        req_headers = {
+            k: v for k, v in flow.request.headers.items(multi=True)
+            if k.lower() not in ('proxy-connection', 'connection')
+        }
+
+        conn.request(
+            flow.request.method,
+            flow.request.path,
+            body=flow.request.content or b'',
+            headers=req_headers,
+        )
+        resp = conn.getresponse()
+        resp_body = resp.read()
+        flow.response = http.Response.make(resp.status, resp_body, dict(resp.getheaders()))
+        conn.close()
+        return True
+    except Exception as e:
+        ctx.log.error(f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}')
+        return False
+    finally:
+        if raw_sock is not None:
+            try:
+                raw_sock.close()
+            except OSError:
+                pass
+
+
 # ---------------------------------------------------------------------------
 # mitmproxy addon
 # ---------------------------------------------------------------------------
@@ -418,15 +518,25 @@ class MyelinAddon:
                     ctx.log.warn(
                         f'[myelin] network block on {host} (418) — retrying via {OVERRIDE_PROXY}'
                     )
-                    try:
-                        from mitmproxy.net.server_spec import parse as parse_spec
-                        # Mark replayed flow so we don't retry infinitely
-                        flow.metadata['myelin_via_override'] = True
-                        # Set upstream proxy for next connection attempt
-                        flow.server_conn.via = parse_spec(OVERRIDE_PROXY, 'socks5')
-                        ctx.master.commands.call('replay.client', [flow])
-                    except Exception as e:
-                        ctx.log.error(f'[myelin] override proxy replay failed: {e}')
+                    # Mark so we don't retry infinitely (guards both branches below)
+                    flow.metadata['myelin_via_override'] = True
+                    parsed = urlparse(OVERRIDE_PROXY)
+                    if parsed.scheme == 'socks5':
+                        # mitmproxy's server_conn.via has no SOCKS5 upstream
+                        # support (http/https/tls/tcp schemes only) — relay
+                        # manually via a stdlib-only SOCKS5 client instead.
+                        if _replay_via_socks5(flow, parsed.hostname, parsed.port or 1080):
+                            ctx.log.info(f'[myelin] {host} served via SOCKS5 override proxy')
+                        else:
+                            ctx.log.error(f'[myelin] {host} still blocked — SOCKS5 override relay failed')
+                    else:
+                        try:
+                            from mitmproxy.net.server_spec import parse as parse_spec
+                            # Set upstream proxy for next connection attempt
+                            flow.server_conn.via = parse_spec(OVERRIDE_PROXY, 'http')
+                            ctx.master.commands.call('replay.client', [flow])
+                        except Exception as e:
+                            ctx.log.error(f'[myelin] override proxy replay failed: {e}')
                 elif VPN_DOMAINS_FILE:
                     # Legacy: domain-file fallback
                     ctx.log.warn(f'[myelin] network block on {host} — adding to VPN routing file')
