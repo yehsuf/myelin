@@ -33,8 +33,10 @@ function Fetch-Repo {
 }
 
 try { $binDir = "$env:USERPROFILE\.myelin\bin"; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
-# Allow node.exe through Controlled Folder Access (needed to write PowerShell profile)
+# Whitelist powershell.exe and node.exe for Controlled Folder Access
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications (Get-Command node -ErrorAction SilentlyContinue).Source -ErrorAction SilentlyContinue } catch {}
+try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ErrorAction SilentlyContinue } catch {}
+try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRoot\System32\robocopy.exe" -ErrorAction SilentlyContinue } catch {}
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}
 
 Check-Node; Check-Git; Fetch-Repo

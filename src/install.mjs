@@ -548,19 +548,32 @@ async function main() {
   const oldDir = join(home, '.tokenstack');
   const newDir = join(home, '.myelin');
   if (existsSync(oldDir) && !existsSync(newDir)) {
+    // On Windows, running processes lock the venv dir — stop them first
+    if (os === 'windows') {
+      try { execSync('powershell -Command "Stop-Process -Name headroom,mitmdump -ErrorAction SilentlyContinue"', { stdio: 'pipe' }); } catch {}
+      await new Promise(r => setTimeout(r, 1000));
+    }
     try {
       const { renameSync } = await import('node:fs');
       renameSync(oldDir, newDir);
       ok('Migrated ~/.tokenstack → ~/.myelin');
-    } catch (e) {
-      warn(`Could not rename ~/.tokenstack → ~/.myelin: ${e.message} — continuing`);
+    } catch {
+      // Fallback: copy + delete (handles cross-device or locked files)
+      try {
+        execSync(os === 'windows'
+          ? `robocopy "${oldDir}" "${newDir}" /E /MOVE /NFL /NDL /NJH /NJS`
+          : `cp -r "${oldDir}" "${newDir}" && rm -rf "${oldDir}"`,
+          { stdio: 'pipe', shell: true });
+        ok('Migrated ~/.tokenstack → ~/.myelin (via copy)');
+      } catch (e2) {
+        warn(`Could not migrate ~/.tokenstack → ~/.myelin: ${e2.message.split('\n')[0]} — continuing`);
+      }
     }
   } else if (existsSync(oldDir) && existsSync(newDir)) {
-    // Both exist — remove old one (already migrated or fresh install created new)
     try {
       const { rmSync } = await import('node:fs');
       rmSync(oldDir, { recursive: true, force: true });
-      ok('Removed legacy ~/.tokenstack (already migrated to ~/.myelin)');
+      ok('Removed legacy ~/.tokenstack');
     } catch {}
   }
 
