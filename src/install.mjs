@@ -635,12 +635,19 @@ async function main() {
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
-    await installService({ headroomBin: binPath, port, envVars,
-      logPath: join(home, '.tokenstack', 'headroom.log') });
-    ok(`service registered (port ${port})`);
-    console.log('  Waiting for proxy...');
-    const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
-    healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
+    // Skip re-registration if already healthy (avoids false "no response" on re-run)
+    const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
+    if (!alreadyHealthy) {
+      await installService({ headroomBin: binPath, port, envVars,
+        logPath: join(home, '.tokenstack', 'headroom.log') });
+      ok(`service registered (port ${port})`);
+      console.log('  Waiting for proxy...');
+      const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
+      healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
+    } else {
+      ok(`service registered (port ${port})`);
+      ok(`proxy healthy on :${port}`);
+    }
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
