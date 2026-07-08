@@ -6,9 +6,9 @@
  *        --with-stacklit  --with-litellm  --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { detectOS, detectShell } from './detect/os.mjs';
 import { detectAll } from './detect/tools.mjs';
@@ -81,6 +81,50 @@ function shellProfilePath(os, shell) {
   if (shell.includes('bash')) return join(homedir(), '.bashrc');
   if (shell.includes('fish')) return join(homedir(), '.config', 'fish', 'config.fish');
   return join(homedir(), '.profile');
+}
+
+/**
+ * Make `myelin`/`_copilot` auto-load in every new PowerShell window without ever
+ * touching $PROFILE. PowerShell's real profile files always live under
+ * Documents\WindowsPowerShell(\...), which Windows Defender's Controlled Folder
+ * Access blocks on many corp machines — confirmed live: icacls shows full NTFS
+ * control for the user, yet New-Item/Add-Content into that folder silently fail
+ * with no thrown error (so a naive execSync-based approach reports false success).
+ *
+ * Instead, this drops a small PowerShell module under %APPDATA% (not CFA-protected)
+ * that dot-sources the managed profile content, and persists that module's parent
+ * directory on the user's PSModulePath via the registry (an env var write, not a
+ * filesystem write, so CFA doesn't apply). PowerShell auto-imports a module the
+ * first time an unrecognized command name it exports is typed, so `myelin` and
+ * `_copilot` work in any new session with zero Documents access required.
+ */
+function installWindowsAutoloadModule(appData, profilePath) {
+  const moduleDir = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules', 'MyelinAutoload');
+  mkdirSync(moduleDir, { recursive: true });
+  const psm1 = join(moduleDir, 'MyelinAutoload.psm1');
+  writeFileSync(psm1, `. "${profilePath}"\nExport-ModuleMember -Function myelin, _copilot\n`, 'utf8');
+  writeFileSync(join(moduleDir, 'MyelinAutoload.psd1'),
+    `@{\n  ModuleVersion = '1.0'\n  RootModule = 'MyelinAutoload.psm1'\n  FunctionsToExport = @('myelin','_copilot')\n}\n`, 'utf8');
+
+  const modulesParent = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules');
+  const tmp = join(tmpdir(), `myelin-psmodulepath-${Date.now()}.ps1`);
+  writeFileSync(tmp, `
+$existing = [Environment]::GetEnvironmentVariable('PSModulePath', 'User')
+$target = '${modulesParent.replace(/\\/g, '\\\\')}'
+if (-not $existing) { $existing = '' }
+if ($existing -notlike "*$target*") {
+  $new = if ($existing) { "$target;$existing" } else { $target }
+  [Environment]::SetEnvironmentVariable('PSModulePath', $new, 'User')
+}
+`, 'utf8');
+  try {
+    execSync(`powershell -ExecutionPolicy Bypass -File "${tmp}"`, { stdio: 'pipe' });
+    return existsSync(psm1);
+  } catch {
+    return false;
+  } finally {
+    try { unlinkSync(tmp); } catch {}
+  }
 }
 
 function installHooks(dir) {
@@ -1069,21 +1113,27 @@ async function main() {
     if (updated !== existing) {
       writeFileSync(profilePath, updated, 'utf8');
       ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot alias)`);
-      // On Windows: dot-source our AppData profile from the real $PROFILE (Documents)
-      // so it auto-loads in new PS windows — Documents write goes through PS itself (allowed)
       if (os === 'windows') {
-        try {
-          execSync(`powershell -ExecutionPolicy Bypass -Command "` +
-            `$p = $PROFILE; ` +
-            `if (!(Test-Path $p)) { New-Item -Force -Path $p -ItemType File | Out-Null }; ` +
-            `$line = '. \\"${profilePath.replace(/\\/g, '\\\\')}\\""'; ` +
-            `$c = Get-Content $p -Raw -ErrorAction SilentlyContinue; ` +
-            `if ($c -notlike \\"*myelin*\\") { Add-Content $p $line }"`, { stdio: 'pipe' });
-          ok(`$PROFILE — dot-sources myelin profile (auto-loads in new windows)`);
-        } catch { /* non-fatal */ }
+        const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
+        if (installWindowsAutoloadModule(appData, profilePath)) {
+          ok('PowerShell module autoload registered (myelin/_copilot load in new windows)');
+        } else {
+          warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
+        }
       }
     } else {
       skip(`${profilePath} already configured`);
+      if (os === 'windows') {
+        const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
+        const moduleFile = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules', 'MyelinAutoload', 'MyelinAutoload.psm1');
+        if (!existsSync(moduleFile)) {
+          if (installWindowsAutoloadModule(appData, profilePath)) {
+            ok('PowerShell module autoload registered (myelin/_copilot load in new windows)');
+          } else {
+            warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
+          }
+        }
+      }
     }
   }
 
