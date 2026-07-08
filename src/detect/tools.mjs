@@ -26,9 +26,14 @@ function ensureWindowsPath() {
 
 export async function detectTool(name, versionFlag = '--version') {
   try {
-    const path = await which(name);
+    let path = await which(name);
     if (!path) return { installed: false, version: null, path: null };
-    // execSync with string avoids DEP0190 and runs .cmd shims correctly on Windows
+    // On Windows, prefer .cmd/.exe over extensionless shim (cmd.exe needs extension when path is quoted)
+    if (process.platform === 'win32' && !path.match(/\.(cmd|exe|ps1|bat)$/i)) {
+      const cmd = await which(name + '.cmd');
+      const exe = await which(name + '.exe');
+      path = cmd || exe || path;
+    }
     const stdout = execSync(`"${path}" ${versionFlag}`, {
       timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], env: process.env,
     }).toString();

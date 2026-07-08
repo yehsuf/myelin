@@ -687,6 +687,16 @@ async function main() {
   } else { skip('config.yaml already exists'); }
 
   // Claude Code settings.json
+  // Resolve tool binary paths at install time — needed for Windows where PATH isn't set when Copilot spawns MCPs
+  const toolPaths = {};
+  for (const t of ['serena', 'semble', 'uvx']) {
+    try {
+      const p = execSync(os === 'windows' ? `where.exe ${t}` : `which ${t}`, { stdio: 'pipe' })
+        .toString().trim().split('\n')[0].trim();
+      toolPaths[t] = p || t;
+    } catch { toolPaths[t] = t; }
+  }
+
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
@@ -698,9 +708,9 @@ async function main() {
         ...sslEnv,
       },
       mcpServers: {
-        serena:    { command: 'serena', args: ['start-mcp-server', '--project', '.'] },
-        semble:    { command: 'semble', args: ['mcp'] },
-        'mcp-git': { command: 'uvx', args: ['mcp-server-git'] },
+        serena:    { command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'] },
+        semble:    { command: toolPaths.semble, args: ['mcp'] },
+        'mcp-git': { command: toolPaths.uvx,    args: ['mcp-server-git'] },
       },
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
@@ -711,9 +721,9 @@ async function main() {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
       mergeJsonFile(mcp, { mcpServers: {
-        serena:    { type: 'local', command: 'serena', args: ['start-mcp-server', '--project', '.'], env: {}, tools: ['*'] },
-        semble:    { type: 'local', command: 'semble', args: ['mcp'],            env: {}, tools: ['*'] },
-        'mcp-git': { type: 'local', command: 'uvx', args: ['mcp-server-git'],   env: {}, tools: ['*'] },
+        serena:    { type: 'local', command: toolPaths.serena, args: ['start-mcp-server', '--project', '.'], env: {}, tools: ['*'] },
+        semble:    { type: 'local', command: toolPaths.semble, args: ['mcp'],            env: {}, tools: ['*'] },
+        'mcp-git': { type: 'local', command: toolPaths.uvx,    args: ['mcp-server-git'], env: {}, tools: ['*'] },
       }});
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }
