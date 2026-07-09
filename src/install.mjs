@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { detectOS, detectShell } from './detect/os.mjs';
-import { detectAll } from './detect/tools.mjs';
+import { detectAll, detectCopilotHud } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
 import { isPortFree, findFreePort } from './detect/port.mjs';
@@ -777,6 +777,7 @@ async function main() {
 
   mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+  const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   let port = existingCfg.proxy.headroom.port;
   if (!(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
@@ -792,6 +793,7 @@ async function main() {
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
     console.log('  uv, serena, semble, ast-grep, rtk, mitmproxy');
+    if (copilotHudEnabled && copilot) console.log('  copilot-hud plugin');
     if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
@@ -873,6 +875,39 @@ async function main() {
       catch { warn('ast-grep install failed — install manually: npm install -g @ast-grep/cli'); }
     }
   } else { skip(`ast-grep (${tools.astgrep.version})`); }
+
+  if (copilotHudEnabled && copilot) {
+    const jqPath = await which('jq');
+    if (!jqPath) {
+      warn('copilot-hud requested but jq not found — skipping');
+    } else {
+      const copilotPath = await which('copilot');
+      if (!copilotPath) {
+        warn('copilot-hud requested but Copilot CLI not found — skipping');
+      } else {
+        const copilotHud = await detectCopilotHud();
+        if (copilotHud.installed) {
+          skip(`copilot-hud (${copilotHud.version ?? 'installed'})`);
+        } else {
+          console.log('  Installing copilot-hud...');
+          try {
+            execSync('copilot plugin marketplace add griches/copilot-hud', { stdio: 'inherit' });
+          } catch {
+            warn('copilot-hud marketplace add failed — attempting install anyway');
+          }
+          try {
+            execSync('copilot plugin install copilot-hud@copilot-hud', { stdio: 'inherit' });
+            ok('copilot-hud installed');
+            console.log('  Next: run `copilot --experimental`, then `/copilot-hud:setup` once inside the session.');
+          } catch {
+            warn('copilot-hud install failed — install manually: copilot plugin marketplace add griches/copilot-hud && copilot plugin install copilot-hud@copilot-hud');
+          }
+        }
+      }
+    }
+  } else if (copilotHudEnabled && !copilot) {
+    skip('copilot-hud skipped (--claude-only)');
+  }
 
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');

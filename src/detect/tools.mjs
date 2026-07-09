@@ -2,6 +2,7 @@ import { execFile, execSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { which } from './which.mjs';
 
 const execFileP = promisify(execFile);
@@ -74,6 +75,28 @@ export async function detectAstGrep() {
   return (await detectTool('ast-grep', '--version')).installed
     ? detectTool('ast-grep', '--version')
     : detectTool('sg', '--version');
+}
+
+export async function detectCopilotHud({
+  detectToolImpl = detectTool,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  homeDir = homedir(),
+} = {}) {
+  try {
+    const copilot = await detectToolImpl('copilot', '--version');
+    if (!copilot.installed || !copilot.path) return { installed: false, version: null, path: null };
+    const stdout = execSyncImpl(`"${copilot.path}" plugin list`, {
+      timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'], env: process.env,
+    }).toString();
+    const pluginLine = stdout.split('\n').find(line => /\bcopilot-hud\b/i.test(line));
+    if (!pluginLine) return { installed: false, version: null, path: null };
+    const version = pluginLine.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? null;
+    const pluginPath = join(homeDir, '.copilot', 'plugins', 'copilot-hud');
+    return { installed: true, version, path: existsSyncImpl(pluginPath) ? pluginPath : null };
+  } catch {
+    return { installed: false, version: null, path: null };
+  }
 }
 
 export async function detectAll() {
