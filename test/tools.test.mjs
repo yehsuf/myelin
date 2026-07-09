@@ -4,6 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
+import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
 
 describe('RTK version parsing', () => {
   it('parses version from rtk --version output', () => {
@@ -41,6 +42,61 @@ describe('RTK install strategy', () => {
   it('always includes cargo as last fallback', () => {
     const s = rtkInstallStrategy('darwin');
     assert.equal(s[s.length - 1].method, 'cargo');
+  });
+});
+
+describe('WinSW version parsing', () => {
+  it('parses a prerelease WinSW version', () => {
+    assert.equal(parseWinswVersion('WinSW 3.0.0-alpha.11'), '3.0.0-alpha.11');
+  });
+  it('tracks whether the version matches the pinned WinSW release', () => {
+    const pinned = getWinswVersionStatus(`WinSW ${WINSW_PINNED_VERSION.replace(/^v/, '')}`);
+    const other = getWinswVersionStatus('WinSW 2.12.0');
+    assert.equal(pinned.pinnedVersionMatches, true);
+    assert.equal(other.pinnedVersionMatches, false);
+    assert.equal(other.pinnedVersion, WINSW_PINNED_VERSION.replace(/^v/, ''));
+  });
+  it('builds the GitHub release API URL for the pinned tag', () => {
+    assert.equal(
+      winswReleaseApiUrl(),
+      `https://api.github.com/repos/winsw/winsw/releases/tags/${WINSW_PINNED_VERSION}`
+    );
+  });
+});
+
+describe('WinSW asset selection', () => {
+  const release = {
+    assets: [
+      { name: 'WinSW-net461.exe', browser_download_url: 'https://example.test/net461' },
+      { name: 'WinSW-x64.exe', browser_download_url: 'https://example.test/x64' },
+      { name: 'WinSW-x86.exe', browser_download_url: 'https://example.test/x86' },
+    ],
+  };
+
+  it('prefers the self-contained x64 asset on x64', () => {
+    assert.equal(selectWinswAsset(release, { arch: 'x64' })?.name, 'WinSW-x64.exe');
+  });
+
+  it('falls back to the .NET 4.6.1 asset when requested', () => {
+    assert.equal(selectWinswAsset(release, { arch: 'x64', preferNetFx: true })?.name, 'WinSW-net461.exe');
+  });
+
+  it('selects the x86 asset on 32-bit installs', () => {
+    assert.equal(selectWinswAsset(release, { arch: 'ia32' })?.name, 'WinSW-x86.exe');
+  });
+});
+
+describe('detectWinsw', () => {
+  it('checks the managed ~/.myelin/bin location and parses --version output', () => {
+    const home = 'C:\\Users\\alice';
+    const state = detectWinsw({
+      home,
+      existsSyncImpl: (path) => path === winswBinPath({ home }),
+      execFileSyncImpl: () => Buffer.from(`WinSW ${WINSW_PINNED_VERSION.replace(/^v/, '')}\n`),
+    });
+    assert.equal(state.installed, true);
+    assert.equal(state.path, 'C:\\Users\\alice\\.myelin\\bin\\winsw.exe');
+    assert.equal(state.parsedVersion, WINSW_PINNED_VERSION.replace(/^v/, ''));
   });
 });
 

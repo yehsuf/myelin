@@ -29,15 +29,20 @@ export async function installMitmService(opts) {
 }
 
 /**
- * Install a watchdog that periodically revives dropped services.
- * macOS only for now — systemd's Restart=always + Linux's lack of the
- * silent crash-loop-disable behavior make it less critical there; Windows
- * has no equivalent yet (tracked separately).
+ * Install a watchdog that periodically revives dropped or hung services.
+ * macOS always gets the launchd watchdog; Windows can opt into a Scheduled
+ * Task liveness check because WinSW only sees process exits, not /health
+ * stalls. Linux still returns null for now.
  */
 export async function installWatchdog(opts) {
   const os = detectOS();
   if (os === 'darwin') {
     const { installWatchdog } = await import('./launchd.mjs');
+    return installWatchdog(opts);
+  }
+  if (os === 'windows') {
+    if (!opts?.enabled) return null;
+    const { installWatchdog } = await import('./windows.mjs');
     return installWatchdog(opts);
   }
   return null;
@@ -62,44 +67,44 @@ export async function installCopilotHeadroomService(opts) {
   }
 }
 
-export async function copilotHeadroomServiceStatus() {
+export async function copilotHeadroomServiceStatus(opts) {
   const os = detectOS();
   if (os === 'darwin') {
     const { copilotHeadroomServiceStatus } = await import('./launchd.mjs');
-    return copilotHeadroomServiceStatus();
+    return copilotHeadroomServiceStatus(opts);
   } else if (os === 'linux') {
     const { copilotHeadroomServiceStatus } = await import('./systemd.mjs');
-    return copilotHeadroomServiceStatus();
+    return copilotHeadroomServiceStatus(opts);
   } else {
     const { copilotHeadroomServiceStatus } = await import('./windows.mjs');
-    return copilotHeadroomServiceStatus();
+    return copilotHeadroomServiceStatus(opts);
   }
 }
 
-export async function serviceStatus() {
+export async function serviceStatus(opts) {
   const os = detectOS();
   if (os === 'darwin') {
     const { serviceStatus } = await import('./launchd.mjs');
-    return serviceStatus();
+    return serviceStatus(opts);
   } else if (os === 'linux') {
     const { serviceStatus } = await import('./systemd.mjs');
-    return serviceStatus();
+    return serviceStatus(opts);
   } else {
     const { serviceStatus } = await import('./windows.mjs');
-    return serviceStatus();
+    return serviceStatus(opts);
   }
 }
 
-export async function mitmServiceStatus() {
+export async function mitmServiceStatus(opts) {
   const os = detectOS();
   if (os === 'darwin') {
     const { mitmServiceStatus } = await import('./launchd.mjs');
-    return mitmServiceStatus();
+    return mitmServiceStatus(opts);
   } else if (os === 'linux') {
     const { mitmServiceStatus } = await import('./systemd.mjs');
-    return mitmServiceStatus();
+    return mitmServiceStatus(opts);
   } else {
     const { mitmServiceStatus } = await import('./windows.mjs');
-    return mitmServiceStatus();
+    return mitmServiceStatus(opts);
   }
 }

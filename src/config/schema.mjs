@@ -70,6 +70,26 @@ export const DEFAULT_CONFIG = {
       anthropic_target_url: 'https://api.business.githubcopilot.com',
       openai_target_url: 'https://api.business.githubcopilot.com',
     },
+    // windows_service: controls HOW Windows services are managed.
+    // - manager: 'registry' (default, current shipped behavior — unchanged,
+    //   zero-risk) starts each process via Start-Process + a
+    //   HKCU\...\Run registry key, which persists across logins but does
+    //   NOT auto-restart on crash. 'winsw' switches to a real Windows
+    //   Service (via WinSW) that auto-restarts on crash/exit — a genuine,
+    //   unvalidated-on-real-Windows behavioral change, so it stays opt-in
+    //   until a human validates it on a real Windows box. Never flips
+    //   automatically; existing installs keep 'registry' forever unless you
+    //   explicitly change this.
+    // - watchdog_enabled/watchdog_interval_minutes: SECOND-layer Scheduled
+    //   Task health checks, meaningful only when manager is 'winsw' (WinSW
+    //   itself only restarts on process exit; this catches the "process
+    //   still exists but /health is hung" failure mode WinSW can't see).
+    //   Ignored when manager is 'registry'; ignored on macOS/Linux.
+    windows_service: {
+      manager: 'registry',
+      watchdog_enabled: false,
+      watchdog_interval_minutes: 2,
+    },
   },
   index_tier: 'default',
   code_discovery: {

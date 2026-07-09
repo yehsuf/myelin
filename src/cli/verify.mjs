@@ -40,13 +40,14 @@ export async function runVerify() {
   const cfg = await loadConfig();
   const port = cfg.proxy.headroom.port;
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
+  const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
   const results = [];
 
   // Headroom (opt-in via proxy.headroom.enabled — skipped entirely when
   // disabled, so a machine that has intentionally turned it off doesn't
   // show a confusing failing row; matches the copilot_headroom pattern below).
   if (cfg.proxy?.headroom?.enabled) {
-    const svc = await serviceStatus();
+    const svc = await serviceStatus({ manager: winManager });
     results.push({
       name: 'Headroom service',
       ok: svc.running,
@@ -65,7 +66,7 @@ export async function runVerify() {
 
   // Mitmproxy (opt-in via proxy.mitm.enabled — same reasoning as above).
   if (cfg.proxy?.mitm?.enabled) {
-    const mitmSvc = await mitmServiceStatus();
+    const mitmSvc = await mitmServiceStatus({ manager: winManager });
     const mitmdump = await which('mitmdump');
     results.push({
       name: `Mitmproxy service (:${mitmPort})`,
@@ -76,7 +77,10 @@ export async function runVerify() {
     });
   }
 
-  // Watchdog (macOS only) — auto-revives services if launchd silently drops them
+  // Watchdog — macOS uses launchd; Windows can opt into Scheduled Tasks,
+  // but only meaningful once proxy.windows_service.manager is 'winsw'
+  // (registry-based installs have no WinSW service for the watchdog to
+  // restart, so there's nothing to check).
   if (process.platform === 'darwin') {
     try {
       const { execSync } = await import('node:child_process');
@@ -86,12 +90,28 @@ export async function runVerify() {
       results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
     }
   }
+  if (process.platform === 'win32' && winManager === 'winsw' && cfg.proxy?.windows_service?.watchdog_enabled) {
+    const { HEADROOM_SERVICE_ID, COPILOT_HEADROOM_SERVICE_ID, windowsWatchdogTaskName } = await import('../service/windows.mjs');
+    const interval = Number(cfg.proxy.windows_service.watchdog_interval_minutes ?? 2) || 2;
+    const taskNames = [
+      windowsWatchdogTaskName({ id: HEADROOM_SERVICE_ID }),
+      ...(cfg.proxy?.copilot_headroom?.enabled ? [windowsWatchdogTaskName({ id: COPILOT_HEADROOM_SERVICE_ID })] : []),
+    ];
+    for (const taskName of taskNames) {
+      try {
+        execSync(`schtasks /query /tn "${taskName}"`, { stdio: 'ignore' });
+        results.push({ name: `${taskName}`, ok: true, detail: `scheduled — checks every ${interval} minute${interval === 1 ? '' : 's'}` });
+      } catch {
+        results.push({ name: `${taskName}`, ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
+      }
+    }
+  }
 
   // Copilot-Headroom (opt-in — only checked when enabled in config, so this
   // doesn't show a confusing failing row for installs that haven't opted in)
   if (cfg.proxy?.copilot_headroom?.enabled) {
     const copilotHeadroomPort = cfg.proxy.copilot_headroom.port ?? 8788;
-    const chSvc = await copilotHeadroomServiceStatus();
+    const chSvc = await copilotHeadroomServiceStatus({ manager: winManager });
     results.push({
       name: 'Copilot-Headroom service',
       ok: chSvc.running,

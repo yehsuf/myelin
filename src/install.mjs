@@ -1035,6 +1035,10 @@ async function main() {
     const binPath = headroomBinPath();
     const cfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
+    const mitmCfg = cfg.proxy?.mitm ?? {};
+    const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
+    const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
+    const winManager = windowsServiceCfg.manager ?? 'registry';
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
@@ -1043,7 +1047,7 @@ async function main() {
     if (!alreadyHealthy) {
       await installService({ headroomBin: binPath, port, envVars,
         interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
-        logPath: join(home, '.myelin', 'headroom.log') });
+        logPath: join(home, '.myelin', 'headroom.log'), manager: winManager });
       ok(`service registered (port ${port})`);
       console.log('  Waiting for proxy...');
       const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
@@ -1056,7 +1060,6 @@ async function main() {
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
       const addonPath = mitmAddonPath(home, os);
-      const mitmCfg = cfg.proxy?.mitm ?? {};
       const mitmPort = mitmCfg.port ?? 8888;
       const mitmEnv = {
         MYELIN_HEADROOM_PORT: String(port),
@@ -1070,7 +1073,6 @@ async function main() {
       try {
         // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
         const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
-        const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
         const egressPort = copilotHeadroomCfg.enabled ? (mitmCfg.egress_port ?? 8889) : undefined;
         await installMitmService({
           mitmdumpBin,
@@ -1081,6 +1083,7 @@ async function main() {
           logPath: join(home, '.myelin', 'mitmproxy.log'),
           home,
           egressPort,
+          manager: winManager,
         });
         ok(`mitmproxy service registered (port ${mitmPort}${egressPort ? ` + egress ${egressPort}` : ''})`);
 
@@ -1104,6 +1107,7 @@ async function main() {
                 ...sslEnv,
               },
               home,
+              manager: winManager,
             });
             ok(`copilot-headroom service registered (port ${copilotHeadroomPort})`);
           } catch (e) {
@@ -1113,22 +1117,34 @@ async function main() {
       } catch (e) {
         warn(`mitmproxy service registration failed: ${e.message}`);
       }
-      // Watchdog: revives headroom/mitmproxy if launchd silently drops them
-      // (macOS crash-loop protection can disable a KeepAlive job with no log trace)
-      try {
-        const { installWatchdog } = await import('./service/index.mjs');
-        const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
-        const installed = await installWatchdog({
-          home, headroomPort: port, mitmPort,
-          ...(copilotHeadroomCfg.enabled ? {
-            copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
-            egressPort: mitmCfg.egress_port ?? 8889,
-          } : {}),
-        });
-        if (installed) ok('watchdog installed — auto-revives dropped services every 90s');
-      } catch (e) {
-        warn(`watchdog install failed: ${e.message}`);
+    }
+
+    // Watchdog: macOS uses a launchd poller; Windows can opt into a
+    // Scheduled Task health checker for the same second-layer recovery role
+    // — only meaningful once windows_service.manager is 'winsw' (there's no
+    // WinSW service for a registry-based install's watchdog to restart).
+    try {
+      const { installWatchdog } = await import('./service/index.mjs');
+      const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
+      const installed = await installWatchdog({
+        home,
+        enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
+        intervalMinutes: watchdogInterval,
+        headroomPort: port,
+        mitmPort: mitmCfg.port ?? 8888,
+        ...(copilotHeadroomCfg.enabled && mitmdumpBin ? {
+          copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
+          egressPort: mitmCfg.egress_port ?? 8889,
+        } : {}),
+      });
+      if (installed) {
+        const cadence = os === 'windows'
+          ? `every ${watchdogInterval} minute${watchdogInterval === 1 ? '' : 's'}`
+          : 'every 90s';
+        ok(`watchdog installed — auto-revives dropped services ${cadence}`);
       }
+    } catch (e) {
+      warn(`watchdog install failed: ${e.message}`);
     }
   } else {
     step('[4/7] Service: skipped');

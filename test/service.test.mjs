@@ -5,7 +5,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generatePlist, generateGenericPlist } from '../src/service/launchd.mjs';
 import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } from '../src/service/systemd.mjs';
-import { generateHeadroomRunScript, generateSetUserEnvVarsScript, generateCopilotHeadroomRunScript, generateMitmRunScript, collapseRedundantBackslashes } from '../src/service/windows.mjs';
+import {
+  HEADROOM_SERVICE_ID,
+  collapseRedundantBackslashes,
+  generateCopilotHeadroomRunScript,
+  generateHeadroomRunScript,
+  generateMitmRunScript,
+  generateSetUserEnvVarsScript,
+  generateWindowsWatchdogHealthcheckScript,
+  generateWindowsWatchdogTaskCreateScript,
+  generateWinswConfigXml,
+  parseWinswServiceStatus,
+  winswConfigPath,
+  winswExecutablePath,
+} from '../src/service/windows.mjs';
 import { resolveGlobalBinDir, linkGlobalBin } from '../src/service/npmlink.mjs';
 
 const OPTS = {
@@ -157,6 +170,117 @@ describe('windows run-script generator', () => {
     assert.ok(script.includes(`--port ${OPTS.port}`));
     assert.ok(script.includes('Win32_Process'));
     assert.ok(!script.includes('Stop-Process -Name headroom '));
+  });
+});
+
+describe('WinSW XML generator', () => {
+  const WINSW_OPTS = {
+    id: 'myelin-headroom',
+    name: 'Myelin Headroom',
+    description: 'Myelin token-efficiency proxy (Headroom)',
+    executable: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+    arguments: 'proxy --port 8787',
+    logPath: 'C:\\Users\\alice\\.myelin\\logs',
+    envVars: { HEADROOM_PORT: '8787', OPENAI_TARGET_API_URL: 'https://api.githubcopilot.com' },
+    onFailureDelays: ['5 sec', '30 sec'],
+  };
+
+  it('contains the service id, executable, and arguments', () => {
+    const xml = generateWinswConfigXml(WINSW_OPTS);
+    assert.ok(xml.includes('<id>myelin-headroom</id>'));
+    assert.ok(xml.includes(WINSW_OPTS.executable));
+    assert.ok(xml.includes(WINSW_OPTS.arguments));
+  });
+
+  it('emits env vars plus restart-on-failure policy', () => {
+    const xml = generateWinswConfigXml(WINSW_OPTS);
+    assert.ok(xml.includes('<env name="HEADROOM_PORT" value="8787"/>'));
+    assert.ok(xml.includes('<env name="OPENAI_TARGET_API_URL" value="https://api.githubcopilot.com"/>'));
+    assert.ok(xml.includes('<onfailure action="restart" delay="5 sec"/>'));
+    assert.ok(xml.includes('<onfailure action="restart" delay="30 sec"/>'));
+    assert.ok(xml.includes('<resetfailure>1 hour</resetfailure>'));
+    assert.ok(xml.includes('<hidewindow>true</hidewindow>'));
+  });
+
+  it('XML-escapes reserved characters', () => {
+    const xml = generateWinswConfigXml({
+      ...WINSW_OPTS,
+      description: 'Proxy <watchdog> & "health"',
+      envVars: { SPECIAL: `A&B<"'` },
+    });
+    assert.ok(xml.includes('Proxy &lt;watchdog&gt; &amp; &quot;health&quot;'));
+    assert.ok(xml.includes('value="A&amp;B&lt;&quot;&apos;"'));
+  });
+});
+
+describe('WinSW status parser', () => {
+  it('treats Active (running) as running', () => {
+    assert.deepEqual(parseWinswServiceStatus('Active (running)'), {
+      running: true,
+      state: 'Active (running)',
+      raw: 'Active (running)',
+    });
+  });
+
+  it('treats Inactive (stopped) as not running', () => {
+    assert.deepEqual(parseWinswServiceStatus('Inactive (stopped)'), {
+      running: false,
+      state: 'Inactive (stopped)',
+      raw: 'Inactive (stopped)',
+    });
+  });
+
+  it('treats NonExistent as not running', () => {
+    assert.deepEqual(parseWinswServiceStatus('NonExistent'), {
+      running: false,
+      state: 'NonExistent',
+      raw: 'NonExistent',
+    });
+  });
+});
+
+describe('Windows watchdog generators', () => {
+  const home = 'C:\\Users\\alice';
+  const configPath = winswConfigPath({ id: HEADROOM_SERVICE_ID, home });
+  const exePath = winswExecutablePath({ id: HEADROOM_SERVICE_ID, home });
+  const logPath = 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.log';
+
+  it('builds a healthcheck script that probes /health and restarts via WinSW', () => {
+    const script = generateWindowsWatchdogHealthcheckScript({
+      serviceName: 'Myelin Headroom',
+      healthUrl: 'http://127.0.0.1:8787/health',
+      winswExePath: exePath,
+      winswConfigPath: configPath,
+      logPath,
+    });
+    assert.ok(script.includes('Invoke-WebRequest'));
+    assert.ok(script.includes('http://127.0.0.1:8787/health'));
+    assert.ok(script.includes('& $WinswExe restart $WinswConfig'));
+    assert.ok(script.includes('& $WinswExe stop $WinswConfig --force --no-wait'));
+    assert.ok(script.includes('& $WinswExe start $WinswConfig'));
+    assert.ok(script.includes(exePath));
+    assert.ok(script.includes(configPath));
+  });
+
+  it('builds a Scheduled Task creation script with minute cadence', () => {
+    const script = generateWindowsWatchdogTaskCreateScript({
+      taskName: 'Myelin Headroom Watchdog',
+      scriptPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.ps1',
+      intervalMinutes: 2,
+    });
+    assert.ok(script.includes('schtasks.exe /create'));
+    assert.ok(script.includes('/sc minute /mo 2'));
+    assert.ok(script.includes('Myelin Headroom Watchdog'));
+    assert.ok(script.includes('powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File'));
+    assert.ok(script.includes('/ru System /rl HIGHEST /f'));
+  });
+
+  it('rejects invalid Scheduled Task intervals', () => {
+    assert.throws(() => generateWindowsWatchdogTaskCreateScript({
+      taskName: 'Myelin Headroom Watchdog',
+      scriptPath: 'C:\\watchdog.ps1',
+      intervalMinutes: 0,
+    }), /intervalMinutes/);
   });
 });
 
