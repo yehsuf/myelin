@@ -97,6 +97,22 @@ export function copilotHeadroomServiceStatus() {
  *  own outbound calls) instead of --listen-port. See launchd.mjs for the
  *  same dual-listener design on macOS.
  */
+/**
+ * Undo any accumulated backslash-doubling corruption before persisting a
+ * value via SetEnvironmentVariable, without breaking a legitimate UNC path
+ * prefix (`\\server\share`, which genuinely starts with two backslashes).
+ * Collapses any run of 2+ consecutive backslashes elsewhere in the string
+ * down to exactly one. Self-healing: if a previously-corrupted value is
+ * ever read back out of the registry and re-persisted through this path,
+ * it gets fixed rather than doubled again.
+ */
+export function collapseRedundantBackslashes(value) {
+  const str = String(value ?? '');
+  const uncPrefix = str.startsWith('\\\\') ? '\\\\' : '';
+  const rest = str.slice(uncPrefix.length);
+  return uncPrefix + rest.replace(/\\{2,}/g, '\\');
+}
+
 export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
   const bin   = mitmdumpBin.replace(/\//g, '\\');
   const addon = addonPath.replace(/\//g, '\\');
@@ -109,7 +125,18 @@ export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = 
     ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
     ...envVars,
   })
-    .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${v.replace(/\\/g, '\\\\')}', 'User')`)
+    // PowerShell single-quoted strings are literal - backslashes never need
+    // escaping there (only a literal single-quote doubles: ' -> ''). This
+    // line previously doubled every backslash unconditionally, which is
+    // wrong on its own, and because this script persists to the registry
+    // (User scope) and gets read back as input on the next run, it silently
+    // compounded across restarts: one clean path became doubled, then
+    // quadrupled, then octupled backslashes over successive `myelin
+    // restart`/install runs - observed live as a NetFree CA path corrupted
+    // to 8 backslashes per separator. collapseRedundantBackslashes() both
+    // stops the bug and self-heals any value that was already corrupted by
+    // it in a prior run.
+    .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${collapseRedundantBackslashes(v).replace(/'/g, "''")}', 'User')`)
     .join('\n');
   return `
 ${envLines}
@@ -161,7 +188,10 @@ export function serviceStatus() {
  */
 export function generateSetUserEnvVarsScript(vars) {
   return Object.entries(vars)
-    .map(([k, v]) => `[Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'User')`)
+    // collapseRedundantBackslashes here too so a value corrupted by the
+    // sibling generateMitmRunScript bug (fixed above) self-heals wherever
+    // it happens to be re-persisted from, not just at its original source.
+    .map(([k, v]) => `[Environment]::SetEnvironmentVariable('${k}', '${collapseRedundantBackslashes(v).replace(/'/g, "''")}', 'User')`)
     .join('\n') + '\n';
 }
 

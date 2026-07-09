@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generatePlist, generateGenericPlist } from '../src/service/launchd.mjs';
 import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } from '../src/service/systemd.mjs';
-import { generateHeadroomRunScript, generateSetUserEnvVarsScript, generateCopilotHeadroomRunScript, generateMitmRunScript } from '../src/service/windows.mjs';
+import { generateHeadroomRunScript, generateSetUserEnvVarsScript, generateCopilotHeadroomRunScript, generateMitmRunScript, collapseRedundantBackslashes } from '../src/service/windows.mjs';
 import { resolveGlobalBinDir, linkGlobalBin } from '../src/service/npmlink.mjs';
 
 const OPTS = {
@@ -210,6 +210,74 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     const script = generateMitmRunScript({ ...MITM_OPTS, egressPort: 8889 });
     assert.ok(script.includes('MYELIN_EGRESS_PORT'));
   });
+
+  // Regression test for a live bug: a real Windows path (e.g. a NetFree
+  // corporate CA file) got persisted with every backslash doubled, and
+  // because this script persists to the registry (User scope) and the
+  // doubled value gets read back as input on the next `myelin restart`,
+  // it silently compounded across runs - observed live as
+  // C:\\\\\\\\ProgramData\\\\\\\\NetFree\\\\\\\\CA\\\\\\\\netfree-ca-list.crt
+  // (8 backslashes per separator) after 3 restarts.
+  it('does not double backslashes in a persisted env var value (regression)', () => {
+    const script = generateMitmRunScript({
+      ...MITM_OPTS,
+      envVars: { NODE_EXTRA_CA_CERTS: 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem' },
+    });
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem', 'User')"));
+    assert.ok(!script.includes('C:\\\\Users'));
+  });
+
+  it('self-heals an already-doubled value instead of doubling it further', () => {
+    const script = generateMitmRunScript({
+      ...MITM_OPTS,
+      envVars: { NODE_EXTRA_CA_CERTS: 'C:\\\\ProgramData\\\\NetFree\\\\CA\\\\netfree-ca-list.crt' },
+    });
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'User')"));
+  });
+
+  it('self-heals a severely compounded value (the exact 8-backslash case observed live)', () => {
+    const corrupted = 'C:' + '\\\\\\\\ProgramData' + '\\\\\\\\NetFree' + '\\\\\\\\CA' + '\\\\\\\\netfree-ca-list.crt';
+    const script = generateMitmRunScript({ ...MITM_OPTS, envVars: { NODE_EXTRA_CA_CERTS: corrupted } });
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'User')"));
+  });
+
+  it('still escapes a literal single-quote in the value', () => {
+    const script = generateMitmRunScript({ ...MITM_OPTS, envVars: { SOME_VAR: "it's a path" } });
+    assert.ok(script.includes("SetEnvironmentVariable('SOME_VAR', 'it''s a path', 'User')"));
+  });
+});
+
+describe('collapseRedundantBackslashes', () => {
+  it('leaves a normal single-backslash Windows path untouched', () => {
+    assert.equal(collapseRedundantBackslashes('C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem'), 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem');
+  });
+
+  it('collapses a doubled path down to single backslashes', () => {
+    assert.equal(collapseRedundantBackslashes('C:\\\\ProgramData\\\\NetFree'), 'C:\\ProgramData\\NetFree');
+  });
+
+  it('collapses a quadrupled/octupled path down to single backslashes', () => {
+    assert.equal(collapseRedundantBackslashes('C:\\\\\\\\ProgramData\\\\\\\\NetFree'), 'C:\\ProgramData\\NetFree');
+  });
+
+  it('preserves a genuine UNC path prefix (\\\\server\\share) instead of collapsing it to one backslash', () => {
+    assert.equal(collapseRedundantBackslashes('\\\\server\\share\\file.pem'), '\\\\server\\share\\file.pem');
+  });
+
+  it('still collapses corruption elsewhere in a UNC path while preserving its prefix', () => {
+    assert.equal(collapseRedundantBackslashes('\\\\server\\\\share\\\\file.pem'), '\\\\server\\share\\file.pem');
+  });
+
+  it('handles empty/null/undefined without throwing', () => {
+    assert.equal(collapseRedundantBackslashes(''), '');
+    assert.equal(collapseRedundantBackslashes(null), '');
+    assert.equal(collapseRedundantBackslashes(undefined), '');
+  });
+
+  it('is idempotent - collapsing an already-clean value is a no-op', () => {
+    const once = collapseRedundantBackslashes('C:\\\\\\\\Program');
+    assert.equal(collapseRedundantBackslashes(once), once);
+  });
 });
 
 describe('windows registry env var script generator', () => {
@@ -229,6 +297,10 @@ describe('windows registry env var script generator', () => {
   it('handles multiple vars, one line each', () => {
     const script = generateSetUserEnvVarsScript({ A: '1', B: '2' });
     assert.equal(script.trim().split('\n').length, 2);
+  });
+  it('self-heals an already-doubled value instead of leaving it corrupted', () => {
+    const script = generateSetUserEnvVarsScript({ SSL_CERT_FILE: 'C:\\\\ProgramData\\\\NetFree\\\\netfree-ca-list.crt' });
+    assert.ok(script.includes("'C:\\ProgramData\\NetFree\\netfree-ca-list.crt'"));
   });
 });
 
