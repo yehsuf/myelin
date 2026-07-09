@@ -186,6 +186,45 @@ proxy:
 
 ---
 
+### `proxy.windows_service.manager`
+**Type:** `'registry' | 'winsw'` | **Default:** `'registry'` (unchanged, current behavior)
+
+**What it does:** Controls HOW myelin manages its Windows background processes (Headroom, mitmproxy, Copilot-Headroom).
+
+- **`registry`** (default): the original mechanism — starts each process via `Start-Process` (hidden window) plus a `HKCU\...\Run` registry key so it restarts on next login. Does **not** auto-restart on a crash; only on next login. This is exactly what every existing install already does — the default never changes this behavior for you.
+- **`winsw`**: switches to a real Windows Service via [WinSW](https://github.com/winsw/winsw), which auto-restarts on crash/exit (escalating delay: 5 sec, then 30 sec forever after; failure count resets after 1 hour of stable running) — the Windows equivalent of launchd's `KeepAlive`/systemd's `Restart=always`. This is a genuine behavioral change, unvalidated on real Windows at the time of writing — opt-in only.
+
+**Why opt-in:** switching process-management mechanisms is inherently higher-risk than a simple feature flag — do not flip this on a machine you depend on until you've validated it works there first.
+
+```yaml
+proxy:
+  windows_service:
+    manager: winsw
+```
+
+---
+
+### `proxy.windows_service.watchdog_enabled` / `watchdog_interval_minutes`
+**Type:** boolean / integer | **Default:** `false` / `2` | **Windows only, requires `manager: winsw`**
+
+**What it does:** A SECOND recovery layer on top of WinSW: a Scheduled Task that periodically calls the local Headroom `/health` endpoint and, if it stops responding, restarts the corresponding WinSW service.
+
+**Why a second layer exists:** WinSW already handles the crash/exit case (`onfailure restart`). It cannot detect the "process still exists but the HTTP service is hung" case, because the process never exited. The watchdog closes that gap by checking real liveness instead of mere process existence.
+
+**What it watches:** The main `proxy.headroom` service, plus the separate `proxy.copilot_headroom` service if that feature is enabled.
+
+**Has no effect unless `manager` is `winsw`** — a registry-based install has no WinSW service for the watchdog to restart.
+
+```yaml
+proxy:
+  windows_service:
+    manager: winsw
+    watchdog_enabled: true
+    watchdog_interval_minutes: 1   # faster detection/recovery
+```
+
+---
+
 ## 2. Index Tier
 
 Controls how much memory the indexing layer uses. Determines which LSP servers are active.

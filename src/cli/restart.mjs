@@ -1,14 +1,15 @@
 import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readdirSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { detectOS } from '../detect/os.mjs';
-import { waitForHeadroom } from '../tools/headroom.mjs';
-import { headroomBinPath } from '../tools/headroom.mjs';
-import { existsSync } from 'node:fs';
+import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
+import { loadConfig } from '../config/reader.mjs';
 
 export async function runRestart() {
   const os = detectOS();
+  const cfg = os === 'windows' ? await loadConfig() : null;
+  const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
   console.log('\n🔄 Restarting Myelin services...');
 
   // --- headroom ---
@@ -34,14 +35,21 @@ export async function runRestart() {
       console.log('  ✓ headroom restarted (systemd)');
     } catch { console.warn('  ⚠ systemd restart failed'); }
   } else {
-    // Windows — kill and restart via registry entry
+    // Windows — WinSW when opted in (manager: 'winsw'), else the original
+    // kill-and-restart-via-registry mechanism (default, unchanged behavior).
     try {
-      execSync('powershell -Command "Stop-Process -Name headroom -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
-      const bin = headroomBinPath();
-      if (existsSync(bin)) {
-        execSync(`powershell -Command "Start-Process -FilePath '${bin}' -ArgumentList 'proxy' -WindowStyle Hidden"`, { stdio: 'pipe' });
+      if (winManager === 'winsw') {
+        const { HEADROOM_SERVICE_ID, restartWinswService } = await import('../service/windows.mjs');
+        if (!restartWinswService({ id: HEADROOM_SERVICE_ID })) throw new Error('WinSW restart failed');
+        console.log('  ✓ headroom restarted (WinSW)');
+      } else {
+        execSync('powershell -Command "Stop-Process -Name headroom -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
+        const bin = headroomBinPath();
+        if (existsSync(bin)) {
+          execSync(`powershell -Command "Start-Process -FilePath '${bin}' -ArgumentList 'proxy' -WindowStyle Hidden"`, { stdio: 'pipe' });
+        }
+        console.log('  ✓ headroom restarted');
       }
-      console.log('  ✓ headroom restarted');
     } catch { console.warn('  ⚠ headroom restart failed'); }
   }
 
@@ -61,19 +69,25 @@ export async function runRestart() {
       console.log('  ✓ mitmproxy restarted (systemd)');
     } catch { console.warn('  ⚠ systemd restart failed'); }
   } else {
-    // Windows — kill and restart via registry Run key entry
+    // Windows — WinSW when opted in, else the original registry-Run-key
+    // read-and-restart mechanism (default, unchanged behavior).
     try {
-      execSync('powershell -Command "Stop-Process -Name mitmdump -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
-      // Read the registered command from registry and restart hidden
-      const regVal = execSync(
-        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
-        { stdio: 'pipe' }
-      ).toString().trim();
-      if (regVal) {
-        execSync(`powershell -Command "Start-Process -FilePath 'powershell.exe' -ArgumentList '-WindowStyle Hidden -ExecutionPolicy Bypass -Command & { ${regVal.replace(/'/g, "''")} }' -WindowStyle Hidden"`, { stdio: 'pipe' });
-        console.log('  ✓ mitmproxy restarted (hidden)');
+      if (winManager === 'winsw') {
+        const { MITM_SERVICE_ID, restartWinswService } = await import('../service/windows.mjs');
+        if (!restartWinswService({ id: MITM_SERVICE_ID })) throw new Error('WinSW restart failed');
+        console.log('  ✓ mitmproxy restarted (WinSW)');
       } else {
-        console.warn('  ⚠ mitmproxy registry entry not found — run: node src/install.mjs --yes');
+        execSync('powershell -Command "Stop-Process -Name mitmdump -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
+        const regVal = execSync(
+          `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
+          { stdio: 'pipe' }
+        ).toString().trim();
+        if (regVal) {
+          execSync(`powershell -Command "Start-Process -FilePath 'powershell.exe' -ArgumentList '-WindowStyle Hidden -ExecutionPolicy Bypass -Command & { ${regVal.replace(/'/g, "''")} }' -WindowStyle Hidden"`, { stdio: 'pipe' });
+          console.log('  ✓ mitmproxy restarted (hidden)');
+        } else {
+          console.warn('  ⚠ mitmproxy registry entry not found — run: node src/install.mjs --yes');
+        }
       }
     } catch { console.warn('  ⚠ mitmproxy restart failed'); }
   }

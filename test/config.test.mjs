@@ -56,6 +56,15 @@ describe('config schema', () => {
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, 'https://api.business.githubcopilot.com');
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, 'https://api.business.githubcopilot.com');
   });
+  it('DEFAULT_CONFIG has proxy.windows_service.manager = registry (safe default, unchanged behavior)', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.windows_service.manager, 'registry');
+  });
+  it('DEFAULT_CONFIG has proxy.windows_service.watchdog_enabled = false (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.windows_service.watchdog_enabled, false);
+  });
+  it('DEFAULT_CONFIG has proxy.windows_service.watchdog_interval_minutes = 2', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.windows_service.watchdog_interval_minutes, 2);
+  });
   it('DEFAULT_CONFIG excludes removed vaporware keys', () => {
     for (const key of ['conversation_memory', 'observability', 'stacklit', 'semgrep', 'budget_routing', 'learning']) {
       assert.equal(key in DEFAULT_CONFIG, false);
