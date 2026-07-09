@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { which } from './which.mjs';
+import { getRtkVersionStatus } from '../tools/rtk.mjs';
 
 const execFileP = promisify(execFile);
 
@@ -62,7 +63,10 @@ export async function detectHeadroom() {
     return { installed: false, version: null, path: null };
   }
 }
-export async function detectRtk() { return detectTool('rtk', '--version'); }
+export async function detectRtk() {
+  const detected = await detectTool('rtk', '--version');
+  return { ...detected, ...getRtkVersionStatus(detected.version ?? '') };
+}
 export async function detectSerena() { return detectTool('serena', '--version'); }
 export async function detectCodegraph() { return detectTool('codegraph', '--version'); }
 export async function detectSemble() {
