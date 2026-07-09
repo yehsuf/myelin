@@ -41,31 +41,39 @@ export async function runVerify() {
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const results = [];
 
-  const svc = await serviceStatus();
-  results.push({
-    name: 'Headroom service',
-    ok: svc.running,
-    detail: svc.running
-      ? `running${svc.label ? ` (${svc.label})` : ''}`
-      : 'not running — try: myelin diagnose',
-  });
+  // Headroom (opt-in via proxy.headroom.enabled — skipped entirely when
+  // disabled, so a machine that has intentionally turned it off doesn't
+  // show a confusing failing row; matches the copilot_headroom pattern below).
+  if (cfg.proxy?.headroom?.enabled) {
+    const svc = await serviceStatus();
+    results.push({
+      name: 'Headroom service',
+      ok: svc.running,
+      detail: svc.running
+        ? `running${svc.label ? ` (${svc.label})` : ''}`
+        : 'not running — try: myelin diagnose',
+    });
 
-  const healthy = await waitForHeadroom(port, 3000);
-  results.push({
-    name: `Headroom health (:${port})`,
-    ok: healthy,
-    detail: healthy ? headroomHealthUrl(port) : `no response on :${port}`,
-  });
+    const healthy = await waitForHeadroom(port, 3000);
+    results.push({
+      name: `Headroom health (:${port})`,
+      ok: healthy,
+      detail: healthy ? headroomHealthUrl(port) : `no response on :${port}`,
+    });
+  }
 
-  const mitmSvc = await mitmServiceStatus();
-  const mitmdump = await which('mitmdump');
-  results.push({
-    name: `Mitmproxy service (:${mitmPort})`,
-    ok: mitmSvc.running,
-    detail: mitmSvc.running
-      ? `running${mitmdump ? ` (${mitmdump})` : ''}`
-      : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
-  });
+  // Mitmproxy (opt-in via proxy.mitm.enabled — same reasoning as above).
+  if (cfg.proxy?.mitm?.enabled) {
+    const mitmSvc = await mitmServiceStatus();
+    const mitmdump = await which('mitmdump');
+    results.push({
+      name: `Mitmproxy service (:${mitmPort})`,
+      ok: mitmSvc.running,
+      detail: mitmSvc.running
+        ? `running${mitmdump ? ` (${mitmdump})` : ''}`
+        : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
+    });
+  }
 
   // Watchdog (macOS only) — auto-revives services if launchd silently drops them
   if (process.platform === 'darwin') {
