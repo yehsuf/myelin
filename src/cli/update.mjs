@@ -26,6 +26,10 @@ function upgradeCommands(os) {
   };
 }
 
+export function isRepoDirty(repoDir) {
+  return execSync('git status --porcelain -- . ":(exclude).serena"', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+}
+
 export async function runUpdate(options = {}) {
   const { check = false } = options;
   const os = detectOS();
@@ -70,7 +74,7 @@ export async function runSelfUpdate() {
   try {
     // Safety gate 1: refuse to touch a dirty working tree — a hard reset
     // would silently discard any uncommitted edits.
-    const dirty = execSync('git status --porcelain', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    const dirty = isRepoDirty(repoDir);
     if (dirty) {
       console.warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
       console.warn('    Commit or stash your changes, then re-run: myelin update --self\n');
