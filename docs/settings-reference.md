@@ -34,9 +34,10 @@ myelin config reset
 4. [Shell Compression](#4-shell-compression)
 5. [Output Sandboxing](#5-output-sandboxing)
 6. [Output Style + Enforcement](#6-output-style--enforcement)
-7. [Environment Variables Reference](#7-environment-variables-reference)
-8. [Quick Recipes](#8-quick-recipes)
-9. [Appendix: Planned / Not Yet Implemented](#appendix-planned--not-yet-implemented)
+7. [Optional Integrations](#7-optional-integrations)
+8. [Environment Variables Reference](#8-environment-variables-reference)
+9. [Quick Recipes](#9-quick-recipes)
+10. [Appendix: Planned / Not Yet Implemented](#appendix-planned--not-yet-implemented)
 
 ---
 
@@ -421,7 +422,32 @@ code_discovery:
 
 ---
 
-## 7. Environment Variables Reference
+## 7. Optional Integrations
+
+---
+
+### `copilot_hud.enabled`
+**Type:** boolean | **Default:** `false` (opt-in)
+
+**What it does:** Installs the `griches/copilot-hud` GitHub Copilot CLI status-line plugin. After its one-time in-session setup, Copilot shows your project path, git branch, live context usage bar, token breakdown, AIU cost, tool activity, and background agents at the bottom of the session.
+
+**What you gain:** Real-time visibility into Copilot CLI context burn without leaving the terminal. This is the fastest way to see when a session is approaching context limits before performance degrades.
+
+**What you lose:** Requires Copilot CLI v1.0.12+, Node.js 18+, `jq`, `copilot --experimental`, and one manual in-session `/copilot-hud:setup`. Myelin can install the plugin, but it cannot automate that interactive setup step.
+
+**When to enable:** Long Copilot CLI sessions where you want live token/cost awareness as part of token-efficiency tuning.
+
+```bash
+myelin config set copilot_hud.enabled true
+# re-run install/update, then:
+copilot --experimental
+# inside the session:
+# /copilot-hud:setup
+```
+
+---
+
+## 8. Environment Variables Reference
 
 These override config file values (env vars take precedence over config.yaml).
 
@@ -446,7 +472,7 @@ These override config file values (env vars take precedence over config.yaml).
 
 ---
 
-## 8. Quick Recipes
+## 9. Quick Recipes
 
 ### "I'm on a memory-constrained machine (8GB RAM)"
 ```yaml

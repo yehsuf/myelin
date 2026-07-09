@@ -58,6 +58,9 @@ describe('config schema', () => {
     assert.equal(DEFAULT_CONFIG.output_sandboxing.context_mode, true);
     assert.equal(DEFAULT_CONFIG.code_discovery.serena.lsp.rust, false);
   });
+  it('DEFAULT_CONFIG has copilot_hud.enabled = false (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.copilot_hud.enabled, false);
+  });
   it('mergeDeep overwrites leaf values', () => {
     const result = mergeDeep({ a: { b: 1 } }, { a: { b: 2, c: 3 } });
     assert.deepEqual(result, { a: { b: 2, c: 3 } });

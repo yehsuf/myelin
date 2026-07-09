@@ -101,6 +101,11 @@ export const DEFAULT_CONFIG = {
     // provider, model) and placement rules.
     token_efficiency: true,
   },
+  // copilot_hud: opt-in Copilot CLI status-line plugin for live context /
+  // token-burn visibility. Disabled by default because setup also requires a
+  // one-time interactive `/copilot-hud:setup` run that the installer cannot
+  // perform headlessly.
+  copilot_hud: { enabled: false },
   copilot: {
     model: 'claude-sonnet-4-6',   // change with: myelin config set copilot.model <model>
   },

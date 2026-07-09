@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { join } from 'node:path';
 import { detectOS, detectShell } from '../src/detect/os.mjs';
-import { detectTool, detectUv, detectNode } from '../src/detect/tools.mjs';
+import { detectTool, detectUv, detectNode, detectCopilotHud } from '../src/detect/tools.mjs';
 import { detectCorporateProxy, detectCaBundles } from '../src/detect/proxy.mjs';
 import { isPortFree, findFreePort } from '../src/detect/port.mjs';
 
@@ -51,6 +52,45 @@ describe('detectNode', () => {
     assert.equal(r.installed, true);
     const major = parseInt(r.version.replace('v', '').split('.')[0], 10);
     assert.ok(major >= 20, `node major version ${major} < 20`);
+  });
+});
+
+describe('detectCopilotHud', () => {
+  it('returns installed=false when Copilot CLI is missing', async () => {
+    const r = await detectCopilotHud({
+      detectToolImpl: async () => ({ installed: false, version: null, path: null }),
+    });
+    assert.deepEqual(r, { installed: false, version: null, path: null });
+  });
+
+  it('detects the plugin from copilot plugin list output', async () => {
+    const homeDir = join('test-home');
+    const pluginPath = join(homeDir, '.copilot', 'plugins', 'copilot-hud');
+    const r = await detectCopilotHud({
+      detectToolImpl: async () => ({ installed: true, version: '1.0.12', path: '/usr/local/bin/copilot' }),
+      execSyncImpl: () => Buffer.from('copilot-hud 0.4.2\nother-plugin 1.0.0\n'),
+      existsSyncImpl: (path) => path === pluginPath,
+      homeDir,
+    });
+    assert.deepEqual(r, { installed: true, version: '0.4.2', path: pluginPath });
+  });
+
+  it('allows null version/path for plugin installs without extra metadata', async () => {
+    const r = await detectCopilotHud({
+      detectToolImpl: async () => ({ installed: true, version: '1.0.12', path: '/usr/local/bin/copilot' }),
+      execSyncImpl: () => Buffer.from('copilot-hud\n'),
+      existsSyncImpl: () => false,
+      homeDir: join('test-home'),
+    });
+    assert.deepEqual(r, { installed: true, version: null, path: null });
+  });
+
+  it('returns installed=false when copilot plugin list does not include copilot-hud', async () => {
+    const r = await detectCopilotHud({
+      detectToolImpl: async () => ({ installed: true, version: '1.0.12', path: '/usr/local/bin/copilot' }),
+      execSyncImpl: () => Buffer.from('other-plugin 1.0.0\n'),
+    });
+    assert.deepEqual(r, { installed: false, version: null, path: null });
   });
 });
 
