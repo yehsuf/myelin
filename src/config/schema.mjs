@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG = {
     // traffic the same full pipeline treatment (cache-mode, content_router,
     // TOIN, stats) instead of the stateless /v1/compress-only sidecar call.
     // Disabled by default — opt-in until validated on your own install.
-    // See docs/copilot-headroom-architecture.md (if present) for the full
+    // See docs/copilot-headroom-architecture.md for the full
     // design: mitmproxy redirects /v1/messages and /chat/completions to this
     // instance's loopback port; its own outbound call tunnels back out
     // through proxy.mitm.egress_port so mitmproxy remains the sole owner of
