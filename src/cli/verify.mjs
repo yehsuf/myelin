@@ -1,7 +1,8 @@
 import { loadConfig } from '../config/reader.mjs';
 import { waitForHeadroom, headroomHealthUrl } from '../tools/headroom.mjs';
-import { detectTool } from '../detect/tools.mjs';
+import { detectTool, detectRtk } from '../detect/tools.mjs';
 import { serviceStatus, mitmServiceStatus, copilotHeadroomServiceStatus } from '../service/index.mjs';
+import { detectRtkHookArtifacts, formatRtkVersionDetail } from '../tools/rtk.mjs';
 import { which } from '../detect/which.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -107,6 +108,19 @@ export async function runVerify() {
   for (const tool of ['uv', 'serena']) {
     const r = await detectTool(tool, '--version');
     results.push({ name: tool, ok: r.installed, detail: r.installed ? r.version : 'not found — run: myelin update' });
+  }
+  if (cfg.shell_compression?.rtk !== false) {
+    const rtk = await detectRtk();
+    results.push({ name: 'rtk', ok: rtk.installed, detail: formatRtkVersionDetail(rtk) });
+    if (rtk.installed) {
+      const hookState = detectRtkHookArtifacts();
+      if (hookState.claude.relevant) {
+        results.push({ name: 'RTK Claude hook', ok: hookState.claude.ok, detail: hookState.claude.detail });
+      }
+      if (hookState.copilot.relevant) {
+        results.push({ name: 'RTK Copilot hook', ok: hookState.copilot.ok, detail: hookState.copilot.detail });
+      }
+    }
   }
   // ast-grep may be installed as 'sg' (npm) or 'ast-grep' (cargo/brew)
   const astgrep = await (async () => {

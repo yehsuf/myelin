@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { detectOS, detectShell } from './detect/os.mjs';
-import { detectAll, detectCopilotHud } from './detect/tools.mjs';
+import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
 import { isPortFree, findFreePort } from './detect/port.mjs';
@@ -21,9 +21,10 @@ import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
+import { buildBashBanRawHookSource } from './hooks/bash-ban-raw.mjs';
 import { ensureUv, uvToolInstall } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
-import { installRtk } from './tools/rtk.mjs';
+import { installRtk, getRtkVersionWarning, runRtkInit } from './tools/rtk.mjs';
 import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
 import { setUserEnvVars } from './service/windows.mjs';
@@ -177,19 +178,7 @@ if ((input?.tool_name ?? '').toLowerCase().includes('serena')) {
 process.exit(0);
 `);
 
-  writeFileSync(join(dir, 'bash-ban-raw.mjs'), `#!/usr/bin/env node
-// Myelin: advisory warning on raw cat/grep/find in Bash
-import { readFileSync } from 'node:fs';
-let input = {};
-try { input = JSON.parse(readFileSync('/dev/stdin', 'utf8')); } catch {}
-if (input?.tool_name === 'Bash') {
-  const cmd = input?.tool_input?.command ?? '';
-  if (/\\bcat |\\bgrep |\\bfind |\\bhead |\\btail |\\bwc /.test(cmd)) {
-    process.stderr.write('[myelin] Prefer serena_search_for_pattern_in_files over raw shell search.\\n');
-  }
-}
-process.exit(0);
-`);
+  writeFileSync(join(dir, 'bash-ban-raw.mjs'), buildBashBanRawHookSource());
 }
 
 function printStateTable(tools, caBundles, proxy) {
@@ -1018,8 +1007,15 @@ async function main() {
   }
 
   if (!flags['no-rtk']) {
-    if (!tools.rtk.installed) { console.log('  Installing RTK...'); await installRtk(os); }
-    else { skip(`rtk (${tools.rtk.version})`); }
+    if (!tools.rtk.installed) {
+      console.log('  Installing RTK...');
+      await installRtk(os);
+      tools.rtk = await detectRtk();
+    } else {
+      skip(`rtk (${tools.rtk.version})`);
+    }
+    const rtkVersionWarning = getRtkVersionWarning(tools.rtk);
+    if (rtkVersionWarning) warn(rtkVersionWarning);
   }
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
@@ -1218,17 +1214,54 @@ async function main() {
   }
 
   // CLAUDE.md managed section
+  let installCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+
   if (claudeCC) {
-    const instrCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const claudeBlock = renderManagedBlock({
       target: 'global',
       provider: 'claude',
-      model: instrCfg.copilot?.model,
-      cfg: instrCfg,
+      model: installCfg.copilot?.model,
+      cfg: installCfg,
       extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${port}.`],
     });
     writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
+  }
+
+  const rtkEnabledInConfig = installCfg.shell_compression?.rtk !== false;
+  if (!flags['no-rtk'] && rtkEnabledInConfig && tools.rtk.installed) {
+    const rtkInitPlans = [];
+    const copilotMcpPath = join(home, '.copilot', 'mcp-config.json');
+    if (copilot && existsSync(copilotMcpPath)) {
+      rtkInitPlans.push({
+        label: 'Copilot',
+        args: ['init', '--global', '--copilot', '--auto-patch'],
+      });
+    }
+    if (claudeCC) {
+      // Plain `rtk init -g` defaults to "N" for settings.json patching in
+      // non-interactive installs, so use --auto-patch to ensure hook wiring.
+      rtkInitPlans.push({
+        label: 'Claude Code',
+        args: ['init', '--global', '--auto-patch'],
+      });
+    }
+    // RTK 0.43.0 exposes no subcommand-level rewrite exclusions via `init`,
+    // `hook`, `rewrite`, or the generated filters template, so we keep broad
+    // shell rewrites even when Headroom intercept_tool_results is enabled.
+    for (const plan of rtkInitPlans) {
+      const result = runRtkInit(plan.args);
+      if (result.ok) {
+        ok(`rtk ${plan.args.slice(1).join(' ')} (${plan.label})`);
+      } else {
+        const summary = result.error || result.output.split('\n').filter(Boolean).at(-1) || `exit ${result.status}`;
+        warn(`rtk ${plan.args.slice(1).join(' ')} (${plan.label}) failed: ${summary}`);
+      }
+    }
+    // Intentionally do not auto-run `rtk trust`: project-local .rtk/filters.toml
+    // must remain explicit opt-in.
+  } else if (!flags['no-rtk'] && !rtkEnabledInConfig) {
+    skip('rtk hook wiring disabled by shell_compression.rtk=false');
   }
 
   // Slash commands — lets `myelin init` be re-run from inside a live agent
