@@ -1,8 +1,9 @@
 import { detectAll } from '../detect/tools.mjs';
 import { execSync } from 'node:child_process';
 import { detectOS } from '../detect/os.mjs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 function upgradeCommands(os) {
   const venv = join(homedir(), '.myelin', 'venv');
@@ -30,14 +31,29 @@ export function isRepoDirty(repoDir) {
   return execSync('git status --porcelain -- . ":(exclude).serena"', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
 }
 
+function repoDirFromMetaUrl(metaUrl = import.meta.url) {
+  return join(dirname(fileURLToPath(metaUrl)), '..', '..');
+}
+
+export function checkSelfUpdateWorkingTree({ repoDir, force = false, warn = console.warn, isRepoDirtyFn = isRepoDirty } = {}) {
+  const dirty = isRepoDirtyFn(repoDir);
+  if (!dirty) return { dirty: false, bypassed: false, aborted: false };
+  if (!force) {
+    warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
+    warn('    Commit or stash your changes, then re-run: myelin update --self\n');
+    return { dirty: true, bypassed: false, aborted: true };
+  }
+  warn('  ⚠ Uncommitted changes present but --force specified — proceeding anyway.');
+  warn('    Your local changes will NOT be touched by the update itself if git can fast-forward safely; review git status afterward.\n');
+  return { dirty: true, bypassed: true, aborted: false };
+}
+
 export async function runUpdate(options = {}) {
   const { check = false } = options;
   const os = detectOS();
   const tools = await detectAll();
   const cmds = upgradeCommands(os);
-  const { fileURLToPath } = await import('node:url');
-  const { dirname } = await import('node:path');
-  const repoDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const repoDir = repoDirFromMetaUrl();
   const installerCmd = `node "${join(repoDir, 'src', 'install.mjs')}" --yes`;
   console.log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
   for (const [name, r] of Object.entries(tools)) {
@@ -64,55 +80,52 @@ export async function runUpdate(options = {}) {
   else console.log('  Run: myelin verify to confirm.\n');
 }
 
-export async function runSelfUpdate() {
-  const { execSync } = await import('node:child_process');
-  const { fileURLToPath } = await import('node:url');
-  const { join, dirname } = await import('node:path');
-  const repoDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+export async function runSelfUpdate(options = {}, deps = {}) {
+  const { force = false } = options;
+  const exec = deps.execSync ?? execSync;
+  const log = deps.log ?? console.log;
+  const warn = deps.warn ?? console.warn;
+  const repoDir = deps.repoDir ?? repoDirFromMetaUrl();
 
-  console.log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
+  log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
   try {
-    // Safety gate 1: refuse to touch a dirty working tree — a hard reset
-    // would silently discard any uncommitted edits.
-    const dirty = isRepoDirty(repoDir);
-    if (dirty) {
-      console.warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
-      console.warn('    Commit or stash your changes, then re-run: myelin update --self\n');
-      return;
-    }
+    const workingTree = checkSelfUpdateWorkingTree({ repoDir, force, warn });
+    if (workingTree.aborted) return { status: 'aborted-dirty', ...workingTree };
 
-    const current = execSync('git rev-parse --short HEAD', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
-    execSync('git fetch origin', { cwd: repoDir, stdio: 'pipe' });
-    const latest = execSync('git rev-parse --short origin/main', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    const current = exec('git rev-parse --short HEAD', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    exec('git fetch origin', { cwd: repoDir, stdio: 'pipe' });
+    const latest = exec('git rev-parse --short origin/main', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
     if (current === latest) {
-      console.log(`  ✓ Already up to date (${current})\n`);
-      return;
+      log(`  ✓ Already up to date (${current})\n`);
+      return { status: 'up-to-date', current, latest, ...workingTree };
     }
 
     // Safety gate 2: refuse to discard unpushed local commits.
-    const unpushed = execSync('git log origin/main..HEAD --oneline', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+    const unpushed = exec('git log origin/main..HEAD --oneline', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
     if (unpushed) {
-      console.warn('  ✗ Local commits not on origin/main would be lost — aborting self-update:');
-      unpushed.split('\n').forEach(l => console.warn(`      ${l}`));
-      console.warn('    Push these commits first, then re-run: myelin update --self\n');
-      return;
+      warn('  ✗ Local commits not on origin/main would be lost — aborting self-update:');
+      unpushed.split('\n').forEach(l => warn(`      ${l}`));
+      warn('    Push these commits first, then re-run: myelin update --self\n');
+      return { status: 'aborted-unpushed', current, latest, ...workingTree };
     }
 
-    console.log(`  Updating ${current} → ${latest}...`);
+    log(`  Updating ${current} → ${latest}...`);
     // Fast-forward only — never force-discard history. Fails safely if diverged.
-    execSync('git merge --ff-only origin/main', { cwd: repoDir, stdio: 'pipe' });
-    execSync('npm install --registry https://registry.npmjs.org', { cwd: repoDir, stdio: 'pipe' });
-    console.log(`  ✓ Updated to ${latest}`);
+    exec('git merge --ff-only origin/main', { cwd: repoDir, stdio: 'pipe' });
+    exec('npm install --registry https://registry.npmjs.org', { cwd: repoDir, stdio: 'pipe' });
+    log(`  ✓ Updated to ${latest}`);
     // Re-run installer to apply config changes (service files, shell profile, MCP config)
-    console.log(`  ↳ Applying config changes...`);
+    log(`  ↳ Applying config changes...`);
     try {
-      execSync(`node "${join(repoDir, 'src', 'install.mjs')}" --yes`, { stdio: 'inherit', cwd: repoDir });
+      exec(`node "${join(repoDir, 'src', 'install.mjs')}" --yes`, { stdio: 'inherit', cwd: repoDir });
     } catch (e) {
-      console.warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
-      console.warn(`  ↳ Run manually: node "${join(repoDir, 'src', 'install.mjs')}" --yes`);
+      warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
+      warn(`  ↳ Run manually: node "${join(repoDir, 'src', 'install.mjs')}" --yes`);
     }
-    console.log();
+    log();
+    return { status: 'updated', current, latest, ...workingTree };
   } catch (e) {
-    console.warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
+    warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
+    return { status: 'failed', error: e };
   }
 }

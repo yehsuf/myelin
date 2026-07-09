@@ -243,6 +243,9 @@ node src/install.mjs --profile minimal  # Serena + RTK only
 ## Update
 
 ```bash
+myelin update --self             # safe self-update (aborts on uncommitted changes)
+myelin update --self --force     # bypass that safety check if you accept the risk
+
 cd ~/.myelin/repo
 git fetch origin && git reset --hard origin/main
 npm install
@@ -282,4 +285,3 @@ See [`docs/specs/2026-07-06-tokenstack-design.md`](docs/specs/2026-07-06-tokenst
 ## License
 
 MIT — see [LICENSE](LICENSE)
-

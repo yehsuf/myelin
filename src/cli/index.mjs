@@ -25,9 +25,10 @@ program.command('update')
   .description('Update all Myelin tools')
   .option('--check', 'Show what would be updated without making changes')
   .option('--self', 'Update Myelin itself (git pull + npm install)')
+  .option('-f, --force', 'Skip the uncommitted-changes safety check and force self-update anyway')
   .action(async (opts) => {
     const { runUpdate, runSelfUpdate } = await import('./update.mjs');
-    if (opts.self) { await runSelfUpdate(); return; }
+    if (opts.self) { await runSelfUpdate({ force: opts.force }); return; }
     await runUpdate({ check: opts.check });
   });
 
