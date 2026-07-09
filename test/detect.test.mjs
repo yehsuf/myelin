@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { detectOS, detectShell } from '../src/detect/os.mjs';
-import { detectTool, detectUv, detectNode, detectCopilotHud } from '../src/detect/tools.mjs';
+import { detectTool, detectUv, detectNode, detectCopilotHud, detectCodegraph } from '../src/detect/tools.mjs';
 import { detectCorporateProxy, detectCaBundles } from '../src/detect/proxy.mjs';
 import { isPortFree, findFreePort } from '../src/detect/port.mjs';
 
@@ -91,6 +91,29 @@ describe('detectCopilotHud', () => {
       execSyncImpl: () => Buffer.from('other-plugin 1.0.0\n'),
     });
     assert.deepEqual(r, { installed: false, version: null, path: null });
+  });
+});
+
+describe('detectCodegraph', () => {
+  it('returns object with installed, version, path keys', async () => {
+    const r = await detectCodegraph();
+    assert.ok('installed' in r);
+    assert.ok('version' in r);
+    assert.ok('path' in r);
+  });
+
+  it('returns installed=false when PATH cannot resolve codegraph', async () => {
+    const savedPath = process.env.PATH;
+    process.env.PATH = '';
+    try {
+      const r = await detectCodegraph();
+      assert.equal(r.installed, false);
+      assert.equal(r.version, null);
+      assert.equal(r.path, null);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
+    }
   });
 });
 

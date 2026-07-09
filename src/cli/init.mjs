@@ -163,7 +163,7 @@ function serenaPromptAnswerer(buf) {
   return SERENA_SAFE_COMPANION_LANGUAGES.has(m[1].toLowerCase()) ? 'y\n' : 'n\n';
 }
 
-const TOOLS = [
+const BASE_TOOLS = [
   {
     id: 'serena',
     label: 'Serena (LSP code index — symbol-precise navigation)',
@@ -207,11 +207,39 @@ const TOOLS = [
   },
 ];
 
-async function initRepoInteractive(root, rl, enabledTools) {
+const CODEGRAPH_TOOL = {
+  id: 'codegraph',
+  label: 'codegraph (function-level dependency graph + impact analysis)',
+  check: (root) => existsSync(join(root, '.codegraph', 'graph.db')),
+  // codegraph stores its SQLite graph under the target repo, so the build
+  // belongs in `myelin init` (per-project) rather than `myelin install`
+  // (machine-global).
+  run: (root) => {
+    execSync('codegraph build', {
+      cwd: root, env: noProxyEnv(), stdio: 'inherit', timeout: 300_000,
+    });
+  },
+  runAsync: (root, prefix) => spawnAsync(
+    'codegraph', ['build'],
+    { cwd: root, env: noProxyEnv(), timeout: 300_000, prefix }
+  ),
+};
+
+export function getInitTools(cfg = _loadConfigSync()) {
+  return cfg?.code_discovery?.codegraph === true
+    ? [...BASE_TOOLS, CODEGRAPH_TOOL]
+    : BASE_TOOLS;
+}
+
+export function getInitToolIds(cfg = _loadConfigSync()) {
+  return getInitTools(cfg).map(t => t.id);
+}
+
+async function initRepoInteractive(root, rl, availableTools, enabledTools) {
   const name = root.split(/[\\/]/).pop();
   console.log(`\n   📁 ${name}  (${root})`);
   const results = [];
-  for (const tool of TOOLS.filter(t => enabledTools.includes(t.id))) {
+  for (const tool of availableTools.filter(t => enabledTools.includes(t.id))) {
     const alreadyDone = tool.check(root);
     const labelSuffix = alreadyDone ? ' (already done — re-run?)' : '';
     const run = await confirm(rl, `      Run ${tool.id}${labelSuffix}?`, !alreadyDone);
@@ -246,10 +274,10 @@ async function initRepoInteractive(root, rl, enabledTools) {
 
 /** Non-interactive: run every enabled tool for this repo concurrently — one
  *  hung/slow tool must never delay the others (in-repo or cross-repo). */
-async function initRepoConcurrent(root, enabledTools) {
+async function initRepoConcurrent(root, availableTools, enabledTools) {
   const name = root.split(/[\\/]/).pop();
   console.log(`\n   📁 ${name}  (${root}) — running tools concurrently`);
-  const tools = TOOLS.filter(t => enabledTools.includes(t.id));
+  const tools = availableTools.filter(t => enabledTools.includes(t.id));
   const settled = await Promise.allSettled(tools.map(async (tool) => {
     const prefix = `${name}/${tool.id}`;
     try {
@@ -495,11 +523,12 @@ export async function runInit({ yes = false, recursive = false, dir = process.cw
   }
 
   // Choose tools (once, applies to all repos)
-  let enabledTools = TOOLS.map(t => t.id);
+  const availableTools = getInitTools();
+  let enabledTools = availableTools.map(t => t.id);
   if (!yes && rl) {
     console.log('\n   Select tools to run:');
     enabledTools = [];
-    for (const tool of TOOLS) {
+    for (const tool of availableTools) {
       const run = await confirm(rl, `     ${tool.label}?`);
       if (run) enabledTools.push(tool.id);
     }
@@ -519,7 +548,7 @@ export async function runInit({ yes = false, recursive = false, dir = process.cw
     const CONCURRENCY = 2;
     await mapLimit(repos, CONCURRENCY, async (root) => {
       try {
-        trackResults(await initRepoConcurrent(root, enabledTools));
+        trackResults(await initRepoConcurrent(root, availableTools, enabledTools));
       } catch (e) {
         reposFailed++;
         console.warn(`      ⚠ ${root} failed unexpectedly: ${e.message.split('\n')[0]} — continuing`);
@@ -529,7 +558,7 @@ export async function runInit({ yes = false, recursive = false, dir = process.cw
     // Interactive: prompts are inherently sequential (single user, one terminal)
     for (const root of repos) {
       try {
-        trackResults(await initRepoInteractive(root, rl, enabledTools));
+        trackResults(await initRepoInteractive(root, rl, availableTools, enabledTools));
       } catch (e) {
         reposFailed++;
         console.warn(`      ⚠ ${root} failed unexpectedly: ${e.message.split('\n')[0]} — continuing to next repo`);

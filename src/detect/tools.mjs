@@ -64,6 +64,7 @@ export async function detectHeadroom() {
 }
 export async function detectRtk() { return detectTool('rtk', '--version'); }
 export async function detectSerena() { return detectTool('serena', '--version'); }
+export async function detectCodegraph() { return detectTool('codegraph', '--version'); }
 export async function detectSemble() {
   // semble uses subcommands, no --version flag
   const path = await which('semble');
@@ -101,9 +102,9 @@ export async function detectCopilotHud({
 
 export async function detectAll() {
   ensureWindowsPath();
-  const [node, uv, headroom, rtk, serena, semble, astgrep] = await Promise.all([
+  const [node, uv, headroom, rtk, serena, semble, astgrep, codegraph] = await Promise.all([
     detectNode(), detectUv(), detectHeadroom(), detectRtk(),
-    detectSerena(), detectSemble(), detectAstGrep(),
+    detectSerena(), detectSemble(), detectAstGrep(), detectCodegraph(),
   ]);
-  return { node, uv, headroom, rtk, serena, semble, astgrep };
+  return { node, uv, headroom, rtk, serena, semble, astgrep, codegraph };
 }
