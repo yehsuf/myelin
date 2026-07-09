@@ -45,6 +45,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 
 const EVENT_TO_SERENA_COMMAND = {
   preToolUse: 'remind',
+  preToolUseAutoApprove: 'auto-approve',
   sessionStart: 'activate',
   stop: 'cleanup',
 };
@@ -184,7 +185,7 @@ export function runGuard({ event, cwd, stdinText, target = 'copilot-cli', exec =
       }
     }
 
-    if (serenaCommand === 'remind') return unwrapPreToolUse(result.stdout);
+    if (serenaCommand === 'remind' || serenaCommand === 'auto-approve') return unwrapPreToolUse(result.stdout);
     if (serenaCommand === 'activate') return unwrapSessionStart(result.stdout);
     return null; // cleanup (stop) has no output contract - side effect only
   } catch {

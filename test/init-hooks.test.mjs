@@ -112,6 +112,15 @@ describe('mergeClaudeCodeSerenaHooks', () => {
     assert.ok(merged.hooks.SessionEnd);
   });
 
+  it('adds a separate auto-approve entry matching mcp__serena__* alongside the remind entry', () => {
+    const merged = mergeClaudeCodeSerenaHooks({});
+    assert.equal(merged.hooks.PreToolUse.length, 2);
+    const remind = merged.hooks.PreToolUse.find((e) => e.matcher === '');
+    const autoApprove = merged.hooks.PreToolUse.find((e) => e.matcher === 'mcp__serena__*');
+    assert.ok(remind.hooks[0].command.includes('--event=preToolUse '));
+    assert.ok(autoApprove.hooks[0].command.includes('--event=preToolUseAutoApprove'));
+  });
+
   it('preserves unrelated pre-existing hook entries for the same event', () => {
     const existing = {
       hooks: {
@@ -124,12 +133,12 @@ describe('mergeClaudeCodeSerenaHooks', () => {
     assert.ok(commands.some((c) => c.includes('myelin serena-guard')));
   });
 
-  it('replaces (does not duplicate) a prior myelin serena-guard entry on re-run', () => {
+  it('replaces (does not duplicate) prior myelin serena-guard entries on re-run', () => {
     const once = mergeClaudeCodeSerenaHooks({});
     const twice = mergeClaudeCodeSerenaHooks(once);
     const preToolUseCommands = twice.hooks.PreToolUse.flatMap((e) => e.hooks.map((h) => h.command));
     const myelinEntries = preToolUseCommands.filter((c) => c.includes('myelin serena-guard'));
-    assert.equal(myelinEntries.length, 1);
+    assert.equal(myelinEntries.length, 2); // remind (matcher "") + auto-approve (matcher mcp__serena__*)
   });
 
   it('handles a completely empty/undefined settings object', () => {
@@ -211,7 +220,7 @@ describe('writeClaudeCodeSerenaHooks', () => {
       writeClaudeCodeSerenaHooks(root);
 
       const parsed = JSON.parse(readFileSync(join(root, '.claude', 'settings.local.json'), 'utf8'));
-      assert.equal(parsed.hooks.PreToolUse.length, 1);
+      assert.equal(parsed.hooks.PreToolUse.length, 2); // remind (matcher "") + auto-approve (matcher mcp__serena__*), not duplicated
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

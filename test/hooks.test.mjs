@@ -189,6 +189,26 @@ describe('runGuard', () => {
     }
   });
 
+  it('relays an auto-approve allow decision the same way as remind', () => {
+    const root = makeSerenaProject();
+    try {
+      const fakeSpawn = (cmd, args) => {
+        assert.deepEqual(args, ['auto-approve', '--client=vscode']);
+        return {
+          status: 0,
+          error: null,
+          stdout: JSON.stringify({
+            hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow', permissionDecisionReason: 'auto-approved in acceptEdits mode' },
+          }),
+        };
+      };
+      const decision = runGuard({ event: 'preToolUseAutoApprove', cwd: root, stdinText: '{}', exec: () => Buffer.from(''), spawn: fakeSpawn });
+      assert.equal(decision.permissionDecision, 'allow');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('returns null (never throws) when the spawned process errors', () => {
     const root = makeSerenaProject();
     try {

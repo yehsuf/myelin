@@ -7,6 +7,7 @@ import { load as parseYaml } from 'js-yaml';
 import { DEFAULT_CONFIG, mergeDeep } from '../config/schema.mjs';
 import { renderManagedBlock } from '../config/instruction-snippets.mjs';
 import { writeManagedSection } from '../config/managed-section.mjs';
+import { applyDisableSerenaDashboardAutoOpen } from '../service/serena-config.mjs';
 
 function findGitRoot(dir) {
   let d = dir;
@@ -293,14 +294,25 @@ export function copilotSerenaHooksConfig() {
  * verbatim (no unwrap needed - see src/hooks/serena-hook-bridge.mjs), but we
  * still route through `myelin serena-guard` rather than calling
  * `serena-hooks` directly so both clients share the same liveness gate
- * (never nudge/deny in a repo where Serena was never set up). */
+ * (never nudge/deny in a repo where Serena was never set up).
+ *
+ * Two distinct PreToolUse entries are needed, matching Serena's own
+ * documented Claude Code setup: the `""` (all-tools) matcher drives the
+ * grep/read-count reminder, while the `mcp__serena__*` matcher drives
+ * auto-approval of Serena's own (often destructive - replace_symbol_body,
+ * rename_symbol, etc.) tool calls whenever Claude Code is already in a
+ * permissive mode (acceptEdits/auto) - so blanket approval covers Serena's
+ * tools too instead of still prompting per-call. Serena's own hook is a
+ * no-op outside those permission modes (and outside Claude Code entirely,
+ * since the `permission_mode` field it checks isn't sent by other
+ * clients), so this is safe to wire unconditionally. */
 function claudeCodeSerenaHooks() {
-  const hook = (event) => ({
-    matcher: '',
+  const hook = (event, matcher = '') => ({
+    matcher,
     hooks: [{ type: 'command', command: `myelin serena-guard --event=${event} --target=claude-code` }],
   });
   return {
-    PreToolUse: [hook('preToolUse')],
+    PreToolUse: [hook('preToolUse'), hook('preToolUseAutoApprove', 'mcp__serena__*')],
     SessionStart: [hook('sessionStart')],
     SessionEnd: [hook('stop')],
   };
@@ -406,6 +418,12 @@ function finishRepo(root, results) {
   } catch (e) {
     console.warn(`      ⚠ could not write Claude Code Serena hook config: ${e.message.split('\n')[0]}`);
   }
+  try {
+    // Catches the case where this repo's serena tool run just created
+    // ~/.serena/serena_config.yml for the very first time on this machine -
+    // `myelin install` only patches it retroactively if it already exists.
+    applyDisableSerenaDashboardAutoOpen(homedir());
+  } catch { /* cosmetic - never worth failing init over */ }
 }
 
 /** Repo-level instruction file (Copilot CLI, and other AGENTS.md-aware

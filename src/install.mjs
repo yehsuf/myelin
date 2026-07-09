@@ -18,6 +18,7 @@ import { isPortFree, findFreePort } from './detect/port.mjs';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
+import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv, uvToolInstall } from './tools/uv.mjs';
@@ -819,6 +820,13 @@ async function main() {
     const serenaEnv = execSync('uv tool dir', { stdio: 'pipe' }).toString().trim();
     const bottlePath = join(serenaEnv, 'serena-agent');
     execSync(`uv pip install --python "${bottlePath}" "bottle<0.13"`, { stdio: 'pipe' });
+  } catch {}
+  // Serena opens a browser tab/window every time its MCP server starts by
+  // default (web_dashboard_open_on_launch: true) - quality-of-life fix,
+  // never worth failing the install over if it doesn't apply yet (config
+  // file may not exist until Serena's first run, e.g. via `myelin init`).
+  try {
+    if (applyDisableSerenaDashboardAutoOpen(home)) ok('serena dashboard auto-open disabled');
   } catch {}
 
   if (!tools.semble.installed) {

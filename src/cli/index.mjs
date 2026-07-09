@@ -90,7 +90,7 @@ program.command('install')
 
 program.command('serena-guard')
   .description('[internal] Serena hook bridge for Copilot CLI / Claude Code - wired per-project by `myelin init`')
-  .requiredOption('--event <event>', 'hook event name: preToolUse, sessionStart, or stop')
+  .requiredOption('--event <event>', 'hook event name: preToolUse, preToolUseAutoApprove, sessionStart, or stop')
   .option('--target <target>', 'output shape: copilot-cli (flat, unwrapped) or claude-code (native passthrough)', 'copilot-cli')
   .action(async (opts) => {
     const { runServenaGuardCli } = await import('./serena-guard.mjs');
