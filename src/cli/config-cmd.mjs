@@ -6,8 +6,25 @@ import { dump } from 'js-yaml';
 import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
 
+export function defaultConfigEditor(platform = process.platform) {
+  return platform === 'win32' ? 'notepad' : 'nano';
+}
+
+export function configEditorName(platform = process.platform, editorOverride = process.env.EDITOR) {
+  return editorOverride ?? defaultConfigEditor(platform);
+}
+
+export function platformConfigBanner(
+  platform = process.platform,
+  configPath = DEFAULT_CONFIG_PATH,
+  editor = defaultConfigEditor(platform),
+) {
+  return `Config: ${configPath} — edit: myelin config edit (${editor}) — syntax: myelin config --help`;
+}
+
 export function configCommand() {
   const cmd = new Command('config').description('Manage Myelin configuration');
+  cmd.addHelpText('before', () => `${platformConfigBanner()}\n\n`);
 
   cmd.command('show')
     .description('Print current configuration (merged with defaults)')
@@ -54,7 +71,7 @@ export function configCommand() {
   cmd.command('edit')
     .description('Open configuration in $EDITOR')
     .action(() => {
-      const editor = process.env.EDITOR ?? (process.platform === 'win32' ? 'notepad' : 'nano');
+      const editor = configEditorName();
       try { execSync(`${editor} ${DEFAULT_CONFIG_PATH}`, { stdio: 'inherit' }); }
       catch (e) { console.error(`Could not open editor: ${e.message}`); process.exit(1); }
     });

@@ -4,8 +4,9 @@ import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { DEFAULT_CONFIG, mergeDeep } from '../src/config/schema.mjs';
-import { loadConfig } from '../src/config/reader.mjs';
+import { loadConfig, DEFAULT_CONFIG_PATH } from '../src/config/reader.mjs';
 import { writeConfig, setConfigValue, getConfigValue } from '../src/config/writer.mjs';
+import { platformConfigBanner } from '../src/cli/config-cmd.mjs';
 
 const TEST_DIR = join(homedir(), '.tokenstack-test');
 
@@ -131,5 +132,23 @@ describe('config writer', () => {
     writeFileSync(p, 'proxy:\n  headroom:\n    port: 3333\n');
     const val = await getConfigValue('proxy.headroom.port', p);
     assert.equal(val, 3333);
+  });
+});
+
+describe('config CLI banner', () => {
+  it('includes the real config path and stays under 20 words', () => {
+    const banner = platformConfigBanner('linux', DEFAULT_CONFIG_PATH);
+    assert.ok(banner.includes(DEFAULT_CONFIG_PATH));
+    assert.ok(banner.split(/\s+/).length < 20, `expected under 20 words, got: ${banner}`);
+  });
+
+  it('mentions notepad on win32', () => {
+    const banner = platformConfigBanner('win32', 'C:\\Users\\alice\\.myelin\\config.yaml');
+    assert.ok(banner.includes('notepad'));
+  });
+
+  it('mentions nano on non-win32 platforms', () => {
+    const banner = platformConfigBanner('darwin', '/Users/alice/.myelin/config.yaml');
+    assert.ok(banner.includes('nano'));
   });
 });
