@@ -47,6 +47,16 @@ describe('config schema', () => {
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, 'https://api.business.githubcopilot.com');
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, 'https://api.business.githubcopilot.com');
   });
+  it('DEFAULT_CONFIG excludes removed vaporware keys', () => {
+    for (const key of ['conversation_memory', 'observability', 'stacklit', 'semgrep', 'budget_routing', 'learning']) {
+      assert.equal(key in DEFAULT_CONFIG, false);
+    }
+    assert.equal('srt' in DEFAULT_CONFIG.output_sandboxing, false);
+  });
+  it('DEFAULT_CONFIG retains real config keys unchanged', () => {
+    assert.equal(DEFAULT_CONFIG.output_sandboxing.context_mode, true);
+    assert.equal(DEFAULT_CONFIG.code_discovery.serena.lsp.rust, false);
+  });
   it('mergeDeep overwrites leaf values', () => {
     const result = mergeDeep({ a: { b: 1 } }, { a: { b: 2, c: 3 } });
     assert.deepEqual(result, { a: { b: 2, c: 3 } });

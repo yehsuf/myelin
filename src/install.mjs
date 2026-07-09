@@ -3,7 +3,7 @@
  * Myelin — complete installer
  * Flags: --profile proxy|mcp|minimal  --index-tier light|default|full
  *        --no-headroom  --no-rtk  --copilot-only  --claude-only
- *        --with-stacklit  --with-litellm  --check  --dry-run
+ *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
@@ -618,8 +618,6 @@ async function main() {
       'no-rtk':        { type: 'boolean', default: false },
       'copilot-only':  { type: 'boolean', default: false },
       'claude-only':   { type: 'boolean', default: false },
-      'with-stacklit': { type: 'boolean', default: false },
-      'with-litellm':  { type: 'boolean', default: false },
       check:           { type: 'boolean', default: false },
       'dry-run':       { type: 'boolean', default: false },
       yes:             { type: 'boolean', default: false, short: 'y' },
@@ -1102,6 +1100,55 @@ async function main() {
     });
     writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
+  }
+
+  // Slash commands — lets `myelin init` be re-run from inside a live agent
+  // chat session (e.g. after pulling repo updates) without dropping to a
+  // shell. Copilot CLI: global skill folder (~/.copilot/skills/<name>/SKILL.md,
+  // invoked as /myelin-init — skill names are flat, no ':' namespacing).
+  // Claude Code: global command file under a `myelin/` subdirectory, which
+  // Claude Code treats as a namespace (invoked as /myelin:init).
+  {
+    const initSkillBody = `# Myelin Init
+
+Run the Myelin installer's init command to (re)configure the token-efficiency
+stack (Serena + Semble registration/indexing for the current git repo).
+
+## Instructions
+
+1. Run \`myelin init $ARGUMENTS\` via the terminal/Bash tool. If the \`myelin\`
+   alias isn't on PATH yet in this session, fall back to
+   \`node "${resolveRepoRoot(home, os)}src/cli/index.mjs" init $ARGUMENTS\`.
+2. Stream the command's output back to the user.
+3. If it reports warnings or failures, summarize them clearly and suggest
+   \`myelin verify\` as a follow-up health check.
+4. Do not pass \`--yes\`/\`--recursive\` unless the user explicitly asked for
+   auto-accept or a recursive multi-repo init.
+`;
+    if (copilot) {
+      const skillDir = join(home, '.copilot', 'skills', 'myelin-init');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, 'SKILL.md'), `---
+name: myelin-init
+description: Runs \`myelin init\` to initialize or refresh the Myelin token-efficiency stack (Serena + Semble) for the current repo.
+argument-hint: "[--yes] [--recursive] [--depth <n>]"
+---
+
+${initSkillBody}`);
+      ok('~/.copilot/skills/myelin-init (invoke: /myelin-init)');
+    }
+    if (claudeCC) {
+      const cmdDir = join(home, '.claude', 'commands', 'myelin');
+      mkdirSync(cmdDir, { recursive: true });
+      writeFileSync(join(cmdDir, 'init.md'), `---
+description: Runs \`myelin init\` to initialize or refresh the Myelin token-efficiency stack (Serena + Semble) for the current repo.
+argument-hint: [--yes] [--recursive] [--depth <n>]
+allowed-tools: [Bash]
+---
+
+${initSkillBody}`);
+      ok('~/.claude/commands/myelin/init.md (invoke: /myelin:init)');
+    }
   }
 
   // Shell profile

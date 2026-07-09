@@ -1,34 +1,42 @@
-# TokenStack Settings Reference
+# Myelin Settings Reference
 
-Every setting in `~/.tokenstack/config.yaml` explained — what it does, what you gain, what you lose, and when to change it.
+Every setting in `~/.myelin/config.yaml` explained — what it does, what you gain, what you lose, and when to change it.
 
 **How to change a setting:**
 ```bash
-tokenstack config set <key.path> <value>   # change one setting
-tokenstack config edit                      # open full config in $EDITOR
-tokenstack config show                      # print current config with defaults
-tokenstack config reset                     # restore factory defaults (keeps backups)
+myelin config show
+myelin config show --path proxy.headroom.port
+myelin config set proxy.headroom.port 9999
+myelin config get proxy.headroom.port
+myelin config reset
 ```
 
 **Port changes regenerate downstream config automatically** — you never manually update `ANTHROPIC_BASE_URL` or service definitions.
 
 ---
 
+## 0. Cross-Platform Config Notes
+
+- **Config file location:** the path is always `~/.myelin/config.yaml`, resolved via `src/config/reader.mjs` using your home directory on every OS. Examples: macOS `/Users/<user>/.myelin/config.yaml`, Linux `/home/<user>/.myelin/config.yaml`, Windows `C:\Users\<user>\.myelin\config.yaml`.
+- **Config commands:** `myelin config show`, `myelin config show --path <dotted.key>`, `myelin config set <dotted.key> <value>`, `myelin config get <dotted.key>`, and `myelin config reset` use the same syntax on macOS, Linux, and Windows (`src/cli/config-cmd.mjs`).
+- **Important limitation:** `config set`/`config get` do not validate keys against the schema — typos or removed keys are silently accepted or return `undefined`, so double-check spelling against this file or `src/config/schema.mjs`.
+- **Where platform differences actually live:** OS-specific behavior is in the service/install layer, where `src/service/index.mjs` dispatches to `src/service/launchd.mjs`, `src/service/systemd.mjs`, or `src/service/windows.mjs`; CA-bundle and certificate trust handling also differs there. These are internal implementation details, not user-facing config toggles.
+- **`output_style.*` is cross-platform:** the `code_navigation`, `token_efficiency`, `caveman_rules`, and `hooks` features are plain Node.js `.mjs` hooks/config writers and behave the same on macOS, Linux, and Windows (see §6).
+
+---
+
 ## Table of Contents
 
+0. [Cross-Platform Config Notes](#0-cross-platform-config-notes)
 1. [Proxy Settings](#1-proxy-settings)
 2. [Index Tier](#2-index-tier)
 3. [Code Discovery](#3-code-discovery)
-4. [Conversation Memory](#4-conversation-memory)
-5. [Shell Compression](#5-shell-compression)
-6. [Output Sandboxing](#6-output-sandboxing)
-7. [Budget Routing](#7-budget-routing)
-8. [Output Style + Enforcement](#8-output-style--enforcement)
-9. [Learning](#9-learning)
-10. [Observability](#10-observability)
-11. [Optional Tools](#11-optional-tools)
-12. [Environment Variables Reference](#12-environment-variables-reference)
-13. [Quick Recipes](#13-quick-recipes)
+4. [Shell Compression](#4-shell-compression)
+5. [Output Sandboxing](#5-output-sandboxing)
+6. [Output Style + Enforcement](#6-output-style--enforcement)
+7. [Environment Variables Reference](#7-environment-variables-reference)
+8. [Quick Recipes](#8-quick-recipes)
+9. [Appendix: Planned / Not Yet Implemented](#appendix-planned--not-yet-implemented)
 
 ---
 
@@ -67,7 +75,7 @@ proxy:
 2. This config value (persistent)
 3. Built-in default: `8787`
 
-**What happens when you change it:** `tokenstack config set proxy.headroom.port 9090` automatically:
+**What happens when you change it:** `myelin config set proxy.headroom.port 9090` automatically:
 - Updates `ANTHROPIC_BASE_URL` in `~/.claude/settings.json`
 - Updates `OPENAI_BASE_URL` injected for Copilot CLI
 - Regenerates the launchd plist / systemd unit / Windows Task with the new port
@@ -197,11 +205,11 @@ Controls how much memory the indexing layer uses. Determines which LSP servers a
 
 **What you lose from `full`:** Memory. A `default` → `full` switch on a TypeScript project might cost +400MB (tsserver) or +1-3GB (rust-analyzer). Your laptop will notice.
 
-**Tip:** Use `tokenstack status` to see current RAM usage per LSP. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
+**Tip:** Use `myelin status` to see current RAM usage per LSP. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
 
 ```bash
-tokenstack config set index_tier light    # reduce memory pressure
-tokenstack config set index_tier full     # maximum code intelligence
+myelin config set index_tier light    # reduce memory pressure
+myelin config set index_tier full     # maximum code intelligence
 ```
 
 ---
@@ -257,7 +265,7 @@ tokenstack config set index_tier full     # maximum code intelligence
 **How to enable only for Rust projects:**
 ```bash
 cd my-rust-project
-tokenstack init --enable-lsp rust   # enables rust only for this repo
+myelin init --enable-lsp rust   # enables rust only for this repo
 ```
 
 ```yaml
@@ -316,7 +324,7 @@ Enables gopls for Go projects. Lightweight compared to TypeScript/Rust. Provides
 ### `code_discovery.cbm_fallback.enabled`
 **Type:** boolean | **Default:** `true`
 
-**What it does:** Keeps CBM (codebase-memory-mcp) installed as a fallback. When the environment limits MCP server count below `mcp_limit_threshold`, TokenStack automatically switches from Serena+Semble to CBM-only.
+**What it does:** Keeps CBM (codebase-memory-mcp) installed as a fallback. When the environment limits MCP server count below `mcp_limit_threshold`, Myelin automatically switches from Serena+Semble to CBM-only.
 
 **Why CBM as fallback:** Some environments (certain CI setups, restricted corporate tooling, VSCode Web) limit how many MCP servers can be active simultaneously. CBM is a single static binary with zero dependencies that fits within a 1-server MCP constraint while still providing meaningful code discovery.
 
@@ -339,26 +347,7 @@ code_discovery:
 
 ---
 
-## 4. Conversation Memory
-
----
-
-### `conversation_memory.mem0`
-**Type:** boolean | **Default:** `true`
-
-**What it does:** Enables mem0 as an MCP server. mem0 intercepts conversation turns, extracts structured facts (decisions made, files touched, constraints discovered, failed approaches), and stores them in a local vector database. On each new turn, it injects only the relevant facts — not the full conversation history.
-
-**What you gain:** Session history normally grows linearly — every turn adds to the context. After 20 turns you're carrying 20× the initial cost. With mem0, history is replaced by O(k) extracted facts where k is typically 5-15 items (a few hundred tokens) regardless of session length. **80-90% reduction on conversation history tokens for sessions longer than 15 minutes.**
-
-**Concrete example:** 30 minutes of coding generates ~30 conversation turns. Raw history = ~80,000 tokens re-sent every turn. mem0 extracts: "working in auth module", "decided to use JWT", "avoid session cookies per user request", "UserService is the entry point" — ~200 tokens total. Savings: 99.75% on history alone.
-
-**What you lose:** Some nuance in older turns may not be captured as a structured fact. For highly context-dependent workflows where exact phrasing matters, raw history is more faithful.
-
-**When to disable:** Short sessions (<10 minutes). Tasks where exact historical phrasing is critical (e.g., legal or compliance document review).
-
----
-
-## 5. Shell Compression
+## 4. Shell Compression
 
 ---
 
@@ -371,26 +360,11 @@ code_discovery:
 
 **What you lose:** Occasionally RTK's filtering removes a line you needed (e.g., a specific install path printed during `npm install`). RTK preserves all error output by default — failures are never filtered.
 
-**When to disable:** When debugging RTK's filtering behaviour itself, or when you specifically need verbose raw output for a particular session. Use `tokenstack shell rtk off` to disable for one session without changing config.
+**When to disable:** When debugging RTK's filtering behaviour itself, or when you specifically need verbose raw output for a particular session. Use `myelin shell rtk off` to disable for one session without changing config.
 
 ---
 
-## 6. Output Sandboxing
-
----
-
-### `output_sandboxing.srt`
-**Type:** boolean | **Default:** `true` (macOS + Linux only; automatically `false` on Windows)
-
-**What it does:** Enables Anthropic's Sandbox Runtime (`@anthropic-ai/sandbox-runtime`). SRT wraps MCP servers and bash tool calls at the OS level (using `sandbox-exec` on macOS, `bubblewrap` on Linux). It restricts what each tool can access: a file-reading MCP can't accidentally traverse `/` and read thousands of files; a shell command can't access sensitive directories.
-
-**What you gain:** Two benefits in one:
-1. **Token governor:** By restricting filesystem access, SRT prevents runaway tool calls that consume enormous context (e.g., an MCP that accidentally reads all of `node_modules` because a glob pattern was too broad).
-2. **Security:** Limits blast radius if a rogue or compromised MCP server tries to read files outside the project.
-
-**What you lose:** Slight performance overhead per tool call (~5ms). Some tools that legitimately need broad filesystem access must have explicit allow-paths configured in `~/.tokenstack/srt-policy.json`.
-
-**Windows:** SRT is not available natively on Windows. The Windows installer skips this automatically and logs: `[SKIP] srt — requires macOS/Linux. Consider WSL2 for SRT support.`
+## 5. Output Sandboxing
 
 ---
 
@@ -411,60 +385,7 @@ code_discovery:
 
 ---
 
-## 7. Budget Routing
-
----
-
-### `budget_routing.litellm`
-**Type:** boolean | **Default:** `false` (opt-in)
-
-**What it does:** Enables LiteLLM as a model router in the proxy pipeline. Instead of all turns going to the same model, LiteLLM classifies each turn by complexity and routes cheap turns (formatting, simple renames, status checks, yes/no questions) to a fast/cheap model and complex turns (architecture, implementation, analysis) to the full model.
-
-**What you gain:** 30-40% cost reduction with no quality loss on complex tasks. Claude Haiku 4.5 costs approximately 10% of Claude Opus 4.7 at the same token volume. If 40-50% of turns in a typical session are "cheap" turns, routing them to Haiku saves substantial cost.
-
-**What you lose:** Slightly more complex proxy pipeline (Headroom → LiteLLM → provider). Rare misclassifications (a turn you expected to be cheap gets routed to Haiku and gives a lower-quality response). Easy to fix: `tokenstack routing report` shows which turns were routed where.
-
-**When to enable:** High-volume coding sessions. Teams with usage budgets. When you're comfortable with the stack and want the next layer of savings.
-
-```bash
-tokenstack enable budget_routing.litellm
-```
-
----
-
-### `budget_routing.cheap_model`
-**Type:** string | **Default:** `"claude-haiku-4-5"`
-
-**What it does:** The model used for low-complexity turns when LiteLLM routing is active.
-
-**When to change:** If Anthropic releases a newer Haiku (e.g., `claude-haiku-4-6`) and you want to use it. Also supports non-Anthropic models if you're experimenting: `gpt-5.4-mini`, etc.
-
----
-
-### `budget_routing.complex_model`
-**Type:** string | **Default:** `"claude-opus-4-7"`
-
-**What it does:** The model used for high-complexity turns when LiteLLM routing is active.
-
-**When to change:** To pin to a specific model version, or to route complex turns to `claude-sonnet-4-6` for a middle-ground cost/quality tradeoff.
-
----
-
-### `budget_routing.cheap_threshold`
-**Type:** float (0.0–1.0) | **Default:** `0.3`
-
-**What it does:** The complexity classifier score below which a turn is routed to `cheap_model`. Score 0.0 = trivially simple, 1.0 = maximally complex.
-
-**Tuning guidance:**
-- `0.2` — only the most obvious simple turns go to Haiku (very conservative)
-- `0.3` — default, good balance
-- `0.5` — roughly half of turns go to Haiku (aggressive, watch quality)
-
-Check routing decisions with `tokenstack routing report --last-session` to see if the threshold is calibrated well for your workflows.
-
----
-
-## 8. Output Style + Enforcement
+## 6. Output Style + Enforcement
 
 ---
 
@@ -492,7 +413,7 @@ Check routing decisions with `tokenstack routing report --last-session` to see i
 
 **What you gain:** The hooks are the difference between theoretical savings and actual savings. Without enforcement, agents default to `cat file.py` because it's the path of least resistance. The hooks make the efficient path the only path.
 
-**What you lose:** Occasional friction when you explicitly WANT raw output. Override with `tokenstack hooks disable --for-session` to disable enforcement for one session without changing config permanently.
+**What you lose:** Occasional friction when you explicitly WANT raw output. Override with `myelin hooks disable --for-session` to disable enforcement for one session without changing config permanently.
 
 **Windows compatibility:** All hooks are Node.js `.mjs` files — not bash. They work identically on Windows, macOS, and Linux.
 
@@ -500,120 +421,7 @@ Check routing decisions with `tokenstack routing report --last-session` to see i
 
 ---
 
-## 9. Learning
-
----
-
-### `learning.headroom_learn`
-**Type:** boolean | **Default:** `true`
-
-**What it does:** Enables `headroom learn` — Headroom's session failure mining feature. At the end of each session (and on `headroom learn run`), it analyses recent failed turns (errors, rejected answers, repeated retries), identifies patterns, and generates proposed rule additions for `CLAUDE.md` and `AGENTS.md`.
-
-**What you gain:** Over time, the stack learns your specific codebase's conventions, common failure patterns, and useful shortcuts. Rules like "in this project, always check the migrations folder before editing models" accumulate automatically.
-
-**Critical design: proposals only, never auto-write.** `headroom learn` NEVER modifies your files directly. It writes proposals to `~/.headroom/proposals/YYYY-MM-DD.md`. You review with `headroom learn review` and approve/reject each one. Only approved rules are appended (inside managed markers) to your config files.
-
-**What you lose:** None, unless you ignore the proposals queue and it grows stale.
-
-**Rule TTL:** Each learned rule has a 30-day expiry. If it isn't triggered and reinforced within 30 days, `tokenstack update --check` flags it for review. Prevents stale rules from accumulating.
-
-**When to disable:** Never, really — it's passive and non-intrusive. Only disable if you have strict policy against automated file suggestions.
-
----
-
-## 10. Observability
-
----
-
-### `observability.helicone`
-**Type:** boolean | **Default:** `false` (opt-in)
-
-**What it does:** Routes API calls through a self-hosted Helicone instance (Docker) before Headroom forwards them to the provider. Helicone logs every request+response with token counts, cost, latency, cache hit/miss, and model used. Exposes a real-time dashboard at `http://localhost:47001`.
-
-**What you gain:** The most detailed token observability available. Per-request breakdowns (not just session totals), cache hit rate trends, cost attribution by session/workspace/model, anomaly detection ("this session used 10× normal tokens — why?"). Useful for identifying which specific tasks or patterns are costing the most.
-
-**What you lose:** Another Docker container (~300MB RAM). An additional proxy hop (adds ~3ms latency). Setup takes ~5 minutes.
-
-**When to enable:** After the rest of the stack is stable and you want to understand precisely where the remaining tokens go. `tokenstack setup helicone` runs the Docker container and reconfigures the proxy chain.
-
-```bash
-tokenstack enable observability.helicone
-tokenstack setup helicone   # starts Docker container + reconfigures proxy
-```
-
----
-
-### `observability.token_optimizer`
-**Type:** boolean | **Default:** `false` (Claude Code only) — **opt-in only**
-
-**License note:** token-optimizer is [PolyForm Noncommercial](https://polyformproject.org/licenses/noncommercial/1.0.0/) licensed, which conflicts with Myelin's MIT license and its distributability to companies/teams. It is never installed by default and must be explicitly enabled by the user, who is responsible for confirming their own use case complies with that license.
-
-**What it does:** Installs the token-optimizer Claude Code plugin. Shows a live dashboard in Claude Code's status area: current session token count, estimated cost, context quality score (0.0–1.0), and autocompaction events.
-
-**What you gain:** Real-time visibility into the pre-proxy token state. While Headroom's `headroom perf` shows post-compression numbers, token-optimizer shows what Claude Code itself is tracking — useful for spotting context quality degradation before it causes a session failure.
-
-**Context quality score:** A score below 0.6 means the context is getting noisy (lots of repeated content, stale references). This is your signal to run `/compact` proactively.
-
-**To enable (non-commercial use only):**
-```
-tokenstack enable observability.token_optimizer
-```
-
----
-
-### `observability.ai_engineering_coach`
-**Type:** boolean | **Default:** `true`
-
-**What it does:** Configures the Microsoft AI Engineering Coach VS Code extension. It reads your local AI session logs (never sends data externally) and detects 45 anti-patterns across five categories:
-- Prompt quality (vague instructions, missing context)
-- Session hygiene (not using /clear, overly long sessions)
-- Code review patterns (not using diff-based context)
-- Tool mastery (using raw file reads instead of MCP tools)
-- Context management (ignoring compaction signals)
-
-**What you gain:** A weekly report of your top anti-patterns with specific improvement suggestions. The skill finder identifies prompts you use repeatedly and suggests turning them into reusable skills.
-
-**What you lose:** Requires VS Code (not available in terminal-only setups). Extension reads your session log directory — review its file access if you have privacy concerns.
-
----
-
-## 11. Optional Tools
-
----
-
-### `stacklit.enabled`
-**Type:** boolean | **Default:** `false`
-
-**What it does:** When enabled via `tokenstack init --with-stacklit`, generates `stacklit.json` (machine-readable repo index) and `DEPENDENCIES.md` (Mermaid dependency diagram) and commits them to your repo. A GitHub Action keeps them fresh on every push.
-
-**What you gain:** A GitHub-rendered, human-readable, PR-reviewable snapshot of your repo's architecture. Useful for onboarding, architecture reviews, and sharing context with team members who don't use TokenStack.
-
-**What you lose:** Stacklit artifacts become stale between CI runs. When Serena (live graph) and Stacklit (committed snapshot) disagree, Serena always wins for agent decisions — Stacklit is for humans.
-
-**When to enable:** Team repos where the GitHub-visible dependency map has value. Do NOT enable for personal scratch repos.
-
-```bash
-tokenstack init --with-stacklit   # generates files + installs CI workflow
-```
-
----
-
-### `semgrep.enabled`
-**Type:** boolean | **Default:** `false`
-
-**What it does:** Configures Semgrep as an MCP tool for architectural rule enforcement and security pattern detection.
-
-**What you gain:** Unlike ast-grep (which matches structure) and Semble (which matches meaning), Semgrep evaluates architectural rules: "no direct database access outside the repository layer", "all HTTP client calls must go through our wrapper", "find all deprecated API usages that need migration". Semgrep's rule ecosystem also covers security patterns (SQL injection paths, XSS vectors, hardcoded credentials).
-
-**When to enable:** Teams with explicit architectural rules that need enforcement. Security-focused agents. Codebase migrations where you need to find every instance of a pattern.
-
-```bash
-tokenstack init --with-semgrep    # installs + configures per repo
-```
-
----
-
-## 12. Environment Variables Reference
+## 7. Environment Variables Reference
 
 These override config file values (env vars take precedence over config.yaml).
 
@@ -628,18 +436,17 @@ These override config file values (env vars take precedence over config.yaml).
 | `HTTP_PROXY` | — | HTTP-specific upstream proxy |
 | `NO_PROXY` | — | Comma-separated hostnames to bypass proxy |
 | `NODE_EXTRA_CA_CERTS` | — | Extra CAs for Node.js (Claude Code runtime). Auto-set from HEADROOM_CA_BUNDLE |
-| `REQUESTS_CA_BUNDLE` | — | Extra CAs for Python (LLMLingua-2, mem0). Auto-set from HEADROOM_CA_BUNDLE |
+| `REQUESTS_CA_BUNDLE` | — | Extra CAs for Python-based tooling. Auto-set from HEADROOM_CA_BUNDLE |
 | `SSL_CERT_FILE` | — | Alternative Python CA bundle path |
 | `GIT_SSL_CAINFO` | — | CA bundle for git operations. Auto-set from HEADROOM_CA_BUNDLE |
-| `TOKENSTACK_PROFILE` | — | Override active profile: `proxy`, `mcp`, `minimal` |
-| `TOKENSTACK_INDEX_TIER` | `index_tier` | Override index tier for this session |
-| `TOKENSTACK_DISABLE_HOOKS` | — | Set to `1` to disable enforcement hooks for current session |
+| `MYELIN_PROFILE` | — | Override active profile: `proxy`, `mcp`, `minimal` |
+| `MYELIN_INDEX_TIER` | `index_tier` | Override index tier for this session |
 
-**Auto-propagation:** When `HEADROOM_CA_BUNDLE` is set (or auto-detected from your system's CA store), TokenStack automatically sets `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `GIT_SSL_CAINFO` to the same path. You only need to set one.
+**Auto-propagation:** When `HEADROOM_CA_BUNDLE` is set (or auto-detected from your system's CA store), Myelin automatically sets `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `SSL_CERT_FILE`, and `GIT_SSL_CAINFO` to the same path. You only need to set one.
 
 ---
 
-## 13. Quick Recipes
+## 8. Quick Recipes
 
 ### "I'm on a memory-constrained machine (8GB RAM)"
 ```yaml
@@ -652,8 +459,6 @@ code_discovery:
       rust: false
       go: false
   semble: false
-budget_routing:
-  litellm: true   # offset memory savings with cost savings
 ```
 Expected RAM: ~250-350MB for the full stack.
 
@@ -663,17 +468,17 @@ Expected RAM: ~250-350MB for the full stack.
 ```bash
 # Auto-detection should handle this, but if not:
 export HEADROOM_CA_BUNDLE=/path/to/corporate-ca.pem
-tokenstack config set proxy.headroom.corporate_proxy http://proxy.corp.com:8080
-tokenstack restart   # restarts proxy with new SSL config
-tokenstack verify    # confirms connectivity to Anthropic through the proxy
+myelin config set proxy.headroom.corporate_proxy http://proxy.corp.com:8080
+myelin restart   # restarts proxy with new SSL config
+myelin verify    # confirms connectivity to Anthropic through the proxy
 ```
 
 ---
 
 ### "I want to use a different port (8787 is taken)"
 ```bash
-tokenstack config set proxy.headroom.port 9090
-# TokenStack automatically:
+myelin config set proxy.headroom.port 9090
+# Myelin automatically:
 # - Updates ANTHROPIC_BASE_URL and OPENAI_BASE_URL
 # - Regenerates launchd/systemd/Task Scheduler definition
 # - Restarts the proxy on the new port
@@ -690,23 +495,8 @@ proxy:
     thrash_cache: true
     diff_enforcer: true
 index_tier: full
-conversation_memory:
-  mem0: true
 output_sandboxing:
   context_mode: true
-observability:
-  helicone: true    # so you can measure exactly what you're saving
-```
-
----
-
-### "I want maximum savings AND minimum cost"
-Enable everything above PLUS:
-```yaml
-budget_routing:
-  litellm: true
-  cheap_model: claude-haiku-4-5
-  cheap_threshold: 0.4   # more aggressive routing
 ```
 
 ---
@@ -714,8 +504,8 @@ budget_routing:
 ### "I'm doing a code review session only"
 ```bash
 # Enable diff-heavy tooling, disable code indexing overhead
-tokenstack config set index_tier light
-tokenstack config set code_discovery.semble false
+myelin config set index_tier light
+myelin config set code_discovery.semble false
 # Use: git_diff, git_show, git_blame heavily
 # repomix --include "$(git diff --name-only origin/main)"  ← before session start
 ```
@@ -724,9 +514,9 @@ tokenstack config set code_discovery.semble false
 
 ### "Copilot CLI only — no Claude Code"
 ```bash
-tokenstack install --copilot-only
-# Installs: Serena, Semble, ast-grep, mcp-git, mem0, RTK, headroom proxy
-# Skips: context-mode, token-optimizer, Claude Code hooks
+myelin install --copilot-only
+# Installs: Serena, Semble, ast-grep, mcp-git, RTK, headroom proxy
+# Skips: context-mode, Claude Code hooks
 # Sets: OPENAI_BASE_URL in ~/.copilot/env (or shell profile)
 ```
 
@@ -734,10 +524,26 @@ tokenstack install --copilot-only
 
 ### "Reset to defaults and start over"
 ```bash
-tokenstack config reset                # restores defaults (backs up current config)
-tokenstack verify                      # confirms stack is healthy
-tokenstack stats --last-session        # sanity check savings are working
+myelin config reset                # restores defaults (backs up current config)
+myelin verify                      # confirms stack is healthy
+myelin stats --last-session        # sanity check savings are working
 ```
+
+---
+
+## Appendix: Planned / Not Yet Implemented
+
+These ideas were researched or designed, but they are **not** valid config keys in the current schema and are not currently settable via `myelin config set`.
+
+- `conversation_memory.mem0` — Would extract and reinject conversation facts between turns; rejected because mem0 silently calls OpenAI by default (not free), and a local SQLite + summarization approach was the recommended alternative instead.
+- `observability.helicone` — Would add a request observability dashboard for token/cost tracing; rejected because the self-hosted Docker stack adds substantial operational overhead and roughly 750MB-1.3GB of RAM usage.
+- `observability.token_optimizer` — Would surface live token/context telemetry inside Claude Code; not implemented, and the similar token-optimizer plugin's PolyForm Noncommercial license conflicts with Myelin's MIT distribution model.
+- `observability.ai_engineering_coach` — Would generate weekly prompt-quality and anti-pattern reports; not yet built because it depends on a VS Code extension with local file-access review/privacy considerations.
+- `stacklit.enabled` — Would generate `stacklit.json` and `DEPENDENCIES.md` repo snapshots; `--with-stacklit` existed in the installer but was a stubbed no-op.
+- `semgrep.enabled` — Would wire Semgrep into the toolchain for structural/security rules; no implementation or install path exists today.
+- `budget_routing.litellm` / `cheap_model` / `complex_model` / `cheap_threshold` — Would route cheap turns to a lower-cost model and complex turns to a stronger model; designed but never wired, although LiteLLM's native `headroom` guardrail (`POST /v1/compress`) was identified as a promising future integration point.
+- `learning.headroom_learn` — Would mine failed sessions for reusable rule proposals to append to `CLAUDE.md`; designed, but never built.
+- `output_sandboxing.srt` — Would have wrapped tool execution in Anthropic's sandbox runtime with a claimed Windows skip-path; no implementation exists on any platform, and there is no corresponding npm dependency.
 
 ---
 

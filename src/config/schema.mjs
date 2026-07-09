@@ -73,21 +73,23 @@ export const DEFAULT_CONFIG = {
   },
   index_tier: 'default',
   code_discovery: {
-    serena: { enabled: true, lsp: { typescript: true, python: true, rust: false, go: true } },
+    serena: {
+      enabled: true,
+      lsp: {
+        typescript: true,
+        python: true,
+        // rust-analyzer/Serena LSP integration not yet validated in this setup — flip to true after confirming rust-analyzer is installed and Serena resolves rust symbols for your project
+        rust: false,
+        go: true,
+      },
+    },
     semble: true,
     astgrep: true,
     mcp_git: true,
     cbm_fallback: { enabled: true, mcp_limit_threshold: 3 },
   },
-  conversation_memory: { mem0: true },
   shell_compression: { rtk: true },
-  output_sandboxing: { srt: true, context_mode: true },
-  budget_routing: {
-    litellm: false,
-    cheap_model: 'claude-haiku-4-5',
-    complex_model: 'claude-opus-4-7',
-    cheap_threshold: 0.3,
-  },
+  output_sandboxing: { context_mode: true },
   output_style: {
     caveman_rules: true,
     hooks: true,
@@ -99,14 +101,6 @@ export const DEFAULT_CONFIG = {
     // provider, model) and placement rules.
     token_efficiency: true,
   },
-  learning: { headroom_learn: true },
-  // token_optimizer default is FALSE: it is PolyForm Noncommercial licensed,
-  // which conflicts with Myelin (MIT, distributable to companies/teams) —
-  // do not flip this default without a separate commercial license
-  // agreement. Opt-in only; see docs/settings-reference.md.
-  observability: { helicone: false, token_optimizer: false, ai_engineering_coach: true },
-  stacklit: { enabled: false },
-  semgrep: { enabled: false },
   copilot: {
     model: 'claude-sonnet-4-6',   // change with: myelin config set copilot.model <model>
   },
