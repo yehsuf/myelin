@@ -10,7 +10,7 @@ import {
   unwrapPreToolUse,
   unwrapSessionStart,
   runGuard,
-} from '../src/hooks/copilot-serena-guard.mjs';
+} from '../src/hooks/serena-hook-bridge.mjs';
 
 function makeSerenaProject() {
   const root = mkdtempSync(join(tmpdir(), 'myelin-serena-guard-test-'));
@@ -223,6 +223,55 @@ describe('runGuard', () => {
     try {
       const fakeSpawn = () => ({ status: 0, error: null, stdout: '' });
       assert.equal(runGuard({ event: 'stop', cwd: root, exec: () => Buffer.from(''), spawn: fakeSpawn }), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('target=claude-code passes Serena\'s native envelope through verbatim (no unwrap)', () => {
+    const root = makeSerenaProject();
+    try {
+      const nativeEnvelope = {
+        hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: 'too many greps', additionalContext: 'use symbolic tools' },
+      };
+      const fakeSpawn = () => ({ status: 0, error: null, stdout: JSON.stringify(nativeEnvelope) });
+      const decision = runGuard({ event: 'preToolUse', cwd: root, stdinText: '{}', target: 'claude-code', exec: () => Buffer.from(''), spawn: fakeSpawn });
+      assert.deepEqual(decision, nativeEnvelope);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('target=claude-code returns null when Serena prints no output (nothing to relay)', () => {
+    const root = makeSerenaProject();
+    try {
+      const fakeSpawn = () => ({ status: 0, error: null, stdout: '' });
+      assert.equal(runGuard({ event: 'preToolUse', cwd: root, stdinText: '{}', target: 'claude-code', exec: () => Buffer.from(''), spawn: fakeSpawn }), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('target=claude-code never throws on unparseable Serena output', () => {
+    const root = makeSerenaProject();
+    try {
+      const fakeSpawn = () => ({ status: 0, error: null, stdout: 'not json {{{' });
+      assert.doesNotThrow(() => runGuard({ event: 'preToolUse', cwd: root, stdinText: '{}', target: 'claude-code', exec: () => Buffer.from(''), spawn: fakeSpawn }));
+      assert.equal(runGuard({ event: 'preToolUse', cwd: root, stdinText: '{}', target: 'claude-code', exec: () => Buffer.from(''), spawn: fakeSpawn }), null);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('target=claude-code still respects the liveness gate (no spawn when not viable)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'myelin-serena-guard-test-noserena-'));
+    try {
+      const decision = runGuard({
+        event: 'preToolUse', cwd: root, stdinText: '{}', target: 'claude-code',
+        exec: () => Buffer.from(''),
+        spawn: () => { throw new Error('spawn should never be called when not viable'); },
+      });
+      assert.equal(decision, null);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

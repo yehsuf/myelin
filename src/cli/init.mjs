@@ -266,7 +266,7 @@ async function initRepoConcurrent(root, enabledTools) {
   return results;
 }
 
-/** Copilot CLI hook config content — see src/hooks/copilot-serena-guard.mjs
+/** Copilot CLI hook config content — see src/hooks/serena-hook-bridge.mjs
  * for why this bridges through `myelin serena-guard` instead of calling
  * `serena-hooks` directly (schema mismatch between Serena's Claude/VSCode
  * output envelope and Copilot CLI's flat decision schema). Mirrors the
@@ -276,7 +276,7 @@ async function initRepoConcurrent(root, enabledTools) {
 export function copilotSerenaHooksConfig() {
   const hook = (event) => ({
     matcher: '',
-    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event}`, timeoutSec: 10 }],
+    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event} --target=copilot-cli`, timeoutSec: 10 }],
   });
   return JSON.stringify({
     version: 1,
@@ -286,6 +286,74 @@ export function copilotSerenaHooksConfig() {
       Stop: [hook('stop')],
     },
   }, null, 2) + '\n';
+}
+
+/** Claude Code hook entries for `.claude/settings.local.json`'s "hooks" key.
+ * Unlike the Copilot config, Claude Code wants Serena's own native output
+ * verbatim (no unwrap needed - see src/hooks/serena-hook-bridge.mjs), but we
+ * still route through `myelin serena-guard` rather than calling
+ * `serena-hooks` directly so both clients share the same liveness gate
+ * (never nudge/deny in a repo where Serena was never set up). */
+function claudeCodeSerenaHooks() {
+  const hook = (event) => ({
+    matcher: '',
+    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event} --target=claude-code` }],
+  });
+  return {
+    PreToolUse: [hook('preToolUse')],
+    SessionStart: [hook('sessionStart')],
+    SessionEnd: [hook('stop')],
+  };
+}
+
+/** Merge our generated Serena hook entries into an existing (possibly
+ * user-edited) settings object without clobbering anything else in it —
+ * `.claude/settings.local.json` may already contain real content (we've
+ * seen `permissions.allow` entries in practice). Any prior entries we
+ * ourselves generated (identified by the `myelin serena-guard` command
+ * string) are replaced in place rather than duplicated on repeated
+ * `myelin init` runs; any unrelated hook entries a user added by hand for
+ * the same event are preserved alongside ours. */
+export function mergeClaudeCodeSerenaHooks(existingSettings) {
+  const settings = { ...(existingSettings ?? {}) };
+  const existingHooks = { ...(settings.hooks ?? {}) };
+  const ours = claudeCodeSerenaHooks();
+
+  for (const [eventName, ourEntries] of Object.entries(ours)) {
+    const priorEntries = (existingHooks[eventName] ?? []).filter(
+      (entry) => !(entry.hooks ?? []).some((h) => typeof h.command === 'string' && h.command.startsWith('myelin serena-guard')),
+    );
+    existingHooks[eventName] = [...priorEntries, ...ourEntries];
+  }
+
+  settings.hooks = existingHooks;
+  return settings;
+}
+
+/** Wire the Claude Code <-> Serena hook bridge at project level, but ONLY
+ * for repos where Serena has actually been set up (`.serena/project.yml`
+ * present) — same rationale as writeCopilotSerenaHooks below. Written to
+ * `.claude/settings.local.json`, which is already globally gitignored on
+ * this machine (`~/.gitignore_global` has a glob rule matching any nested
+ * settings.local.json under a .claude directory) —
+ * the standard Claude Code convention for personal, uncommitted settings —
+ * so no repo-level .gitignore changes are needed here, unlike the Copilot
+ * hook file. */
+export function writeClaudeCodeSerenaHooks(root) {
+  if (!existsSync(join(root, '.serena', 'project.yml'))) return;
+
+  const settingsPath = join(root, '.claude', 'settings.local.json');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  let existing = {};
+  if (existsSync(settingsPath)) {
+    try {
+      existing = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    } catch {
+      existing = {}; // malformed pre-existing file - don't let a parse error block init
+    }
+  }
+  const merged = mergeClaudeCodeSerenaHooks(existing);
+  writeFileSync(settingsPath, JSON.stringify(merged, null, 2) + '\n', 'utf8');
 }
 
 /** Wire the Copilot CLI <-> Serena hook bridge at project level, but ONLY
@@ -332,6 +400,11 @@ function finishRepo(root, results) {
     writeCopilotSerenaHooks(root);
   } catch (e) {
     console.warn(`      ⚠ could not write Copilot Serena hook config: ${e.message.split('\n')[0]}`);
+  }
+  try {
+    writeClaudeCodeSerenaHooks(root);
+  } catch (e) {
+    console.warn(`      ⚠ could not write Claude Code Serena hook config: ${e.message.split('\n')[0]}`);
   }
 }
 
