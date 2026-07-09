@@ -61,6 +61,20 @@ function mergeJsonFile(path, updates, createIfMissing = {}) {
   writeFileSync(path, JSON.stringify(mergeDeepPlain(current, updates), null, 2), 'utf8');
 }
 
+function isVersionAtLeast(version, minimum) {
+  const parse = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
+  const a = parse(version ?? '0.0.0');
+  const b = parse(minimum);
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const left = a[i] ?? 0;
+    const right = b[i] ?? 0;
+    if (left > right) return true;
+    if (left < right) return false;
+  }
+  return true;
+}
+
 async function detectHeadroomFork() {
   // Kept for detecting already-installed local dev builds — uses them as-is, doesn't prefer them
   const candidates = [
@@ -441,6 +455,47 @@ exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
 }
 
 /**
+ * Write a codegraph MCP wrapper that re-roots the process at the repo before
+ * launching `codegraph mcp`, so it finds the repo-local `.codegraph/graph.db`
+ * even when the client spawns MCP servers from a generic working directory.
+ */
+function writeCodegraphWrapper(home, codegraphBin) {
+  const binDir = join(home, '.myelin', 'bin');
+  mkdirSync(binDir, { recursive: true });
+  if (process.platform === 'win32') {
+    const ps1 = join(binDir, 'codegraph-mcp.ps1');
+    writeFileSync(ps1, `# Detect git/codegraph root from CWD and launch codegraph there
+$dir = (Get-Location).Path
+while ($dir -ne [System.IO.Path]::GetPathRoot($dir)) {
+  if (Test-Path (Join-Path $dir '.git')) { break }
+  if (Test-Path (Join-Path $dir '.codegraph\\graph.db')) { break }
+  if (Test-Path (Join-Path $dir '.myelin\\project.yml')) { break }
+  $dir = Split-Path $dir -Parent
+}
+Set-Location $dir
+& '${codegraphBin.replace(/\\/g, '\\\\')}' mcp @args
+`, 'utf8');
+    const cmd = join(binDir, 'codegraph-mcp.cmd');
+    writeFileSync(cmd, `@echo off\npowershell -ExecutionPolicy Bypass -File "${ps1}" %*\n`, 'utf8');
+    return cmd;
+  }
+  const sh = join(binDir, 'codegraph-mcp');
+  writeFileSync(sh, `#!/bin/sh
+dir="$PWD"
+while [ "$dir" != "/" ]; do
+  [ -e "$dir/.git" ] && break
+  [ -f "$dir/.codegraph/graph.db" ] && break
+  [ -f "$dir/.myelin/project.yml" ] && break
+  dir="$(dirname "$dir")"
+done
+cd "$dir" || exit 1
+exec "${codegraphBin}" mcp "$@"
+`, 'utf8');
+  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  return sh;
+}
+
+/**
  * Detect the mitmdump binary path (cross-platform).
  * Checks existence for absolute paths, then tries running --version.
  */
@@ -778,6 +833,15 @@ async function main() {
   mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
+  const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
+  // Gated on BOTH the config flag AND actual presence — a leftover global
+  // install from a prior "enabled: true" run (or an unrelated `npm install -g
+  // @optave/codegraph` on the machine) must never cause MCP registration
+  // while the flag is false. See claudeMcpServers/copilotMcpServers below for
+  // the matching cleanup: an explicit `codegraph: undefined` actively strips
+  // any stale entry mergeJsonFile previously wrote (mergeDeepPlain otherwise
+  // never deletes keys — only overlays what's present in the update object).
+  let codegraphReady = codegraphEnabled && tools.codegraph.installed;
   let port = existingCfg.proxy.headroom.port;
   if (!(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
@@ -792,7 +856,8 @@ async function main() {
 
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
-    console.log('  uv, serena, semble, ast-grep, rtk, mitmproxy');
+    const dryRunTools = ['uv', 'serena', 'semble', 'ast-grep', ...(codegraphEnabled ? ['codegraph'] : []), 'rtk', 'mitmproxy'];
+    console.log(`  ${dryRunTools.join(', ')}`);
     if (copilotHudEnabled && copilot) console.log('  copilot-hud plugin');
     if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
@@ -907,6 +972,23 @@ async function main() {
     }
   } else if (copilotHudEnabled && !copilot) {
     skip('copilot-hud skipped (--claude-only)');
+  }
+
+  if (codegraphEnabled) {
+    if (codegraphReady) {
+      skip(`codegraph (${tools.codegraph.version})`);
+    } else if (!isVersionAtLeast(tools.node.version ?? '', '22.12.0')) {
+      warn('codegraph skipped — @optave/codegraph currently requires Node >=22.12.0 upstream (Myelin itself requires only >=20)');
+    } else {
+      console.log('  Installing codegraph...');
+      try {
+        execSync('npm install -g @optave/codegraph', { stdio: 'inherit' });
+        ok('codegraph installed');
+        codegraphReady = true;
+      } catch {
+        warn('codegraph install failed — install manually: npm install -g @optave/codegraph');
+      }
+    }
   }
 
   // 3. Proxy backbone
@@ -1071,7 +1153,7 @@ async function main() {
   // Claude Code settings.json
   // Resolve tool binary paths at install time — needed for Windows where PATH isn't set when Copilot spawns MCPs
   const toolPaths = {};
-  for (const t of ['serena', 'semble', 'uvx']) {
+  for (const t of ['serena', 'semble', 'uvx', ...(codegraphReady ? ['codegraph'] : [])]) {
     try {
       const p = execSync(os === 'windows' ? `where.exe ${t}` : `which ${t}`, { stdio: 'pipe' })
         .toString().trim().split('\n')[0].trim();
@@ -1082,10 +1164,34 @@ async function main() {
   // Write serena wrapper that detects git root from CWD at spawn time
   const serenaWrapper = writeSerenaWrapper(home, toolPaths.serena);
   toolPaths.serenaWrapper = serenaWrapper;
+  if (codegraphReady) {
+    toolPaths.codegraphWrapper = writeCodegraphWrapper(home, toolPaths.codegraph);
+  }
 
   const memoryFile = os === 'windows'
     ? join(home, '.myelin', 'memory.jsonl').replace(/\//g, '\\')
     : join(home, '.myelin', 'memory.jsonl');
+
+  const claudeMcpServers = {
+    serena: { command: serenaWrapper, args: [] },
+    semble: { command: toolPaths.semble, args: [] },
+    // Explicit `undefined` (not a conditional spread) so a previously-written
+    // entry gets actively removed by mergeJsonFile once codegraph is
+    // disabled again — see codegraphReady comment above.
+    codegraph: toolPaths.codegraphWrapper ? { command: toolPaths.codegraphWrapper, args: [] } : undefined,
+    'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
+    memory: { command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile } },
+    cairn: { command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'] },
+  };
+
+  const copilotMcpServers = {
+    serena: { type: 'local', command: serenaWrapper, args: [], env: {}, tools: ['*'] },
+    semble: { type: 'local', command: toolPaths.semble, args: [], env: {}, tools: ['*'] },
+    codegraph: toolPaths.codegraphWrapper ? { type: 'local', command: toolPaths.codegraphWrapper, args: [], env: {}, tools: ['*'] } : undefined,
+    'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
+    memory: { type: 'local', command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile }, tools: ['*'] },
+    cairn: { type: 'local', command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'], env: {}, tools: ['*'] },
+  };
 
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
@@ -1097,13 +1203,7 @@ async function main() {
         HEADROOM_PORT: String(port),
         ...sslEnv,
       },
-      mcpServers: {
-        serena:    { command: serenaWrapper, args: [] },
-        semble:    { command: toolPaths.semble, args: [] },
-        'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
-        memory:    { command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile } },
-        cairn:     { command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'] },
-      },
+      mcpServers: claudeMcpServers,
     }, {});
     ok('~/.claude/settings.json (MCPs + proxy env)');
   }
@@ -1112,13 +1212,7 @@ async function main() {
   if (copilot) {
     const mcp = join(home, '.copilot', 'mcp-config.json');
     if (existsSync(mcp)) {
-      mergeJsonFile(mcp, { mcpServers: {
-        serena:    { type: 'local', command: serenaWrapper, args: [],             env: {}, tools: ['*'] },
-        semble:    { type: 'local', command: toolPaths.semble, args: [],          env: {}, tools: ['*'] },
-        'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
-        memory:    { type: 'local', command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile }, tools: ['*'] },
-        cairn:     { type: 'local', command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'], env: {}, tools: ['*'] },
-      }});
+      mergeJsonFile(mcp, { mcpServers: copilotMcpServers });
       ok('~/.copilot/mcp-config.json (MCPs)');
     } else { skip('~/.copilot/mcp-config.json not found'); }
   }

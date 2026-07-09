@@ -32,6 +32,9 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has index_tier = default', () => {
     assert.equal(DEFAULT_CONFIG.index_tier, 'default');
   });
+  it('DEFAULT_CONFIG has code_discovery.codegraph = false (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.code_discovery.codegraph, false);
+  });
   it('DEFAULT_CONFIG has proxy.mitm.port = 8888', () => {
     assert.equal(DEFAULT_CONFIG.proxy.mitm.port, 8888);
   });

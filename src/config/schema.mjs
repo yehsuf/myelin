@@ -85,6 +85,12 @@ export const DEFAULT_CONFIG = {
     },
     semble: true,
     astgrep: true,
+    // codegraph: function-level dependency graph MCP/CLI (callers, callees,
+    // impact) built per-repo via `myelin init`. Defaults OFF for now: this is
+    // a brand-new Myelin integration, and upstream currently requires a newer
+    // Node than Myelin itself (README badge: >=22.6; package.json: >=22.12.0
+    // vs Myelin's own >=20). Opt in after validating it on your own repos.
+    codegraph: false,
     mcp_git: true,
     cbm_fallback: { enabled: true, mcp_limit_threshold: 3 },
   },

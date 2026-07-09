@@ -311,6 +311,24 @@ Enables gopls for Go projects. Lightweight compared to TypeScript/Rust. Provides
 
 ---
 
+### `code_discovery.codegraph`
+**Type:** boolean | **Default:** `false` (opt-in)
+
+**What it does:** Enables codegraph as a function-level dependency graph MCP server, plus a per-repo `codegraph build` step during `myelin init`. Agents can query callers, callees, shortest paths, and blast radius directly instead of reconstructing them from grep/read loops.
+
+**What you gain:** Structural context Serena and Semble do not specialize in: "who calls this function", "what breaks if I change it", "how does A reach B", and "show me the whole dependency chain". Best when an agent is about to edit an existing function and needs impact awareness first.
+
+**What you lose:** Another local index to build per repo, plus a stricter runtime requirement upstream: `@optave/codegraph` currently requires newer Node than TokenStack itself (README badge: 22.6+, current package metadata: 22.12+).
+
+**Why it defaults to OFF:** The integration is safe/local (no network, no telemetry), but it is still brand new in TokenStack. Keep it opt-in until you validate it on your own repos and Node toolchain.
+
+```yaml
+code_discovery:
+  codegraph: true
+```
+
+---
+
 ### `code_discovery.mcp_git`
 **Type:** boolean | **Default:** `true`
 
