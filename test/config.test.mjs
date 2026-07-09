@@ -35,6 +35,11 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has code_discovery.codegraph = false (opt-in)', () => {
     assert.equal(DEFAULT_CONFIG.code_discovery.codegraph, false);
   });
+  it('DEFAULT_CONFIG enables myelin-native deterministic compression helpers', () => {
+    assert.equal(DEFAULT_CONFIG.native_compression.cross_turn_dedup, true);
+    assert.equal(DEFAULT_CONFIG.native_compression.adaptive_sizer, true);
+    assert.equal(DEFAULT_CONFIG.native_compression.lossless_compaction, true);
+  });
   it('DEFAULT_CONFIG has proxy.mitm.port = 8888', () => {
     assert.equal(DEFAULT_CONFIG.proxy.mitm.port, 8888);
   });

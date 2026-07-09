@@ -95,6 +95,17 @@ export const DEFAULT_CONFIG = {
     cbm_fallback: { enabled: true, mcp_limit_threshold: 3 },
   },
   shell_compression: { rtk: true },
+  native_compression: {
+    // cross_turn_dedup: myelin-native (non-Headroom) cross-turn verbatim folding
+    // that replaces later repeated spans with absolute earlier-turn pointers.
+    cross_turn_dedup: true,
+    // adaptive_sizer: myelin-native (non-Headroom) Kneedle-based sizing helper
+    // that chooses saturation-aware truncation lengths instead of fixed top-N caps.
+    adaptive_sizer: true,
+    // lossless_compaction: myelin-native (non-Headroom) reversible grep/log/diff
+    // compaction with runtime round-trip checks and safe fallback to original bytes.
+    lossless_compaction: true,
+  },
   output_sandboxing: { context_mode: true },
   output_style: {
     caveman_rules: true,

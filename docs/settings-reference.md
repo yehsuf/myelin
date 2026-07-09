@@ -21,7 +21,7 @@ myelin config reset
 - **Config commands:** `myelin config show`, `myelin config show --path <dotted.key>`, `myelin config set <dotted.key> <value>`, `myelin config get <dotted.key>`, and `myelin config reset` use the same syntax on macOS, Linux, and Windows (`src/cli/config-cmd.mjs`).
 - **Important limitation:** `config set`/`config get` do not validate keys against the schema — typos or removed keys are silently accepted or return `undefined`, so double-check spelling against this file or `src/config/schema.mjs`.
 - **Where platform differences actually live:** OS-specific behavior is in the service/install layer, where `src/service/index.mjs` dispatches to `src/service/launchd.mjs`, `src/service/systemd.mjs`, or `src/service/windows.mjs`; CA-bundle and certificate trust handling also differs there. These are internal implementation details, not user-facing config toggles.
-- **`output_style.*` is cross-platform:** the `code_navigation`, `token_efficiency`, `caveman_rules`, and `hooks` features are plain Node.js `.mjs` hooks/config writers and behave the same on macOS, Linux, and Windows (see §6).
+- **`output_style.*` is cross-platform:** the `code_navigation`, `token_efficiency`, `caveman_rules`, and `hooks` features are plain Node.js `.mjs` hooks/config writers and behave the same on macOS, Linux, and Windows (see §7).
 
 ---
 
@@ -32,12 +32,13 @@ myelin config reset
 2. [Index Tier](#2-index-tier)
 3. [Code Discovery](#3-code-discovery)
 4. [Shell Compression](#4-shell-compression)
-5. [Output Sandboxing](#5-output-sandboxing)
-6. [Output Style + Enforcement](#6-output-style--enforcement)
-7. [Optional Integrations](#7-optional-integrations)
-8. [Environment Variables Reference](#8-environment-variables-reference)
-9. [Quick Recipes](#9-quick-recipes)
-10. [Appendix: Planned / Not Yet Implemented](#appendix-planned--not-yet-implemented)
+5. [Native Compression](#5-native-compression)
+6. [Output Sandboxing](#6-output-sandboxing)
+7. [Output Style + Enforcement](#7-output-style--enforcement)
+8. [Optional Integrations](#8-optional-integrations)
+9. [Environment Variables Reference](#9-environment-variables-reference)
+10. [Quick Recipes](#10-quick-recipes)
+11. [Appendix: Planned / Not Yet Implemented](#appendix-planned--not-yet-implemented)
 
 ---
 
@@ -383,7 +384,52 @@ code_discovery:
 
 ---
 
-## 5. Output Sandboxing
+## 5. Native Compression
+
+These flags control Myelin's own deterministic compression helpers — native reimplementations of the safe, non-ML parts of Headroom added so a machine can keep deterministic compression capability even when Headroom itself must be removed for compliance reasons. They do **not** require a Headroom service or model runtime.
+
+---
+
+### `native_compression.cross_turn_dedup`
+**Type:** boolean | **Default:** `true`
+
+**What it does:** Enables Myelin-native cross-turn verbatim deduplication. When a later tool output repeats a large contiguous span that already appeared verbatim earlier in the same conversation, Myelin can replace the later span with an absolute pointer to the earlier turn instead of repeating the bytes again.
+
+**What you gain:** Big savings on the most common "agent forgot it already read this file" pattern: `cat file` → `sed -n 50,100p file` → `git diff` → `cat file` again. Only the earliest copy stays in full; later duplicates collapse to a short in-context reference.
+
+**What you lose:** The repeated block is no longer shown inline a second time — you read the earlier occurrence instead. This is still information-preserving: only verbatim spans already present earlier in the same request are eligible.
+
+**When to disable:** When debugging exact raw tool transcripts and you want every repeated byte shown again verbatim.
+
+---
+
+### `native_compression.adaptive_sizer`
+**Type:** boolean | **Default:** `true`
+
+**What it does:** Enables Myelin-native adaptive truncation sizing. Instead of fixed rules like "keep top 20 matches", Myelin tracks cumulative unique bigrams as items are added in importance order, then uses the Kneedle algorithm to find the saturation point where extra items stop adding much new information.
+
+**What you gain:** Better sizing across wildly different workloads. Redundant result lists shrink harder; diverse result lists keep more. This avoids both under-truncating noisy outputs and over-truncating genuinely information-dense ones.
+
+**What you lose:** Slightly less predictability than a hardcoded top-N cap. The sizing is still fully deterministic for the same input order.
+
+**When to disable:** When you are comparing behaviour against a fixed-size truncation baseline and want a constant keep-count for every run.
+
+---
+
+### `native_compression.lossless_compaction`
+**Type:** boolean | **Default:** `true`
+
+**What it does:** Enables Myelin-native reversible compaction helpers for grep/ripgrep output, logs, diffs, plain text, and path listings. The compactor keeps each format looking like itself, self-checks its inverse at runtime, and falls back to the original content unchanged if the compacted form is not smaller or cannot be reversed safely.
+
+**What you gain:** Smaller tool output without retrieval markers, model inference, or a Headroom dependency. ANSI color can be dropped from logs, repeated identical lines can collapse, grep results can switch to heading form, and unified diffs can shed non-semantic `index` lines.
+
+**What you lose:** Formatting may become more compact, so byte-for-byte visual shape can differ from the raw tool output. If a round-trip is unsafe, Myelin keeps the original instead.
+
+**When to disable:** When validating exact original formatting or investigating an edge case in the native compactor itself.
+
+---
+
+## 6. Output Sandboxing
 
 ---
 
@@ -404,7 +450,7 @@ code_discovery:
 
 ---
 
-## 6. Output Style + Enforcement
+## 7. Output Style + Enforcement
 
 ---
 
@@ -440,7 +486,7 @@ code_discovery:
 
 ---
 
-## 7. Optional Integrations
+## 8. Optional Integrations
 
 ---
 
@@ -465,7 +511,7 @@ copilot --experimental
 
 ---
 
-## 8. Environment Variables Reference
+## 9. Environment Variables Reference
 
 These override config file values (env vars take precedence over config.yaml).
 
@@ -490,7 +536,7 @@ These override config file values (env vars take precedence over config.yaml).
 
 ---
 
-## 9. Quick Recipes
+## 10. Quick Recipes
 
 ### "I'm on a memory-constrained machine (8GB RAM)"
 ```yaml
@@ -575,7 +621,7 @@ myelin stats --last-session        # sanity check savings are working
 
 ---
 
-## Appendix: Planned / Not Yet Implemented
+## 11. Appendix: Planned / Not Yet Implemented
 
 These ideas were researched or designed, but they are **not** valid config keys in the current schema and are not currently settable via `myelin config set`.
 
