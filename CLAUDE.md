@@ -33,14 +33,74 @@ ssh muc-lhvsuz          # uses ~/.ssh/config entry (ysufrin, internal key)
 
 ---
 
-## Git workflow
-- **Direct-to-main** — commit and push to `origin main` directly. No PRs, no feature branches.
-- Always `git fetch origin && git pull --rebase origin main` before committing when working concurrently.
-- If push is rejected: `git pull --rebase origin main && git push origin main`.
+## Feature development workflow (worktrees)
+
+**Every feature must use a git worktree + feature branch. Never edit `main` directly.**
+
+### Start a feature
+
+```bash
+# 1. Create worktree + branch + register with Copilot/Serena in one command:
+myelin worktree add feat/my-feature
+
+# This does:
+#   git worktree add ~/tokenstack-wt-feat-my-feature -b feat/my-feature
+#   myelin init --yes   (creates .serena/project.yml + writes .claude/settings.local.json hooks)
+
+# 2. Enter the worktree — start Copilot/Claude Code session FROM this directory
+cd ~/tokenstack-wt-feat-my-feature
+# The serena-mcp wrapper auto-detects this worktree as the active project
+```
+
+### Test on all 3 platforms before merging
+
+```bash
+# Mac (local)
+npm test
+
+# Windows — checkout branch + test
+ssh yeh-legion "cd %USERPROFILE%\\.myelin\\repo && git fetch origin && git checkout feat/my-feature && npm test"
+
+# Linux — checkout branch + test
+ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout feat/my-feature && npm test'
+```
+
+### Merge + cleanup
+
+```bash
+# From main repo (not the worktree)
+cd ~/tokenstack
+git merge --squash feat/my-feature   # or: git merge --ff-only
+git commit -m "feat: ..."
+git push origin main
+
+# Remove worktree + delete branch
+myelin worktree remove feat/my-feature
+```
+
+### Other worktree commands
+```bash
+myelin worktree list                          # list all active worktrees
+myelin worktree remove feat/x --keep-branch  # remove worktree but keep the branch
+```
+
+### How session registration works
+`myelin init` in the worktree calls `serena project create --index <worktree-path>` which:
+1. Creates `.serena/project.yml` in the worktree (gitignored — machine-local)
+2. Registers the path in `~/.serena/serena_config.yml`
+
+The `serena-mcp.sh` wrapper detects the project by walking up from CWD at spawn time.
+Starting Copilot/Claude Code from the worktree directory = session is registered to that worktree.
 
 ---
 
-## Build / test / run
+
+
+## Git workflow (agents / hotfixes only)
+- Direct-to-main is only for agents doing concurrent work or emergency hotfixes.
+- **All other work uses worktrees** (see above).
+- Always `git fetch origin && git pull --rebase origin main` before committing when working concurrently.
+- If push is rejected: `git pull --rebase origin main && git push origin main`.
 ```bash
 npm test                                        # full suite (node --test)
 node --test test/specific.test.mjs             # single file
