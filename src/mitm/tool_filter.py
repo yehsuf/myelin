@@ -23,6 +23,7 @@ Configuration (env vars):
   MYELIN_TOOL_FILTER_MIN     default: 15  (minimum tool count to bother filtering)
 """
 
+import collections
 import hashlib
 import json
 import math
@@ -38,6 +39,7 @@ from typing import Optional
 FILTER_ENABLED = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
 TOP_K          = int(os.environ.get('MYELIN_TOOL_FILTER_TOP_K', '10'))
 MIN_TOOLS      = int(os.environ.get('MYELIN_TOOL_FILTER_MIN', '15'))
+_CACHE_SIZE = int(os.environ.get('MYELIN_TOOL_FILTER_CACHE_SIZE', '500'))
 
 # Tools that are never removed — core agent primitives that must always be present.
 ALWAYS_ON: frozenset = frozenset({
@@ -145,9 +147,49 @@ def _embed_score(query: str, texts: list[str]) -> list[float]:
 # ---------------------------------------------------------------------------
 # Cache: last tool set per conversation (keyed by first-message hash)
 # Avoids re-serialising tools when the filtered set hasn't changed → cache hit.
+# Bounded by _CACHE_SIZE to prevent unbounded growth in long-running sessions.
 # ---------------------------------------------------------------------------
 
-_last_tool_sets: dict[str, frozenset[str]] = {}  # conversation_key → tool names
+class _LRUDict:
+    """Thread-unsafe LRU dict — single-process mitmproxy addon only.
+
+    Bounded replacement for the previously-unbounded conversation-key
+    cache. OrderedDict.move_to_end / popitem(last=False) gives O(1)
+    LRU semantics without any external dependency.
+    """
+    __slots__ = ('_data', '_maxsize')
+
+    def __init__(self, maxsize: int):
+        self._data: 'collections.OrderedDict[str, frozenset[str]]' = collections.OrderedDict()
+        self._maxsize = max(1, maxsize)
+
+    def get(self, key, default=None):
+        if key not in self._data:
+            return default
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        if key in self._data:
+            self._data.move_to_end(key)
+        self._data[key] = value
+        while len(self._data) > self._maxsize:
+            self._data.popitem(last=False)
+
+    def __getitem__(self, key):
+        if key not in self._data:
+            raise KeyError(key)
+        self._data.move_to_end(key)
+        return self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __len__(self):
+        return len(self._data)
+
+
+_last_tool_sets: _LRUDict = _LRUDict(_CACHE_SIZE)
 
 def _conversation_key(messages: list[dict]) -> str:
     """Stable key for a conversation thread."""
