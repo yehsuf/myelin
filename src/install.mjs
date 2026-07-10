@@ -1490,12 +1490,11 @@ ${initSkillBody}`);
   // which cache their own session environment separately. Purely additive:
   // the PowerShell module above remains the primary, proven mechanism.
   if (os === 'windows') {
+    const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const registryVars = {
       HEADROOM_PORT: String(port),
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
-      // P1: persist upstream routing URL so headroom reads it at startup (needed
-      // for the Claude Code full-proxy path where ANTHROPIC_BASE_URL=:8787).
-      OPENAI_TARGET_API_URL: envVars.OPENAI_TARGET_API_URL ?? cfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
+      OPENAI_TARGET_API_URL: _winCfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
       ...sslEnv,
     };
     if (setUserEnvVars(registryVars)) {
