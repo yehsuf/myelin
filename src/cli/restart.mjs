@@ -12,6 +12,90 @@ export async function runRestart() {
   const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
   console.log('\n🔄 Restarting Myelin services...');
 
+  // On Windows with copilot_headroom enabled, reverse the startup order:
+  // start copilot-headroom FIRST (lighter --mode cache), wait for it to be
+  // healthy, then start main headroom. This prevents Windows Defender / Python
+  // .pyc cache from serializing the two identical import chains simultaneously,
+  // which causes one instance to block for 60+ seconds.
+  if (os === 'windows' && winManager !== 'winsw' && cfg?.proxy?.copilot_headroom?.enabled) {
+    // Kill all headroom processes upfront
+    try {
+      execSync('powershell -Command "Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
+      await new Promise(r => setTimeout(r, 800));
+    } catch {}
+
+    // 1. copilot-headroom:8788 FIRST
+    const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
+    try {
+      const regKey = 'MyelinCopilotHeadroom';
+      const regVal = execSync(
+        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name ${regKey} -ErrorAction SilentlyContinue).${regKey}"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+      if (regVal) {
+        const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
+        if (m) {
+          const { spawnDetachedService } = await import('../service/windows.mjs');
+          const copilotWorkspace = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
+          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), {
+            taskEnv: { HEADROOM_WORKSPACE_DIR: copilotWorkspace },
+          });
+          console.log('  ✓ copilot-headroom started (:8788)');
+        }
+      }
+    } catch (e) { console.warn(`  ⚠ copilot-headroom start failed: ${e.message?.split('\n')[0] ?? e}`); }
+
+    // Wait for copilot-headroom to be healthy before starting main headroom.
+    // Once copilot-headroom is up, Python .pyc cache + Windows Defender scan
+    // cache are warm — main headroom starts in ~5s instead of 60s+.
+    const cpHealthy = await waitForHeadroom(copilotPort, 90000);
+    if (cpHealthy) {
+      console.log(`  ✓ copilot-headroom healthy on :${copilotPort}`);
+    } else {
+      console.log(`  ↷ copilot-headroom still starting — proceeding to main headroom`);
+    }
+
+    // 2. main headroom:8787 (caches warm now)
+    try {
+      const bin = headroomBinPath();
+      const port = cfg?.proxy?.headroom?.port ?? 8787;
+      const argStr = `proxy --port ${port}`;
+      const { spawnDetachedService } = await import('../service/windows.mjs');
+      spawnDetachedService('MyelinHeadroom', bin, argStr);
+      console.log('  ✓ headroom restarted');
+    } catch (e) { console.warn(`  ⚠ headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
+
+    // 3. mitmproxy (independent of headroom Python caches)
+    try {
+      try {
+        execSync('powershell -Command "Get-Process -Name mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' });
+      } catch {}
+      await new Promise(r => setTimeout(r, 500));
+      const regVal = execSync(
+        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+      if (regVal) {
+        const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
+        if (m) {
+          const { spawnDetachedService } = await import('../service/windows.mjs');
+          spawnDetachedService('MyelinMitmproxy', m[1], m[2].trim());
+          console.log('  ✓ mitmproxy restarted (hidden)');
+        }
+      } else {
+        console.warn('  ⚠ mitmproxy registry entry not found — run: myelin install --yes');
+      }
+    } catch (e) { console.warn(`  ⚠ mitmproxy restart failed: ${e.message?.split('\n')[0] ?? e}`); }
+
+    // Quick health probe for main headroom
+    const healthy = await waitForHeadroom(cfg?.proxy?.headroom?.port ?? 8787, 20000);
+    healthy
+      ? console.log(`  ✓ headroom healthy on :${cfg?.proxy?.headroom?.port ?? 8787}`)
+      : console.log(`  ↷ headroom starting in background — run: myelin verify to confirm`);
+    console.log();
+    return;
+  }
+
   // --- headroom ---
   if (os === 'darwin') {
     try {
@@ -109,35 +193,6 @@ export async function runRestart() {
         }
       }
     } catch (e) { console.warn(`  ⚠ mitmproxy restart failed: ${e.message?.split('\n')[0] ?? e}`); }
-  }
-
-  // --- copilot-headroom (opt-in dedicated instance) ---
-  if (os === 'windows' && cfg?.proxy?.copilot_headroom?.enabled) {
-    // Wait for main headroom to be up before starting copilot-headroom
-    // to prevent both instances competing for Python/uvicorn startup resources
-    await waitForHeadroom(cfg?.proxy?.headroom?.port ?? 8787, 25000);
-    try {
-      const regKey = 'MyelinCopilotHeadroom';
-      const regVal = execSync(
-        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name ${regKey} -ErrorAction SilentlyContinue).${regKey}"`,
-        { stdio: 'pipe' }
-      ).toString().trim();
-      if (regVal) {
-        const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
-        if (m) {
-          try { execSync('powershell -Command "Get-Process -Name headroom -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \'\'} | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
-          const { spawnDetachedService } = await import('../service/windows.mjs');
-          const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
-          const copilotWorkspace = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
-          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), {
-            taskEnv: { HEADROOM_WORKSPACE_DIR: copilotWorkspace },
-          });
-          console.log('  ✓ copilot-headroom restarted (:8788)');
-        }
-      } else {
-        console.warn('  ⚠ copilot-headroom registry entry not found — run: myelin install --yes');
-      }
-    } catch (e) { console.warn(`  ⚠ copilot-headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
   // Health check — headroom can take 30-90s to start via Task Scheduler on first run
