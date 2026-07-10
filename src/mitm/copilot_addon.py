@@ -267,6 +267,36 @@ def _encode_body(data: bytes, original_encoding: str) -> bytes:
         return gzip.compress(data)
     return data
 
+
+# ---------------------------------------------------------------------------
+# Log sanitization — strip auth credentials from any string before logging
+# ---------------------------------------------------------------------------
+
+_AUTH_SCRUB_PATTERNS = [
+    (re.compile(r'(Authorization:\s*Bearer\s+)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'((?:X-Api-Key|api-key):\s*)\S+', re.IGNORECASE), r'\1[REDACTED]'),
+    (re.compile(r'("(?:token|api_key|apikey|secret|password)":\s*")[^"]{8,}(")', re.IGNORECASE), r'\1[REDACTED]\2'),
+    (re.compile(r'\b(ghp_|ghs_|sk-|ghu_)\w{10,}', re.IGNORECASE), '[REDACTED]'),
+]
+
+
+def scrub_log_str(s: str) -> str:
+    """Redact auth credentials from a string before writing to any log."""
+    for pattern, replacement in _AUTH_SCRUB_PATTERNS:
+        s = pattern.sub(replacement, s)
+    return s
+
+
+def scrub_headers_for_log(headers) -> dict:
+    """Return a copy of a headers dict with auth values replaced by [REDACTED].
+    Accepts mitmproxy Headers objects or plain dicts."""
+    redact_keys = {'authorization', 'x-api-key', 'api-key', 'x-auth-token', 'cookie', 'set-cookie'}
+    result = {}
+    for k, v in (headers.items() if hasattr(headers, 'items') else {}.items()):
+        result[k] = '[REDACTED]' if k.lower() in redact_keys else v
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Headroom compression
 # Compresses ALL message roles: prompts, assistant turns, tool results.
@@ -293,9 +323,9 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
             if isinstance(compressed, list) and compressed:
                 return compressed, result.get('tokens_before', 0), result.get('tokens_after', 0)
     except urllib.error.URLError as e:
-        ctx.log.warn(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}')
+        ctx.log.warn(scrub_log_str(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}'))
     except Exception as e:
-        ctx.log.warn(f'[myelin] compression error: {e}')
+        ctx.log.warn(scrub_log_str(f'[myelin] compression error: {e}'))
     return messages, 0, 0
 
 # cache_control is passed through untouched — the client manages its own breakpoints.
@@ -327,7 +357,7 @@ def _add_to_vpn_file(hostname: str) -> bool:
                 f.write(f'\n{hostname}')
         return True
     except Exception as e:
-        ctx.log.warn(f'[myelin] cannot write VPN domains file: {e}')
+        ctx.log.warn(scrub_log_str(f'[myelin] cannot write VPN domains file: {e}'))
         return False
 
 
@@ -429,7 +459,7 @@ def _replay_via_socks5(flow: http.HTTPFlow, proxy_host: str, proxy_port: int,
         conn.close()
         return True
     except Exception as e:
-        ctx.log.error(f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}')
+        ctx.log.error(scrub_log_str(f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}'))
         return False
     finally:
         if raw_sock is not None:
@@ -593,12 +623,12 @@ class MyelinAddon:
             if _is_network_block(flow.response.status_code, body):
                 # Don't retry a flow that already went through the override proxy
                 if flow.metadata.get('myelin_via_override'):
-                    ctx.log.error(f'[myelin] {host} still blocked via override proxy — giving up')
+                    ctx.log.error(scrub_log_str(f'[myelin] {host} still blocked via override proxy — giving up'))
                     return
 
                 if OVERRIDE_PROXY:
                     ctx.log.warn(
-                        f'[myelin] network block on {host} (418) — retrying via {OVERRIDE_PROXY}'
+                        scrub_log_str(f'[myelin] network block on {host} (418) — retrying via {OVERRIDE_PROXY}')
                     )
                     # Mark so we don't retry infinitely (guards both branches below)
                     flow.metadata['myelin_via_override'] = True
@@ -610,7 +640,7 @@ class MyelinAddon:
                         if _replay_via_socks5(flow, parsed.hostname, parsed.port or 1080):
                             ctx.log.info(f'[myelin] {host} served via SOCKS5 override proxy')
                         else:
-                            ctx.log.error(f'[myelin] {host} still blocked — SOCKS5 override relay failed')
+                            ctx.log.error(scrub_log_str(f'[myelin] {host} still blocked — SOCKS5 override relay failed'))
                     else:
                         try:
                             from mitmproxy.net.server_spec import parse as parse_spec
@@ -618,16 +648,16 @@ class MyelinAddon:
                             flow.server_conn.via = parse_spec(OVERRIDE_PROXY, 'http')
                             ctx.master.commands.call('replay.client', [flow])
                         except Exception as e:
-                            ctx.log.error(f'[myelin] override proxy replay failed: {e}')
+                            ctx.log.error(scrub_log_str(f'[myelin] override proxy replay failed: {e}'))
                 elif VPN_DOMAINS_FILE:
                     # Legacy: domain-file fallback
-                    ctx.log.warn(f'[myelin] network block on {host} — adding to VPN routing file')
+                    ctx.log.warn(scrub_log_str(f'[myelin] network block on {host} — adding to VPN routing file'))
                     if _add_to_vpn_file(host) and _poll_reachable(host):
                         ctx.log.info(f'[myelin] {host} reachable via VPN — replaying')
                         flow.metadata['myelin_via_override'] = True
                         ctx.master.commands.call('replay.client', [flow])
                     else:
-                        ctx.log.error(f'[myelin] VPN routing failed for {host}')
+                        ctx.log.error(scrub_log_str(f'[myelin] VPN routing failed for {host}'))
                 return
 
         if LOG_SAVINGS and 'myelin_original_bytes' in flow.metadata:
@@ -697,4 +727,3 @@ _IGNORE_HOSTS_PATTERNS = [
 ]
 
 addons = [MyelinAddon()]
-
