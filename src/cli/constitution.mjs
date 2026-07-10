@@ -106,7 +106,8 @@ const SECRET_PATTERNS = [
   { name: 'AWS access key', re: /AKIA[A-Z0-9]{16}/ },
   { name: 'PEM header', re: /-----BEGIN [A-Z ]+-----/ },
   { name: 'generic api key', re: /api[_-]?key\s*[:=]\s*\S{8,}/i },
-  { name: 'long hex token', re: /\b[a-fA-F0-9]{33,}\b/ },
+  // threshold 65+ to skip SHA-1 (40 chars) and SHA-256 (64 chars) which appear in key-file-map entries
+  { name: 'long hex token', re: /(?<!sha256:|commit\s|head=)[a-fA-F0-9]{65,}/i },
 ];
 
 export function checkConstitution(text) {
@@ -301,7 +302,12 @@ function resolveRepoRoot(repoFlag, requireConstitution) {
   const start = repoFlag ? (isAbsolute(repoFlag) ? repoFlag : resolve(process.cwd(), repoFlag)) : process.cwd();
   if (requireConstitution) {
     const cf = findConstitutionFile(start);
-    if (cf) return { gitRoot: dirname(dirname(cf)), constitutionPath: cf };
+    if (cf) {
+      // Prefer the actual git root over dirname(dirname(cf)) for nested-repo safety
+      const derivedRoot = dirname(dirname(cf));
+      const gitRoot = existsSync(join(derivedRoot, '.git')) ? derivedRoot : (findGitRoot(start) ?? derivedRoot);
+      return { gitRoot, constitutionPath: cf };
+    }
     // fall back to git root
     const gr = findGitRoot(start);
     return gr ? { gitRoot: gr, constitutionPath: join(gr, CONSTITUTION_REL) } : null;

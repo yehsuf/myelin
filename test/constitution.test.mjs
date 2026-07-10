@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { execSync } from 'node:child_process';
 
 import {
   findConstitutionFile,
@@ -11,6 +12,7 @@ import {
   checkConstitution,
   appendBullet,
   similarity,
+  cmdInit,
 } from '../src/cli/constitution.mjs';
 
 // NOTE: mkdtemp is allowed via tmpdir(), but we must not write our own files
@@ -211,6 +213,61 @@ test('similarity — identical, empty, and partial overlap behave correctly', ()
   const s = similarity('the quick brown fox', 'the quick brown dog');
   assert.ok(s > 0.5 && s < 1, `expected partial overlap in (0.5,1), got ${s}`);
   assert.equal(similarity('completely different', 'orange banana apple'), 0);
+});
+
+test('checkConstitution — SHA-256 hash in key file map does not trigger secret error', () => {
+  // SHA-256 = 64 hex chars; should not be flagged since threshold is 65+
+  const textWithHash = GOOD_TEXT + '\n## Key file map\n- pinned to commit a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447\n';
+  const result = checkConstitution(textWithHash);
+  const hexErrors = result.errors.filter((e) => e.includes('long hex'));
+  assert.equal(hexErrors.length, 0, `SHA-256 hash falsely flagged: ${hexErrors.join(', ')}`);
+});
+
+test('cmdInit — happy path creates file with project name from git', () => {
+  const dir = makeFixtureDir('init-happy');
+  mkdirSync(join(dir, '.git'));
+  const old = process.cwd();
+  process.chdir(dir);
+  try {
+    const code = cmdInit({});
+    assert.equal(code, 0);
+    const written = readFileSync(join(dir, '.github', 'copilot-instructions.md'), 'utf8');
+    assert.match(written, /<!-- CONSTITUTION v1/);
+  } finally {
+    process.chdir(old);
+  }
+});
+
+test('cmdInit — idempotent: exits 0 if file already exists unchanged', () => {
+  const dir = makeFixtureDir('init-idem');
+  mkdirSync(join(dir, '.git'));
+  mkdirSync(join(dir, '.github'), { recursive: true });
+  writeFileSync(join(dir, '.github', 'copilot-instructions.md'), '# existing\n');
+  const old = process.cwd();
+  process.chdir(dir);
+  try {
+    const code = cmdInit({});
+    assert.equal(code, 0);
+    assert.equal(readFileSync(join(dir, '.github', 'copilot-instructions.md'), 'utf8'), '# existing\n');
+  } finally {
+    process.chdir(old);
+  }
+});
+
+test('cmdInit — no git remote falls back to placeholder', () => {
+  const dir = makeFixtureDir('init-no-remote');
+  execSync('git init -q -b main', { cwd: dir, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', HOME: dir } });
+  const old = process.cwd();
+  process.chdir(dir);
+  try {
+    const code = cmdInit({});
+    assert.equal(code, 0);
+    const written = readFileSync(join(dir, '.github', 'copilot-instructions.md'), 'utf8');
+    assert.match(written, /<!-- CONSTITUTION v1/);
+    assert.match(written, /<OWNER\/REPO>/);
+  } finally {
+    process.chdir(old);
+  }
 });
 
 test.after(cleanupAll);
