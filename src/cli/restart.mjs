@@ -122,7 +122,11 @@ export async function runRestart() {
         if (m) {
           try { execSync('powershell -Command "Get-Process -Name headroom -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \'\'} | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
           const { spawnDetachedService } = await import('../service/windows.mjs');
-          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim());
+          const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
+          const copilotWorkspace = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
+          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), {
+            taskEnv: { HEADROOM_WORKSPACE_DIR: copilotWorkspace },
+          });
           console.log('  ✓ copilot-headroom restarted (:8788)');
         }
       } else {

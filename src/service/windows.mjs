@@ -493,28 +493,41 @@ Write-Host "[myelin] headroom started (hidden)"
  * @param {string}   argStr    Argument string (may contain spaces and quoted paths)
  * @param {object}   [deps]    Injected dependencies for testing
  */
-export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, workingDir = '' } = {}) {
+export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, taskEnv = {} } = {}) {
   const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeExe  = escapePs(exe);
   const safeArgs = escapePs(argStr);
-  const safeWd   = workingDir ? escapePs(windowsPath(workingDir)) : '';
-  // User-scope env vars to pre-load in the fallback path
+  // User-scope env vars to pre-load in the fallback path (SSH sessions don't inherit them)
   const envKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
                    'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
   const loadEnvFallback = envKeys
     .map(k => `$v = [Environment]::GetEnvironmentVariable('${k}','User'); if ($v) { Set-Item -Path 'Env:${k}' -Value $v }`)
     .join('\n');
-  // WorkingDirectory in the task action isolates each headroom instance's state
-  // files (proxy_savings.json etc.) so two headroom instances don't conflict.
-  const actLine = safeWd
-    ? `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr -WorkingDirectory '${safeWd}'`
-    : `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`;
-  const mkdirLine = safeWd ? `New-Item -ItemType Directory -Force -Path '${safeWd}' | Out-Null` : '';
+
+  // Task-specific env vars (e.g. HEADROOM_WORKSPACE_DIR for state isolation).
+  // New-ScheduledTaskAction has no -Environment param in PS 5.1, so we wrap
+  // the command in cmd.exe /C "set VAR=val && exe args" to pass them.
+  const hasTaskEnv = Object.keys(taskEnv).length > 0;
+  let actLine;
+  if (hasTaskEnv) {
+    const setStmts = Object.entries(taskEnv)
+      .map(([k, v]) => `set "${k}=${windowsPath(String(v))}"`)
+      .join(' && ');
+    // Escape the exe path for cmd.exe (needs double-quotes NOT single-quotes)
+    const winExe = windowsPath(exe);
+    const cmdArg = escapePs(`/C "${setStmts} && \\"${winExe}\\" ${argStr}"`);
+    actLine = `$act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdArg}'`;
+  } else {
+    actLine = `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`;
+  }
+  const fallbackEnvLines = hasTaskEnv
+    ? Object.entries(taskEnv).map(([k, v]) => `Set-Item -Path 'Env:${k}' -Value '${escapePs(windowsPath(String(v)))}'`).join('\n')
+    : '';
+
   runPsFn([
     `$tn = '${safeName}'`,
     `$exe = '${safeExe}'`,
     `$argStr = '${safeArgs}'`,
-    ...(mkdirLine ? [mkdirLine] : []),
     `Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
     actLine,
     `$pri = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited`,
@@ -526,9 +539,8 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, w
     `  Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
     `} else {`,
     loadEnvFallback,
-    ...(safeWd ? [`  New-Item -ItemType Directory -Force -Path '${safeWd}' | Out-Null`] : []),
-    ...(safeWd ? [`  Set-Location '${safeWd}'`] : []),
-    `  Start-Process -FilePath $exe -ArgumentList $argStr.Split(' ') -WindowStyle Hidden${safeWd ? ` -WorkingDirectory '${safeWd}'` : ''}`,
+    ...(fallbackEnvLines ? [fallbackEnvLines] : []),
+    `  Start-Process -FilePath $exe -ArgumentList $argStr.Split(' ') -WindowStyle Hidden`,
     `}`,
   ].join('\n'));
 }
