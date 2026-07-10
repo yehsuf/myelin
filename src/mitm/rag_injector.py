@@ -94,6 +94,8 @@ def _is_serena_running() -> bool:
         return False
     except ImportError:
         pass
+    except Exception:
+        pass
 
     import platform
     system = platform.system()

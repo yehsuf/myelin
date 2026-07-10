@@ -887,3 +887,31 @@ def test_91_inject_does_not_mutate_original(monkeypatch, tmp_path):
     # Modified dict is a new object with a new messages list
     assert out is not data
     assert out['messages'] is not original_messages
+
+
+# ---------------------------------------------------------------------------
+# Arch-review fix: psutil outer except covers non-ImportError errors
+# ---------------------------------------------------------------------------
+
+def test_psutil_outer_exception_returns_false(monkeypatch):
+    """Unexpected psutil error (not ImportError) must degrade to False.
+    Also mock subprocess so the function does not fall through to pgrep and
+    accidentally detect a real serena process on the test machine.
+    """
+    import types
+    fake = types.ModuleType('psutil')
+    fake.NoSuchProcess = type('NSP', (Exception,), {})
+    fake.AccessDenied  = type('AD',  (Exception,), {})
+
+    def broken_iter(attrs=None):
+        raise RuntimeError('WMI timeout')
+
+    fake.process_iter = broken_iter
+    monkeypatch.setitem(sys.modules, 'psutil', fake)
+    # Mock subprocess so pgrep fallback also returns no match
+    monkeypatch.setattr(ri.subprocess, 'run',
+        lambda *a, **k: _FakeProc(stdout='', returncode=1))
+    import platform; monkeypatch.setattr(platform, 'system', lambda: 'Linux')
+
+    result = ri._is_serena_running()
+    assert result is False
