@@ -4,17 +4,6 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
 
-function headroomBin() {
-  const venv = join(homedir(), '.myelin', 'venv');
-  const win = join(venv, 'Scripts', 'headroom.exe');
-  const nix = join(venv, 'bin', 'headroom');
-  const local = join(homedir(), '.local', 'bin', 'headroom');
-  if (existsSync(win)) return win;
-  if (existsSync(nix)) return nix;
-  if (existsSync(local)) return local;
-  return 'headroom'; // fallback to PATH
-}
-
 export async function runStats() {
   const home = homedir();
   const cfg = await loadConfig();
@@ -99,58 +88,28 @@ export async function runStats() {
     console.log('     myelin install --yes');
   }
 
-  // --- headroom stats (Claude Code) ---
+  // --- headroom-lite stats (Copilot / Claude Code sidecar) ---
   console.log('\n' + '─'.repeat(60));
-  console.log('  Claude Code (via headroom :8787)');
+  console.log('  Copilot / Claude Code (via headroom-lite :8790)');
   try {
-    const statsUrl = 'http://127.0.0.1:8787/stats';
-    const resp = JSON.parse(execSync(`curl -sf ${statsUrl}`, { timeout: 3000 }).toString());
-    const s = resp.summary ?? {};
-    const c = s.compression ?? {};
-    const cost = s.cost ?? {};
-    const bd = cost.breakdown ?? {};
-    const reqs = s.api_requests ?? 0;
-    const compressed = c.requests_compressed ?? 0;
-    const tokBefore = c.total_tokens_before_with_cli_filtering ?? 0;
-    const tokSaved = c.total_tokens_saved_with_cli_filtering ?? 0;
-    const comprPct = tokBefore > 0 ? (tokSaved / tokBefore * 100).toFixed(1) : '0.0';
-    const cacheSavedUsd = bd.cache_savings_usd ?? 0;
-    const comprSavedUsd = bd.compression_savings_usd ?? 0;
-    const totalSavedUsd = cacheSavedUsd + comprSavedUsd;
-
-    // Get cache hit rate from headroom perf text (not in /stats JSON)
-    let cacheHitLine = '';
-    try {
-      const perf = execSync(`"${headroomBin()}" perf`, { timeout: 5000, env: { ...process.env, PYTHONWARNINGS: 'ignore', LITELLM_LOG: 'ERROR' } }).toString();
-      const hitMatch = perf.match(/Hit rate:\s+([\d.]+%)/);
-      const readMatch = perf.match(/Cache read:\s+([\d,]+) tokens/);
-      const writeMatch = perf.match(/Cache write:\s+([\d,]+) tokens/);
-      if (hitMatch) {
-        const read = readMatch ? Math.round(parseInt(readMatch[1].replace(/,/g,''))/1000) + 'K' : '?';
-        const write = writeMatch ? Math.round(parseInt(writeMatch[1].replace(/,/g,''))/1000) + 'K' : '?';
-        cacheHitLine = `  KV cache hit rate:    ${hitMatch[1]}  (${read} read / ${write} write)`;
-      }
-    } catch { /* ignore */ }
-
-    console.log(`  Requests:             ${reqs} total, ${compressed} compressed`);
-    console.log(`  Text compression:     ${comprPct}%  (${(tokSaved/1000).toFixed(0)}K tokens saved)`);
-    if (cacheHitLine) console.log(cacheHitLine);
-    console.log(`  Cost saved:           $${totalSavedUsd.toFixed(2)}  (cache $${cacheSavedUsd.toFixed(2)} + compression $${comprSavedUsd.toFixed(2)})`);
-    const skipped = (c.prefix_frozen ?? 0) + (c.too_small ?? 0) + (c.no_compressible_content ?? 0);
-    if (skipped > 0) {
-      console.log(`  ℹ  ${skipped} reqs skipped compression (cache-pinned / too small — cache savings still apply)`);
+    const resp = JSON.parse(execSync('curl -sf http://127.0.0.1:8790/stats', { timeout: 3000 }).toString());
+    const saved = resp.compress_tokens_saved ?? 0;
+    const before = resp.compress_tokens_before ?? 0;
+    const pct = resp.compress_pct ?? '0.0';
+    const proxyReqs = resp.proxy_requests ?? 0;
+    const compReqs = resp.compress_requests ?? 0;
+    const uptime = resp.uptime_seconds ?? 0;
+    const uptimeStr = uptime < 60 ? `${uptime}s` : uptime < 3600 ? `${Math.floor(uptime/60)}m` : `${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m`;
+    console.log(`  Uptime:               ${uptimeStr}`);
+    console.log(`  Proxy requests:       ${proxyReqs}`);
+    console.log(`  Compress calls:       ${compReqs}`);
+    console.log(`  Token compression:    ${pct}%  (${(saved/1000).toFixed(0)}K tokens saved)`);
+    if (before === 0 && compReqs === 0) {
+      console.log('  ℹ  No requests yet — set ANTHROPIC_BASE_URL=http://127.0.0.1:8790');
     }
   } catch {
-    // Fall back to headroom perf CLI
-    try {
-      const out = execSync(`"${headroomBin()}" perf`, { timeout: 5000, env: { ...process.env, PYTHONWARNINGS: 'ignore', LITELLM_LOG: 'ERROR' } }).toString();
-      const lines = out.split('\n')
-        .filter(l => /Requests:|Tokens:|Total saved:|Window:|Hit rate:/.test(l))
-        .map(l => '  ' + l.trim());
-      console.log(lines.join('\n'));
-    } catch {
-      console.log('  headroom unavailable — is port 8787 running?');
-    }
+    console.log('  headroom-lite unavailable on :8790 — run: headroom-lite');
+    console.log('  or: ANTHROPIC_BASE_URL=http://127.0.0.1:8790 node src/index.mjs');
   }
 
   console.log('─'.repeat(60) + '\n');
