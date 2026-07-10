@@ -105,6 +105,28 @@ export async function runRestart() {
     } catch (e) { console.warn(`  ⚠ mitmproxy restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
+  // --- copilot-headroom (opt-in dedicated instance) ---
+  if (os === 'windows' && cfg?.proxy?.copilot_headroom?.enabled) {
+    try {
+      const regKey = 'MyelinCopilotHeadroom';
+      const regVal = execSync(
+        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name ${regKey} -ErrorAction SilentlyContinue).${regKey}"`,
+        { stdio: 'pipe' }
+      ).toString().trim();
+      if (regVal) {
+        const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
+        if (m) {
+          try { execSync('powershell -Command "Get-Process -Name headroom -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \'\'} | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+          const { spawnDetachedService } = await import('../service/windows.mjs');
+          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim());
+          console.log('  ✓ copilot-headroom restarted (:8788)');
+        }
+      } else {
+        console.warn('  ⚠ copilot-headroom registry entry not found — run: myelin install --yes');
+      }
+    } catch (e) { console.warn(`  ⚠ copilot-headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
+  }
+
   // Health check
   const port = 8787;
   const healthy = await waitForHeadroom(port, 20000);
