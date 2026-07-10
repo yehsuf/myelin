@@ -10,6 +10,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, acces
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
+import { buildCombinedCaCert } from './detect/combined-ca.mjs';
 import { detectOS, detectShell } from './detect/os.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
@@ -158,46 +159,6 @@ function printStateTable(tools, caBundles, proxy) {
   if (caBundles.length) console.log(`  CA bundles:     ${caBundles.map(b => b.source).join(', ')}`);
   if (proxy) console.log(`  Upstream proxy: ${proxy}`);
   console.log('─'.repeat(60) + '\n');
-}
-
-/**
- * Build a combined CA bundle: the detected root CA + the intermediate CA
- * extracted from the live TLS connection to api.github.com.
- * Required when a corporate SSL interceptor (e.g. NetFree/Hot) uses an
- * intermediate CA that isn't in the standard trust store.
- * Returns the path to the combined cert, or the original path if no
- * interception is detected or extraction fails.
- */
-async function buildCombinedCaCert(rootCaPath, home, { force = false } = {}) {
-  if (!rootCaPath) return null;
-  // Skip on Windows — openssl/awk not available; ca-bundle.pem already built by installMitmproxyCA
-  if (detectOS() === 'windows') return rootCaPath;
-  const combinedPath = join(home, '.myelin', 'ca-bundle.pem');
-
-  try {
-    const intermediate = execSync(
-      // Unset proxy vars so openssl connects directly (sees real corp TLS chain, not mitmproxy's)
-      `unset HTTPS_PROXY https_proxy; echo | openssl s_client -connect api.github.com:443 -showcerts 2>/dev/null | ` +
-      `awk '/-----BEGIN CERTIFICATE-----/{i++} i==2{print} /-----END CERTIFICATE-----/ && i==2{exit}'`,
-      { shell: true, timeout: 12000 }
-    ).toString().trim();
-
-    if (!intermediate.includes('BEGIN CERTIFICATE')) return rootCaPath;
-
-    const rootContent = readFileSync(rootCaPath, 'utf8');
-    // Skip dedup check when force=true (e.g. post-migration rebuild)
-    const intermediateLine = intermediate.split('\n')[1]?.trim() ?? '';
-    if (!force && intermediateLine && rootContent.includes(intermediateLine)) return rootCaPath;
-
-    writeFileSync(
-      combinedPath,
-      rootContent + '\n# Intermediate CA (auto-extracted from live TLS chain)\n' + intermediate + '\n',
-      'utf8'
-    );
-    return combinedPath;
-  } catch {
-    return rootCaPath;
-  }
 }
 
 /**
