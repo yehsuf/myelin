@@ -363,4 +363,27 @@ describe('CLI modes', () => {
     const hint = r.stdout.replace(/\n$/, '');
     assert.ok(hint.length <= MAX_HINT, `hint length ${hint.length} > ${MAX_HINT}`);
   });
+
+  it('stale todos.json (>30 min) is suppressed', () => {
+    const staleDate = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-stale', {});
+    writeFileSync(path.join(sessionDir, 'files', 'todos.json'), JSON.stringify({
+      version: 1, generatedAt: staleDate, source: 'test',
+      todos: [{ id: 'S1', title: 'stale-todo', description: '', status: 'in_progress' }],
+    }));
+    const r = runScript(sid, home, gitRoot, 'emit');
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.doesNotMatch(r.stdout, /stale-todo/, 'stale todos.json should be suppressed');
+  });
+
+  it('todos.json with no generatedAt is always served', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-no-ts', {});
+    writeFileSync(path.join(sessionDir, 'files', 'todos.json'), JSON.stringify({
+      version: 1, source: 'test',
+      todos: [{ id: 'N1', title: 'no-timestamp-todo', description: '', status: 'in_progress' }],
+    }));
+    const r = runScript(sid, home, gitRoot, 'emit');
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /no-timestamp-todo/, 'todos.json without generatedAt should be served');
+  });
 });

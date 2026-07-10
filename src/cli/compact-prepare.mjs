@@ -23,7 +23,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 const HOME = process.env.HOME ?? os.homedir();
-const SESSION_ROOT = path.join(HOME, '.copilot', 'session-state');
+const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
 const MAX_HINT = 4800;
 
 // ─── small helpers ────────────────────────────────────────────
@@ -161,9 +161,7 @@ function parseGlobalDefaults(text) {
 
 // ─── session resolution ───────────────────────────────────────
 function resolveSessionId() {
-  if (process.env.COPILOT_AGENT_SESSION_ID) return process.env.COPILOT_AGENT_SESSION_ROOT
-    ? process.env.COPILOT_AGENT_SESSION_ID
-    : process.env.COPILOT_AGENT_SESSION_ID;
+  if (process.env.COPILOT_AGENT_SESSION_ID) return process.env.COPILOT_AGENT_SESSION_ID;
 
   if (!existsSync(SESSION_ROOT)) return null;
   const cwd = process.cwd();
