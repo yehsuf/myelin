@@ -54,7 +54,7 @@ export async function runRestart() {
         spawnDetachedService('MyelinHeadroom', bin, argStr);
         console.log('  ✓ headroom restarted');
       }
-    } catch { console.warn('  ⚠ headroom restart failed'); }
+    } catch (e) { console.warn(`  ⚠ headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
   // --- mitmproxy ---
