@@ -15,7 +15,10 @@ function upgradeCommands(os) {
     // headroom installed via uv pip in venv, not uv tool
     headroom: { upgrade: `uv pip install --python "${venv}" --upgrade "headroom-ai[all]"` },
     // serena installed via uv tool as 'serena-agent'
-    serena:   { upgrade: 'uv tool install --python 3.12 --force "serena-agent @ git+https://github.com/oraios/serena.git"' },
+    // No --python flag on upgrade: reuse whatever Python is in the existing env.
+    // --python 3.12 is only used on fresh install (install.mjs) to avoid the
+    // "Ignoring existing environment: interpreter mismatch" rebuild on every update.
+    serena:   { upgrade: 'uv tool install --force "serena-agent @ git+https://github.com/oraios/serena.git"' },
     semble:   { upgrade: 'uv tool install --force "semble[mcp]"' },
     rtk: {
       upgrade: os === 'darwin' ? 'brew upgrade rtk'
