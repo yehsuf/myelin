@@ -457,6 +457,57 @@ Write-Host "[myelin] headroom started (hidden)"
 `;
 }
 
+/**
+ * Start a process that survives SSH session closure.
+ *
+ * `Start-Process -WindowStyle Hidden` spawns a child inside the SSH session's
+ * Windows Job Object. When the SSH session ends, Windows terminates all
+ * processes in that job. Task Scheduler bypasses this by scheduling the
+ * process under the user's *interactive* Windows session (session 1), which
+ * is independent of any SSH/script context.
+ *
+ * Falls back to Start-Process (with User-scope env var loading) when Task
+ * Scheduler registration fails (e.g. headless/non-interactive machine).
+ *
+ * @param {string}   taskName  Unique task name (alphanumeric + _-)
+ * @param {string}   exe       Absolute path to the executable
+ * @param {string}   argStr    Argument string (may contain spaces and quoted paths)
+ * @param {object}   [deps]    Injected dependencies for testing
+ */
+export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } = {}) {
+  const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeExe  = escapePs(exe);
+  const safeArgs = escapePs(argStr);
+  // User-scope env vars to pre-load in the fallback path (needed in non-interactive contexts)
+  const envKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
+                   'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
+  const loadEnvFallback = envKeys
+    .map(k => `  $v = [Environment]::GetEnvironmentVariable('${k}','User'); if ($v) { Set-Item -Path 'Env:${k}' -Value $v }`)
+    .join('\n');
+  runPsFn(`
+$taskName = '${safeName}'
+$exe      = '${safeExe}'
+$argStr   = '${safeArgs}'
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+$action   = New-ScheduledTaskAction -Execute $exe -Argument $argStr
+$principal = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited
+$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) \`
+              -DisallowStartIfOnBatteries:$false -StopIfGoingOnBatteries:$false
+$reg = Register-ScheduledTask -TaskName $taskName -Action $action \`
+       -Principal $principal -Settings $settings -Force -ErrorAction SilentlyContinue
+if ($reg) {
+    Start-ScheduledTask -TaskName $taskName
+    Start-Sleep -Seconds 2
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+} else {
+    # Fallback: load User-scope env vars explicitly then use Start-Process
+${loadEnvFallback}
+    Start-Process -FilePath $exe -ArgumentList $argStr -WindowStyle Hidden
+}
+`);
+}
+
+
 export async function installService({ headroomBin, port, envVars = {}, logPath, home, interceptToolResults, manager = 'registry' }) {
   if (manager !== 'winsw') {
     runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults }));

@@ -46,20 +46,11 @@ export async function runRestart() {
         const bin = headroomBinPath();
         const port = cfg?.proxy?.headroom?.port ?? 8787;
         const intercept = cfg?.proxy?.headroom?.intercept_tool_results !== false;
-        const args = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])];
-        // In non-interactive sessions (SSH, scripts) Windows User-scope env vars from
-        // HKCU\Environment are NOT automatically inherited — headroom needs SSL_CERT_FILE
-        // and REQUESTS_CA_BUNDLE to connect through corporate CAs. Load them explicitly.
-        const userEnvKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
-                             'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
-        const loadEnv = userEnvKeys
-          .map(k => `$env:${k} = [Environment]::GetEnvironmentVariable('${k}','User')`)
-          .join('; ');
-        const argList = args.map(a => `'${a}'`).join(',');
-        execSync(
-          `powershell -Command "${loadEnv}; Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Start-Process -FilePath '${bin}' -ArgumentList ${argList} -WindowStyle Hidden"`,
-          { stdio: 'pipe' }
-        );
+        const argStr = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])].join(' ');
+        execSync('powershell -Command "Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
+        await new Promise(r => setTimeout(r, 500));
+        const { spawnDetachedService } = await import('../service/windows.mjs');
+        spawnDetachedService('MyelinHeadroom', bin, argStr);
         console.log('  ✓ headroom restarted');
       }
     } catch { console.warn('  ⚠ headroom restart failed'); }
@@ -89,16 +80,22 @@ export async function runRestart() {
         if (!restartWinswService({ id: MITM_SERVICE_ID })) throw new Error('WinSW restart failed');
         console.log('  ✓ mitmproxy restarted (WinSW)');
       } else {
-        execSync('powershell -Command "Stop-Process -Name mitmdump -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
+        execSync('powershell -Command "Stop-Process -Name mitmdump -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
+        await new Promise(r => setTimeout(r, 500));
         const regVal = execSync(
           `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
           { stdio: 'pipe' }
         ).toString().trim();
         if (regVal) {
-          execSync(`powershell -Command "Start-Process -FilePath 'powershell.exe' -ArgumentList '-WindowStyle Hidden -ExecutionPolicy Bypass -Command & { ${regVal.replace(/'/g, "''")} }' -WindowStyle Hidden"`, { stdio: 'pipe' });
-          console.log('  ✓ mitmproxy restarted (hidden)');
+          // Parse "exe" args or exe args from the registry value
+          const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
+          if (m) {
+            const { spawnDetachedService } = await import('../service/windows.mjs');
+            spawnDetachedService('MyelinMitmproxy', m[1], m[2].trim());
+            console.log('  ✓ mitmproxy restarted (hidden)');
+          }
         } else {
-          console.warn('  ⚠ mitmproxy registry entry not found — run: node src/install.mjs --yes');
+          console.warn('  ⚠ mitmproxy registry entry not found — run: myelin install --yes');
         }
       }
     } catch { console.warn('  ⚠ mitmproxy restart failed'); }

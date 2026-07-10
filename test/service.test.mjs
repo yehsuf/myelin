@@ -18,6 +18,7 @@ import {
   generateWinswConfigXml,
   parseWinswServiceStatus,
   resolveWslWindowsHome,
+  spawnDetachedService,
   winswConfigPath,
   winswExecutablePath,
 } from '../src/service/windows.mjs';
@@ -543,5 +544,40 @@ describe('linkGlobalBin', () => {
       chmodSync(binDir, 0o755);
       rmSync(roDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('spawnDetachedService', () => {
+  it('passes exe and argStr to the PS script (Task Scheduler path)', () => {
+    const scripts = [];
+    spawnDetachedService('MyelinHeadroom', 'C:\\bin\\headroom.exe', 'proxy --port 8787', {
+      runPsFn: (s) => scripts.push(s),
+    });
+    assert.equal(scripts.length, 1);
+    const s = scripts[0];
+    assert.ok(s.includes('MyelinHeadroom'), 'task name present');
+    assert.ok(s.includes('headroom.exe'), 'exe present');
+    assert.ok(s.includes('proxy --port 8787'), 'args present');
+    assert.ok(s.includes('Register-ScheduledTask'), 'uses task scheduler');
+    assert.ok(s.includes('Start-ScheduledTask'), 'starts the task');
+  });
+
+  it('sanitises task name — strips non-alphanumeric chars', () => {
+    const scripts = [];
+    spawnDetachedService('Myelin Headroom!', 'exe.exe', 'arg', { runPsFn: (s) => scripts.push(s) });
+    assert.ok(scripts[0].includes('Myelin_Headroom_'), 'spaces/special chars replaced with _');
+  });
+
+  it('escapes single quotes in exe path', () => {
+    const scripts = [];
+    spawnDetachedService('T', "C:\\it's\\exe.exe", 'args', { runPsFn: (s) => scripts.push(s) });
+    assert.ok(scripts[0].includes("it''s"), 'single quotes doubled');
+  });
+
+  it('includes fallback Start-Process block', () => {
+    const scripts = [];
+    spawnDetachedService('T', 'exe.exe', 'args', { runPsFn: (s) => scripts.push(s) });
+    assert.ok(scripts[0].includes('Start-Process'), 'fallback present');
+    assert.ok(scripts[0].includes('SSL_CERT_FILE'), 'loads SSL env vars in fallback');
   });
 });
