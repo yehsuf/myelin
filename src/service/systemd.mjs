@@ -2,10 +2,12 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 
 export function generateSystemdUnit({ headroomBin, port, envVars = {}, interceptToolResults }) {
   const mergedEnv = interceptToolResults ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars } : envVars;
   const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]
 Description=Myelin Headroom AI Proxy
 After=network.target
@@ -14,6 +16,7 @@ After=network.target
 ExecStart=${headroomBin} proxy --port ${port}
 Restart=always
 RestartSec=10
+${unsetLines}
 ${envLines}
 
 [Install]
@@ -30,6 +33,7 @@ WantedBy=default.target`;
  */
 export function generateCopilotHeadroomUnit({ headroomBin, port, mode, workingDirectory, envVars = {} }) {
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]
 Description=Myelin Copilot-Headroom AI Proxy (dedicated Copilot CLI instance)
 After=network.target
@@ -39,6 +43,7 @@ ExecStart=${headroomBin} proxy --port ${port} --mode ${mode ?? 'cache'} --connec
 WorkingDirectory=${workingDirectory}
 Restart=always
 RestartSec=10
+${unsetLines}
 ${envLines}
 
 [Install]
@@ -48,6 +53,7 @@ WantedBy=default.target`;
 export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {} }) {
   const execArgs = args ?? ['--listen-port', String(port), '-s', addonPath];
   const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]
 Description=Myelin mitmproxy LLM compression proxy
 After=network.target myelin-headroom.service
@@ -56,6 +62,7 @@ After=network.target myelin-headroom.service
 ExecStart=${mitmdumpBin} ${execArgs.join(' ')}
 Restart=always
 RestartSec=10
+${unsetLines}
 ${envLines}
 
 [Install]

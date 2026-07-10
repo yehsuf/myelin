@@ -32,6 +32,7 @@ import { installRtk, getRtkVersionWarning, runRtkInit } from './tools/rtk.mjs';
 import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
 import { setUserEnvVars } from './service/windows.mjs';
+import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
 
@@ -124,9 +125,9 @@ function installWindowsAutoloadModule(appData, profilePath) {
   const moduleDir = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules', 'MyelinAutoload');
   mkdirSync(moduleDir, { recursive: true });
   const psm1 = join(moduleDir, 'MyelinAutoload.psm1');
-  writeFileSync(psm1, `. "${profilePath}"\nExport-ModuleMember -Function myelin, _copilot\n`, 'utf8');
+  writeFileSync(psm1, `. "${profilePath}"\nExport-ModuleMember -Function myelin, _copilot, _claude\n`, 'utf8');
   writeFileSync(join(moduleDir, 'MyelinAutoload.psd1'),
-    `@{\n  ModuleVersion = '1.0'\n  RootModule = 'MyelinAutoload.psm1'\n  FunctionsToExport = @('myelin','_copilot')\n}\n`, 'utf8');
+    `@{\n  ModuleVersion = '1.0'\n  RootModule = 'MyelinAutoload.psm1'\n  FunctionsToExport = @('myelin','_copilot','_claude')\n}\n`, 'utf8');
 
   const modulesParent = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules');
   const tmp = join(tmpdir(), `myelin-psmodulepath-${Date.now()}.ps1`);
@@ -562,65 +563,10 @@ async function ensureMitmCA(home, mitmdumpBin) {
 }
 
 /**
- * Copilot CLI alias routed through Myelin mitmproxy at port 8888.
- * Native auth preserved — HTTPS_PROXY causes Copilot to send its
- * TLS traffic through mitmproxy which intercepts + compresses + retries.
+ * Copilot/Claude wrappers are now defined in ./service/wrappers.mjs so they
+ * can be unit-tested for env-var isolation. Never set provider env vars
+ * globally (shell profile / Windows registry) — always via these wrappers.
  */
-function buildCopilotAlias(os) {
-  const mitm = 8888;
-  // Hosts that must bypass mitmproxy — mTLS client certs can't tunnel through CONNECT proxy:
-  // - api.github.com: Copilot auth + auto-update
-  // - *.akamai.com, *.corp.akamai.com: internal Akamai tools (Jira/Bitbucket/Confluence via mTLS)
-  // - npm registries: MCP server installs
-  const NO_PROXY_HOSTS = [
-    'api.github.com',
-    '*.akamai.com',
-    '*.corp.akamai.com',
-    '*.akamaized.net',
-    'track.akamai.com',
-    'git.source.akamai.com',
-    'collaborate.akamai.com',
-    'registry.npmjs.org',
-    '*.npmjs.com',
-    '*.npmjs.org',
-    'repos.akamai.com',
-    'localhost',
-    '127.0.0.1',
-    '::1',
-    '*.local',
-  ].join(',');
-
-  if (os === 'windows') {
-    return `# _copilot: routes through Myelin mitmproxy with health-check fallback
-function global:_copilot {
-  $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitm} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
-  if ($probe) {
-    $env:HTTPS_PROXY = "http://127.0.0.1:${mitm}"
-    $env:NO_PROXY = "${NO_PROXY_HOSTS}"
-    & copilot @args
-    $env:HTTPS_PROXY = $null
-    $env:NO_PROXY = $null
-  } else {
-    Write-Warning "myelin: mitmproxy offline (port ${mitm}) - running uncompressed"
-    & copilot @args
-  }
-}`;
-  }
-  return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
-# Falls back to plain copilot with a warning if mitmproxy is offline.
-function _copilot() {
-  if nc -z 127.0.0.1 ${mitm} 2>/dev/null; then
-    HTTPS_PROXY=http://127.0.0.1:${mitm} \\
-    NO_PROXY=${NO_PROXY_HOSTS} \\
-    copilot "$@"
-  else
-    echo "⚠  myelin: mitmproxy offline (port ${mitm}) — running uncompressed" >&2
-    copilot "$@"
-  fi
-}`;
-}
-
-
 async function main() {
   const { values: flags } = parseArgs({
     options: {
@@ -822,7 +768,7 @@ async function main() {
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
-    console.log('  shell profile ANTHROPIC_BASE_URL + HTTPS_PROXY alias for copilot');
+    console.log('  shell profile HEADROOM_PORT + _copilot/_claude wrappers (per-invocation env, no global pollution)');
     console.log('\n[dry-run] No changes made.\n');
     return;
   }
@@ -1401,7 +1347,8 @@ ${initSkillBody}`);
       .map(([k, v]) => `export ${k}=${v}`)
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
-    const copilotAlias = buildCopilotAlias(os);
+    const copilotAlias = buildCopilotWrapper({ os });
+    const claudeAlias = buildClaudeWrapper({ os, headroomPort: port });
     const repoRoot = resolveRepoRoot(home, os);
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
@@ -1429,7 +1376,10 @@ ${initSkillBody}`);
     }
     let block;
     if (os === 'windows') {
-      const psEnv = `$env:HEADROOM_PORT = "${port}"\n$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${port}"`;
+      // NOTE: provider-specific env vars (ANTHROPIC_BASE_URL, HTTPS_PROXY) are
+      // deliberately NOT set in $PROFILE — they live only inside the _copilot
+      // and _claude wrappers so they can't cross-contaminate each other.
+      const psEnv = `$env:HEADROOM_PORT = "${port}"`;
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
       const psPaths = [
         `$env:USERPROFILE\\.local\\bin`,
@@ -1438,20 +1388,21 @@ ${initSkillBody}`);
         `$env:LOCALAPPDATA\\uv\\bin`,
         `$env:APPDATA\\npm`,
       ].map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
-      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}\nexport ANTHROPIC_BASE_URL="http://127.0.0.1:\${HEADROOM_PORT}"${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n# <<< myelin managed <<<\n`;
+      // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
       : existing + block;
     if (updated !== existing) {
       writeFileSync(profilePath, updated, 'utf8');
-      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot alias)`);
+      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, _copilot + _claude wrappers)`);
       if (os === 'windows') {
         const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
         if (installWindowsAutoloadModule(appData, profilePath)) {
-          ok('PowerShell module autoload registered (myelin/_copilot load in new windows)');
+          ok('PowerShell module autoload registered (myelin/_copilot/_claude load in new windows)');
         } else {
           warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
         }
@@ -1463,7 +1414,7 @@ ${initSkillBody}`);
         const moduleFile = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules', 'MyelinAutoload', 'MyelinAutoload.psm1');
         if (!existsSync(moduleFile)) {
           if (installWindowsAutoloadModule(appData, profilePath)) {
-            ok('PowerShell module autoload registered (myelin/_copilot load in new windows)');
+            ok('PowerShell module autoload registered (myelin/_copilot/_claude load in new windows)');
           } else {
             warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
           }
@@ -1494,12 +1445,20 @@ ${initSkillBody}`);
   // that Explorer-spawned processes see this, unlike SSH-spawned ones,
   // which cache their own session environment separately. Purely additive:
   // the PowerShell module above remains the primary, proven mechanism.
+  //
+  // CRITICAL: DO NOT add provider-specific env vars (ANTHROPIC_BASE_URL,
+  // HTTPS_PROXY, ENABLE_PROMPT_CACHING_1H) to this registry map. Anything
+  // set here is global to every Windows process — including Copilot CLI,
+  // which respects ANTHROPIC_BASE_URL via its embedded Anthropic SDK when
+  // routing Claude models. Global ANTHROPIC_BASE_URL made Copilot bypass
+  // mitmproxy and hit api.anthropic.com directly (blocked by network
+  // filters → 418). Provider env vars live only in _copilot / _claude
+  // wrappers so they can't cross-contaminate.
   if (os === 'windows') {
     const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
       HEADROOM_PORT: String(port),
-      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
       OPENAI_TARGET_API_URL: _winCfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
@@ -1517,6 +1476,15 @@ ${initSkillBody}`);
     try {
       execSync(
         String.raw`powershell -Command "$v = [Environment]::GetEnvironmentVariable('OPENAI_TARGET_URL','User'); if ($v -and $v -like '*127.0.0.1*') { [Environment]::SetEnvironmentVariable('OPENAI_TARGET_URL', $null, 'User'); Write-Host '[myelin] removed stale OPENAI_TARGET_URL' }"`,
+        { stdio: 'inherit' }
+      );
+    } catch {}
+    // Clean up stale ANTHROPIC_BASE_URL from prior myelin installs — earlier
+    // versions persisted it here globally, which made Copilot CLI bypass
+    // mitmproxy. It now lives only inside the _claude wrapper.
+    try {
+      execSync(
+        String.raw`powershell -Command "$v = [Environment]::GetEnvironmentVariable('ANTHROPIC_BASE_URL','User'); if ($v -and $v -like '*127.0.0.1*') { [Environment]::SetEnvironmentVariable('ANTHROPIC_BASE_URL', $null, 'User'); Write-Host '[myelin] removed stale ANTHROPIC_BASE_URL User env (Copilot must go through HTTPS_PROXY -> mitmproxy; Claude uses _claude wrapper)' }"`,
         { stdio: 'inherit' }
       );
     } catch {}

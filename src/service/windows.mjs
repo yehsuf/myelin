@@ -5,6 +5,7 @@ import { dirname, join, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
 import { installWinsw } from '../tools/winsw.mjs';
 import { isWsl } from '../detect/wsl.mjs';
+import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const HEADROOM_KEY = 'MyelinHeadroom';
@@ -466,9 +467,14 @@ export function generateHeadroomRunScript({ headroomBin, port, interceptToolResu
   // In PS 5.1, Start-Process has no -Environment param — setting $env:X in the
   // current process is the reliable way to pass env vars to a hidden child.
   const envBlock = buildEnvSetLines(envVars);
+  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
   return `
 ${stopByPortScript(exeName, port)}
 Start-Sleep -Milliseconds 500
+# Clear client-side provider env vars so headroom's own routing is never
+# confused by inherited ANTHROPIC_BASE_URL or similar. Passing target URLs
+# happens explicitly via ${envBlock ? 'envVars below' : 'the service config'}.
+${unsetBlock}
 ${envBlock}
 Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WindowStyle Hidden
 Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" ${args}'
@@ -596,7 +602,12 @@ export function generateCopilotHeadroomRunScript({ headroomBin, port, mode, work
   const envLines = Object.entries(envVars)
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'Process')`)
     .join('\n');
+  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
   return `
+# Clear client-side provider env vars from Process scope before starting the
+# dedicated copilot-headroom instance — its own routing target is set below
+# via envVars, so it must not inherit stray ANTHROPIC_BASE_URL etc.
+${unsetBlock}
 ${envLines}
 New-Item -ItemType Directory -Force -Path '${workDir}' | Out-Null
 ${stopByPortScript(exeName, port)}
@@ -684,7 +695,12 @@ export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = 
     // it in a prior run.
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${collapseRedundantBackslashes(v).replace(/'/g, "''")}', 'User')`)
     .join('\n');
+  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
   return `
+# Clear client-side provider env vars from Process scope before starting
+# mitmdump — the addon must not see inherited ANTHROPIC_BASE_URL etc.,
+# which would confuse its provider detection or trigger unintended routing.
+${unsetBlock}
 ${envLines}
 Stop-Process -Name mitmdump -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500

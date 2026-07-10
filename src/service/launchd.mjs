@@ -2,11 +2,41 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
+import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 const WATCHDOG_LABEL = 'com.myelin.watchdog';
 const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';
+
+/**
+ * Wrap a command + args in a `/bin/sh -c 'unset X Y; exec <cmd> <args>'` shell
+ * invocation, escaping single-quotes safely for XML/shell double-embedding.
+ *
+ * Why: launchd's EnvironmentVariables dict is additive on top of whatever
+ * env launchd itself carries (from its own initialization and any
+ * `launchctl setenv` values). It cannot express "unset these". Wrapping
+ * through /bin/sh with an explicit `unset` before `exec` guarantees the
+ * spawned service never sees inherited client-side provider vars.
+ */
+function shWrappedProgramArgs(command, args) {
+  const unset = buildServiceEnvUnsetLines({ os: 'darwin' });
+  const escapedParts = [command, ...args].map(p => {
+    // Escape XML entities on shell tokens later — for now escape single-quotes
+    // for the outer sh -c '...' by ending the quoted string, adding a
+    // backslash-quoted quote, and reopening the quote: `it's` → `it'\''s`.
+    return String(p).replace(/'/g, `'\\''`);
+  });
+  const inner = `${unset}; exec ${escapedParts.map(p => `'${p}'`).join(' ')}`;
+  return ['/bin/sh', '-c', inner];
+}
+
+function xmlEscape(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 export function generatePlist({ headroomBin, port, envVars = {}, logPath, interceptToolResults }) {
   // Use HEADROOM_INTERCEPT_ENABLED=1 env var instead of --intercept-tool-results CLI flag
@@ -15,8 +45,12 @@ export function generatePlist({ headroomBin, port, envVars = {}, logPath, interc
     ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars }
     : envVars;
   const envEntries = Object.entries(mergedEnv)
-    .map(([k, v]) => `        <key>${k}</key>\n        <string>${v}</string>`)
+    .map(([k, v]) => `        <key>${k}</key>\n        <string>${xmlEscape(v)}</string>`)
     .join('\n');
+  // Wrap through /bin/sh -c so we can unset client-side provider vars before
+  // exec — launchd EnvironmentVariables is additive, not a filter (see docs).
+  const progArgs = shWrappedProgramArgs(headroomBin, ['proxy', '--port', String(port)]);
+  const argItems = progArgs.map(a => `        <string>${xmlEscape(a)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -25,10 +59,7 @@ export function generatePlist({ headroomBin, port, envVars = {}, logPath, interc
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${headroomBin}</string>
-        <string>proxy</string>
-        <string>--port</string>
-        <string>${port}</string>
+${argItems}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -56,16 +87,21 @@ export function mitmPlistPath() {
   return join(homedir(), 'Library', 'LaunchAgents', `${MITM_LABEL}.plist`);
 }
 
-/** Generic plist generator — use for any long-running LaunchAgent. */
+/** Generic plist generator — use for any long-running LaunchAgent.
+ *  Wraps the command through `/bin/sh -c 'unset ...; exec cmd args'` so the
+ *  service never inherits stray client-side provider env vars from launchd's
+ *  own environment (launchd's EnvironmentVariables dict is additive, not a
+ *  filter). */
 export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory }) {
   const envEntries = Object.entries(envVars)
-    .map(([k, v]) => `        <key>${k}</key>\n        <string>${v}</string>`)
+    .map(([k, v]) => `        <key>${k}</key>\n        <string>${xmlEscape(v)}</string>`)
     .join('\n');
-  const argItems = [command, ...args]
-    .map(a => `        <string>${a}</string>`)
+  const progArgs = shWrappedProgramArgs(command, args);
+  const argItems = progArgs
+    .map(a => `        <string>${xmlEscape(a)}</string>`)
     .join('\n');
   const workingDirEntry = workingDirectory
-    ? `\n    <key>WorkingDirectory</key>\n    <string>${workingDirectory}</string>`
+    ? `\n    <key>WorkingDirectory</key>\n    <string>${xmlEscape(workingDirectory)}</string>`
     : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
