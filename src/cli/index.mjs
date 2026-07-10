@@ -89,41 +89,6 @@ program.command('install')
     process.exit(result.status ?? 0);
   });
 
-program.command('worktree')
-  .description('Manage git worktrees with Copilot/Serena session registration')
-  .addCommand(
-    new Command('add')
-      .description('Create a worktree for <branch> and register it with Serena + Copilot session')
-      .argument('<branch>', 'branch name to create (e.g. feat/my-feature)')
-      .option('--dir <path>', 'Override worktree directory (default: sibling of repo root)')
-      .action(async (branch, opts) => {
-        const { runWorktreeAdd } = await import('./worktree.mjs');
-        const r = await runWorktreeAdd(branch, opts);
-        process.exit(r.ok ? 0 : 1);
-      })
-  )
-  .addCommand(
-    new Command('remove')
-      .description('Remove a worktree and delete its branch after merging')
-      .argument('<branch>', 'branch name to remove')
-      .option('--keep-branch', 'Keep the git branch after removing the worktree')
-      .option('--dir <path>', 'Override worktree directory')
-      .action(async (branch, opts) => {
-        const { runWorktreeRemove } = await import('./worktree.mjs');
-        const r = await runWorktreeRemove(branch, { keepBranch: opts.keepBranch, dir: opts.dir });
-        process.exit(r.ok ? 0 : 1);
-      })
-  )
-  .addCommand(
-    new Command('list')
-      .description('List all active worktrees for this repo')
-      .action(async () => {
-        const { execSync: ex } = await import('node:child_process');
-        try { console.log(ex('git worktree list', { stdio: 'pipe' }).toString()); }
-        catch (e) { console.warn(e.message.split('\n')[0]); process.exit(1); }
-      })
-  );
-
 program.command('serena-guard')
   .description('[internal] Serena hook bridge for Copilot CLI / Claude Code - wired per-project by `myelin init`')
   .requiredOption('--event <event>', 'hook event name: preToolUse, preToolUseAutoApprove, sessionStart, or stop')
