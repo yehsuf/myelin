@@ -26,7 +26,7 @@ function makeExecStub({ failOn = null } = {}) {
     calls,
     exec(command, options = {}) {
       calls.push({ command, options });
-      if (failOn && command.includes(failOn)) throw new Error('install.sh failed hard');
+      if (failOn && command.includes(failOn)) throw new Error(`${failOn} failed hard`);
       return Buffer.from('');
     },
   };
@@ -71,12 +71,30 @@ describe('tokenOptimizerCopilotInstallSteps', () => {
     assert.equal(plan.commands[2], 'bash install.sh --copilot');
   });
 
-  it('returns manual WSL instructions on win32 with no executable commands', () => {
-    const plan = tokenOptimizerCopilotInstallSteps({ os: 'win32', cloneDir: '~/.myelin/token-optimizer' });
-    assert.equal(plan.automatable, false);
-    assert.deepEqual(plan.commands, []);
-    assert.match(plan.manualInstructions[0], /WSL shell/i);
-    assert.match(plan.manualInstructions.join('\n'), /bash install\.sh --copilot/);
+  it('returns automatable win32 steps with py -3 native install commands', () => {
+    const plan = tokenOptimizerCopilotInstallSteps({
+      os: 'win32',
+      cloneDir: 'C:\\Users\\alice\\.myelin\\token-optimizer',
+      existsSync: () => false,
+    });
+    assert.equal(plan.automatable, true);
+    assert.deepEqual(plan.commands, [
+      'git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "C:\\Users\\alice\\.myelin\\token-optimizer"',
+      'cd "C:\\Users\\alice\\.myelin\\token-optimizer"',
+      'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-install',
+      'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-doctor',
+    ]);
+    assert.deepEqual(plan.manualInstructions, []);
+  });
+
+  it('updates an existing win32 checkout instead of cloning again', () => {
+    const cloneDir = 'C:\\Users\\alice\\.myelin\\token-optimizer';
+    const plan = tokenOptimizerCopilotInstallSteps({
+      os: 'win32',
+      cloneDir,
+      existsSync: path => path === `${cloneDir}/.git`,
+    });
+    assert.equal(plan.commands[0], `git -C "${cloneDir}" pull --ff-only`);
   });
 });
 
@@ -115,14 +133,16 @@ describe('installTokenOptimizerForCopilot', () => {
     });
   });
 
-  it('does not execute anything on win32 and prints manual WSL instructions only', () => {
+  it('installs natively on win32 via py -3 when the launcher is available', () => {
     const consoleCapture = captureConsole();
     const execStub = makeExecStub();
+    const cloneDir = 'C:\\Users\\alice\\.myelin\\token-optimizer';
 
     const result = installTokenOptimizerForCopilot({
       os: 'win32',
-      cloneDir: '~/.myelin/token-optimizer',
+      cloneDir,
       exec: execStub.exec,
+      existsSync: () => false,
       log: consoleCapture.log,
       warn: consoleCapture.warn,
     });
@@ -131,13 +151,52 @@ describe('installTokenOptimizerForCopilot', () => {
       type: 'warn',
       message: tokenOptimizerLicenseNotice(),
     });
-    assert.equal(execStub.calls.length, 0);
-    assert.match(consoleCapture.events.map(event => event.message).join('\n'), /WSL shell/i);
+    assert.deepEqual(execStub.calls.map(call => call.command), [
+      'py -3 --version',
+      `git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "${cloneDir}"`,
+      'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-install',
+      'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-doctor',
+    ]);
+    assert.equal(execStub.calls[0].options.stdio, 'pipe');
+    assert.equal(execStub.calls[1].options.cwd, undefined);
+    assert.equal(execStub.calls[2].options.cwd, cloneDir);
+    assert.equal(execStub.calls[3].options.cwd, cloneDir);
+    assert.deepEqual(result, {
+      attempted: true,
+      succeeded: true,
+      manual: false,
+      cloneDir,
+    });
+  });
+
+  it('prints the fallback Windows instructions when py -3 is unavailable', () => {
+    const consoleCapture = captureConsole();
+    const execStub = makeExecStub({ failOn: 'py -3 --version' });
+
+    const result = installTokenOptimizerForCopilot({
+      os: 'win32',
+      cloneDir: 'C:\\Users\\alice\\.myelin\\token-optimizer',
+      exec: execStub.exec,
+      existsSync: () => false,
+      log: consoleCapture.log,
+      warn: consoleCapture.warn,
+    });
+
+    assert.deepEqual(consoleCapture.events[0], {
+      type: 'warn',
+      message: tokenOptimizerLicenseNotice(),
+    });
+    assert.equal(execStub.calls.length, 1);
+    const output = consoleCapture.events.map(event => event.message).join('\n');
+    assert.match(output, /Install Python 3 from https:\/\/python\.org\/downloads/i);
+    assert.match(output, /legacy WSL flow/i);
+    assert.match(output, /bash install\.sh --copilot/);
     assert.deepEqual(result, {
       attempted: false,
       succeeded: false,
       manual: true,
-      cloneDir: '~/.myelin/token-optimizer',
+      cloneDir: 'C:\\Users\\alice\\.myelin\\token-optimizer',
+      reason: 'py-launcher-missing',
     });
   });
 
@@ -163,6 +222,6 @@ describe('installTokenOptimizerForCopilot', () => {
     assert.equal(result.succeeded, false);
     assert.equal(result.manual, false);
     assert.equal(result.cloneDir, cloneDir);
-    assert.match(result.error, /install\.sh failed hard/);
+    assert.match(result.error, /bash install\.sh --copilot failed hard/);
   });
 });

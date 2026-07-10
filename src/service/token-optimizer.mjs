@@ -1,19 +1,51 @@
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const TOKEN_OPTIMIZER_REPO_URL = 'https://github.com/alexgreensh/token-optimizer';
 const TOKEN_OPTIMIZER_GIT_URL = `${TOKEN_OPTIMIZER_REPO_URL}.git`;
 const DEFAULT_WSL_CLONE_DIR = '~/.myelin/token-optimizer';
+const nodeExecSync = execSync;
+const nodeExistsSync = existsSync;
+const WINDOWS_PYTHON_LAUNCHER = 'py -3';
 
 function isWindowsOs(os) {
   return os === 'windows' || os === 'win32';
 }
 
 function defaultCloneDir(os = process.platform) {
+  return join(homedir(), '.myelin', 'token-optimizer');
+}
+
+function checkoutCommands({ cloneDir, existsSync: existsSyncImpl = nodeExistsSync } = {}) {
+  return existsSyncImpl(`${cloneDir}/.git`)
+    ? [`git -C "${cloneDir}" pull --ff-only`]
+    : [`git clone --depth 1 ${TOKEN_OPTIMIZER_GIT_URL} "${cloneDir}"`];
+}
+
+function tokenOptimizerCopilotDoctorCommand(os) {
   return isWindowsOs(os)
-    ? DEFAULT_WSL_CLONE_DIR
-    : join(homedir(), '.myelin', 'token-optimizer');
+    ? `set "TOKEN_OPTIMIZER_RUNTIME=copilot" && ${WINDOWS_PYTHON_LAUNCHER} skills/token-optimizer/scripts/measure.py copilot-doctor`
+    : 'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor';
+}
+
+function tokenOptimizerCopilotInstallCommand(os) {
+  return isWindowsOs(os)
+    ? `set "TOKEN_OPTIMIZER_RUNTIME=copilot" && ${WINDOWS_PYTHON_LAUNCHER} skills/token-optimizer/scripts/measure.py copilot-install`
+    : 'bash install.sh --copilot';
+}
+
+function tokenOptimizerWindowsManualInstructions() {
+  return [
+    'Windows native install requires the Windows Python Launcher (`py -3`).',
+    'Install Python 3 from https://python.org/downloads then re-run `myelin install`.',
+    'If you prefer the legacy WSL flow, run this from inside a WSL shell:',
+    `git clone --depth 1 ${TOKEN_OPTIMIZER_GIT_URL} "${DEFAULT_WSL_CLONE_DIR}"`,
+    `cd "${DEFAULT_WSL_CLONE_DIR}"`,
+    'bash install.sh --copilot',
+    'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor',
+  ];
 }
 
 export function tokenOptimizerLicenseNotice() {
@@ -34,38 +66,46 @@ export function tokenOptimizerClaudeCodeInstructions() {
   ].join('\n');
 }
 
-export function tokenOptimizerCopilotInstallSteps({ os = process.platform, cloneDir = defaultCloneDir(os) } = {}) {
+export function tokenOptimizerCopilotInstallSteps({
+  os = process.platform,
+  cloneDir = defaultCloneDir(os),
+  existsSync: existsSyncImpl = nodeExistsSync,
+} = {}) {
   const commands = [
-    `git clone --depth 1 ${TOKEN_OPTIMIZER_GIT_URL} "${cloneDir}"`,
+    ...checkoutCommands({ cloneDir, existsSync: existsSyncImpl }),
     `cd "${cloneDir}"`,
-    'bash install.sh --copilot',
-    'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor',
+    tokenOptimizerCopilotInstallCommand(os),
+    tokenOptimizerCopilotDoctorCommand(os),
   ];
-
-  if (isWindowsOs(os)) {
-    return {
-      automatable: false,
-      commands: [],
-      manualInstructions: [
-        'Run this from inside a WSL shell (do not invoke WSL automatically from Myelin):',
-        ...commands,
-      ],
-    };
-  }
-
   return { automatable: true, commands, manualInstructions: [] };
 }
 
 export function installTokenOptimizerForCopilot({
   os = process.platform,
   cloneDir = defaultCloneDir(os),
-  exec = execSync,
+  exec = nodeExecSync,
+  existsSync: existsSyncImpl = nodeExistsSync,
   log = console.log,
   warn = console.warn,
 } = {}) {
   warn(tokenOptimizerLicenseNotice());
 
-  const plan = tokenOptimizerCopilotInstallSteps({ os, cloneDir });
+  if (isWindowsOs(os)) {
+    try {
+      exec(`${WINDOWS_PYTHON_LAUNCHER} --version`, { stdio: 'pipe' });
+    } catch {
+      tokenOptimizerWindowsManualInstructions().forEach(line => log(line));
+      return {
+        attempted: false,
+        succeeded: false,
+        manual: true,
+        cloneDir,
+        reason: 'py-launcher-missing',
+      };
+    }
+  }
+
+  const plan = tokenOptimizerCopilotInstallSteps({ os, cloneDir, existsSync: existsSyncImpl });
   if (!plan.automatable) {
     plan.manualInstructions.forEach(line => log(line));
     return { attempted: false, succeeded: false, manual: true, cloneDir };
