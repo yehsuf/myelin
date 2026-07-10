@@ -47,11 +47,10 @@ export async function runRestart() {
         const port = cfg?.proxy?.headroom?.port ?? 8787;
         const intercept = cfg?.proxy?.headroom?.intercept_tool_results !== false;
         const argStr = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])].join(' ');
-        const workDir = join(homedir(), '.myelin', 'headroom-main');
         execSync('powershell -Command "Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
         await new Promise(r => setTimeout(r, 500));
         const { spawnDetachedService } = await import('../service/windows.mjs');
-        spawnDetachedService('MyelinHeadroom', bin, argStr, { workingDir: workDir });
+        spawnDetachedService('MyelinHeadroom', bin, argStr);
         console.log('  ✓ headroom restarted');
       }
     } catch { console.warn('  ⚠ headroom restart failed'); }
@@ -108,6 +107,9 @@ export async function runRestart() {
 
   // --- copilot-headroom (opt-in dedicated instance) ---
   if (os === 'windows' && cfg?.proxy?.copilot_headroom?.enabled) {
+    // Wait for main headroom to be up before starting copilot-headroom
+    // to prevent both instances competing for Python/uvicorn startup resources
+    await waitForHeadroom(cfg?.proxy?.headroom?.port ?? 8787, 25000);
     try {
       const regKey = 'MyelinCopilotHeadroom';
       const regVal = execSync(
@@ -119,9 +121,7 @@ export async function runRestart() {
         if (m) {
           try { execSync('powershell -Command "Get-Process -Name headroom -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \'\'} | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
           const { spawnDetachedService } = await import('../service/windows.mjs');
-          const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
-          const copilotWorkDir = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
-          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), { workingDir: copilotWorkDir });
+          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim());
           console.log('  ✓ copilot-headroom restarted (:8788)');
         }
       } else {
