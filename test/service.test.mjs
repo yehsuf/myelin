@@ -174,6 +174,27 @@ describe('windows run-script generator', () => {
     assert.ok(script.includes('Win32_Process'));
     assert.ok(!script.includes('Stop-Process -Name headroom '));
   });
+  it('injects envVars as $env: assignments before Start-Process', () => {
+    const script = generateHeadroomRunScript({
+      ...OPTS,
+      envVars: { OPENAI_TARGET_API_URL: 'https://api.githubcopilot.com', HEADROOM_MODE: 'cache' },
+    });
+    assert.ok(script.includes("$env:OPENAI_TARGET_API_URL = 'https://api.githubcopilot.com'"), 'OPENAI_TARGET_API_URL set');
+    assert.ok(script.includes("$env:HEADROOM_MODE = 'cache'"), 'HEADROOM_MODE set');
+    // env block must appear BEFORE Start-Process
+    const envIdx  = script.indexOf('$env:OPENAI_TARGET_API_URL');
+    const startIdx = script.indexOf('Start-Process');
+    assert.ok(envIdx < startIdx, 'env block before Start-Process');
+  });
+  it('skips empty envVars values', () => {
+    const script = generateHeadroomRunScript({ ...OPTS, envVars: { EMPTY_VAR: '', REAL_VAR: 'value' } });
+    assert.ok(!script.includes('$env:EMPTY_VAR'), 'empty value not emitted');
+    assert.ok(script.includes("$env:REAL_VAR = 'value'"), 'non-empty value emitted');
+  });
+  it('escapes single quotes in envVar values', () => {
+    const script = generateHeadroomRunScript({ ...OPTS, envVars: { MY_VAR: "it's here" } });
+    assert.ok(script.includes("$env:MY_VAR = 'it''s here'"), 'single quote escaped');
+  });
 });
 
 describe('WinSW XML generator', () => {

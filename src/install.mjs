@@ -1490,12 +1490,28 @@ ${initSkillBody}`);
   // which cache their own session environment separately. Purely additive:
   // the PowerShell module above remains the primary, proven mechanism.
   if (os === 'windows') {
-    const registryVars = { HEADROOM_PORT: String(port), ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`, ...sslEnv };
+    const registryVars = {
+      HEADROOM_PORT: String(port),
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+      // P1: persist upstream routing URL so headroom reads it at startup (needed
+      // for the Claude Code full-proxy path where ANTHROPIC_BASE_URL=:8787).
+      OPENAI_TARGET_API_URL: envVars.OPENAI_TARGET_API_URL ?? cfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
+      ...sslEnv,
+    };
     if (setUserEnvVars(registryVars)) {
       ok('Env vars persisted to registry (new windows pick them up without $PROFILE)');
     } else {
       warn('Could not persist env vars to registry — relying on PowerShell module only');
     }
+    // P3: clean up stale OPENAI_TARGET_URL left by old myelin versions (was
+    // incorrectly set to http://127.0.0.1:8787 — circular — instead of the
+    // correct upstream URL). Only remove if it points at localhost.
+    try {
+      execSync(
+        String.raw`powershell -Command "$v = [Environment]::GetEnvironmentVariable('OPENAI_TARGET_URL','User'); if ($v -and $v -like '*127.0.0.1*') { [Environment]::SetEnvironmentVariable('OPENAI_TARGET_URL', $null, 'User'); Write-Host '[myelin] removed stale OPENAI_TARGET_URL' }"`,
+        { stdio: 'inherit' }
+      );
+    } catch {}
   }
 
   // 6. Hooks

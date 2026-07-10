@@ -443,14 +443,29 @@ export function uninstallWinswService({ id, home } = {}) {
 }
 
 /** Pure builder — returns the PowerShell script text without executing it. */
-export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults }) {
+/**
+ * Build a block of `$env:KEY = 'value'` lines from an object.
+ * Only non-empty values are emitted. Single quotes in values are escaped.
+ */
+function buildEnvSetLines(envVars = {}) {
+  return Object.entries(envVars)
+    .filter(([, v]) => v != null && String(v).length > 0)
+    .map(([k, v]) => `$env:${k} = '${escapePs(String(v))}'`)
+    .join('\n');
+}
+
+export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars = {} }) {
   const bin = windowsPath(headroomBin);
   const exeName = bin.split('\\').pop();
   const args = buildHeadroomArgumentString({ port, interceptToolResults });
-  // Kill only the existing instance on this exact port, start fresh hidden, persist via registry
+  // Set process-level env vars before Start-Process so the child inherits them.
+  // In PS 5.1, Start-Process has no -Environment param — setting $env:X in the
+  // current process is the reliable way to pass env vars to a hidden child.
+  const envBlock = buildEnvSetLines(envVars);
   return `
 ${stopByPortScript(exeName, port)}
 Start-Sleep -Milliseconds 500
+${envBlock}
 Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WindowStyle Hidden
 Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" ${args}'
 Write-Host "[myelin] headroom started (hidden)"
@@ -509,7 +524,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } 
 
 export async function installService({ headroomBin, port, envVars = {}, logPath, home, interceptToolResults, manager = 'registry' }) {
   if (manager !== 'winsw') {
-    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults }));
+    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars }));
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
