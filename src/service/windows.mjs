@@ -505,18 +505,29 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, t
     .join('\n');
 
   // Task-specific env vars (e.g. HEADROOM_WORKSPACE_DIR for state isolation).
-  // New-ScheduledTaskAction has no -Environment param in PS 5.1, so we wrap
-  // the command in cmd.exe /C "set VAR=val && exe args" to pass them.
+  // New-ScheduledTaskAction has no -Environment param in PS 5.1.
+  // We write a .bat launcher that sets the vars before starting the exe,
+  // then use that .bat as the scheduled task action — simple and debuggable.
   const hasTaskEnv = Object.keys(taskEnv).length > 0;
+  const stateDir = join(homedir(), '.myelin', 'state');
+  const launcherBat = join(stateDir, `${safeName}-launcher.bat`);
+  const safeLauncher = escapePs(launcherBat);
+
+  let preLaunchLines = [];
   let actLine;
   if (hasTaskEnv) {
-    const setStmts = Object.entries(taskEnv)
-      .map(([k, v]) => `set "${k}=${windowsPath(String(v))}"`)
-      .join(' && ');
-    // Escape the exe path for cmd.exe (needs double-quotes NOT single-quotes)
-    const winExe = windowsPath(exe);
-    const cmdArg = escapePs(`/C "${setStmts} && \\"${winExe}\\" ${argStr}"`);
-    actLine = `$act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdArg}'`;
+    const batLines = [
+      '@echo off',
+      ...Object.entries(taskEnv).map(([k, v]) => `set "${k}=${windowsPath(String(v))}"`),
+      `"${windowsPath(exe)}" ${argStr}`,
+    ];
+    preLaunchLines = [
+      `New-Item -ItemType Directory -Force -Path '${escapePs(stateDir)}' | Out-Null`,
+      `Set-Content -Path '${safeLauncher}' -Value @'
+${batLines.join('\r\n')}
+'@ -Encoding ASCII`,
+    ];
+    actLine = `$act = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/C "${windowsPath(launcherBat)}"'`;
   } else {
     actLine = `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`;
   }
@@ -528,6 +539,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, t
     `$tn = '${safeName}'`,
     `$exe = '${safeExe}'`,
     `$argStr = '${safeArgs}'`,
+    ...preLaunchLines,
     `Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
     actLine,
     `$pri = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited`,
