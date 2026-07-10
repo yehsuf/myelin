@@ -80,7 +80,11 @@ export async function runRestart() {
         if (!restartWinswService({ id: MITM_SERVICE_ID })) throw new Error('WinSW restart failed');
         console.log('  ✓ mitmproxy restarted (WinSW)');
       } else {
-        execSync('powershell -Command "Stop-Process -Name mitmdump -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
+        // Stop is best-effort — it may fail if the process is not running or
+        // is locked by another job object (SSH context). Never let it abort restart.
+        try {
+          execSync('powershell -Command "Get-Process -Name mitmdump -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' });
+        } catch {}
         await new Promise(r => setTimeout(r, 500));
         const regVal = execSync(
           `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
