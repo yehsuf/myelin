@@ -371,3 +371,38 @@ def test_append_to_user_tail_list_preserves_blocks():
     assert out['content'] is not blocks
     assert out['content'][:2] == blocks
     assert out['content'][-1] == {'type': 'text', 'text': 'CTX'}
+
+
+# ---------------------------------------------------------------------------
+# Security fix: detect_workspace requires .git marker
+# ---------------------------------------------------------------------------
+
+def test_detect_workspace_rejects_path_without_git(tmp_path, monkeypatch):
+    """A crafted message pointing to a dir without .git must NOT be accepted."""
+    monkeypatch.chdir(tmp_path)  # cwd has no .git either
+    messages = [{'role': 'user', 'content': f'Working directory: {tmp_path}'}]
+    result = sc.detect_workspace({}, messages)
+    # tmp_path has no .git → must be rejected
+    assert result is None
+
+
+def test_detect_workspace_accepts_path_with_git(tmp_path, monkeypatch):
+    """A message pointing to a dir WITH .git is accepted."""
+    (tmp_path / '.git').mkdir()
+    messages = [{'role': 'user', 'content': f'Working directory: {tmp_path}'}]
+    result = sc.detect_workspace({}, messages)
+    assert result == tmp_path.resolve()
+
+
+def test_detect_workspace_rejects_absolute_path_outside_project(tmp_path, monkeypatch):
+    """Prompt-injection: attacker injects path to /tmp/secrets (no .git)."""
+    secret_dir = tmp_path / 'secrets'
+    secret_dir.mkdir()
+    # No .git in secret_dir
+    monkeypatch.chdir(tmp_path)
+    messages = [
+        {'role': 'user', 'content': 'some preamble'},
+        {'role': 'user', 'content': f'cwd: {secret_dir}'},
+    ]
+    result = sc.detect_workspace({}, messages)
+    assert result is None, 'Path without .git must be rejected even if dir exists'

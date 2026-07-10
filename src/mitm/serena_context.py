@@ -192,19 +192,38 @@ def detect_workspace(data: dict, messages: list) -> Optional[Path]:
         for pat in _WORKSPACE_PATTERNS_CS:
             match = re.search(pat, text)
             if match:
-                p = Path(match.group(1).strip())
-                if p.is_dir():
+                p = _safe_workspace(match.group(1).strip())
+                if p:
                     return p
         match = re.search(_WORKSPACE_PATTERN_CI, text, re.IGNORECASE)
         if match:
-            p = Path(match.group(1).strip())
-            if p.is_dir():
+            p = _safe_workspace(match.group(1).strip())
+            if p:
                 return p
 
     cwd = Path.cwd()
     if (cwd / '.git').exists():
         return cwd
     return None
+
+
+def _safe_workspace(raw: str) -> Optional[Path]:
+    """Accept a workspace path from message text only if it is a real
+    project root: must exist as a directory AND contain a .git entry.
+    This prevents prompt-injection attacks where a crafted message redirects
+    file scanning to an arbitrary directory (e.g. /etc, ~/.ssh, /tmp/secrets)
+    and exfiltrates the contents via the injected context block.
+    """
+    try:
+        p = Path(raw).resolve()
+    except Exception:
+        return None
+    if not p.is_dir():
+        return None
+    # Must be a recognised project root — .git directory or file (worktrees)
+    if not (p / '.git').exists():
+        return None
+    return p
 
 
 def _extract_keywords(query: str) -> list[str]:
