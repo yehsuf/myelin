@@ -42,7 +42,9 @@ _ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
 
+import collections
 import gzip
+import hashlib
 import http.client as http_client
 import json
 import logging
@@ -86,6 +88,7 @@ TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
 # once the injection point is reworked to be cache-stable (e.g. system-tail
 # placement instead of mid-history). See docs/settings-reference.md.
 RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '0') == '1'
+THRASH_CACHE = os.environ.get('MYELIN_THRASH_CACHE', '1') == '1'
 LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 
 # Block detection + override proxy routing (opt-in).
@@ -135,6 +138,48 @@ VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else Non
 
 COPILOT_HEADROOM_PORT = int(os.environ.get('MYELIN_COPILOT_HEADROOM_PORT', '0')) or None
 EGRESS_PORT           = int(os.environ.get('MYELIN_EGRESS_PORT', '0')) or None
+
+# ---------------------------------------------------------------------------
+# Thrash detection — cache repeated identical GET responses within a session
+#
+# Key: SHA-256 of (host, path, request_body). Value: (compressed_body, metadata).
+# TTL: 5 minutes. Max entries: 500 (LRU eviction by insertion order).
+# Covers repeated tool reads (file reads, grep outputs) by the same agent.
+# ---------------------------------------------------------------------------
+
+_RESPONSE_CACHE_TTL    = 300          # seconds
+_RESPONSE_CACHE_MAXLEN = 500
+
+_response_cache: 'collections.OrderedDict[str, tuple]' = collections.OrderedDict()
+
+
+def _cache_key(host: str, path: str, body: bytes) -> str:
+    """Stable cache key for a request."""
+    return hashlib.sha256(f'{host}\x00{path}\x00'.encode() + (body or b'')).hexdigest()
+
+
+def _cache_get(key: str) -> 'tuple | None':
+    """Return (cached_body, metadata_dict) if key is present and not expired."""
+    entry = _response_cache.get(key)
+    if entry is None:
+        return None
+    body, meta, ts = entry
+    if time.monotonic() - ts > _RESPONSE_CACHE_TTL:
+        _response_cache.pop(key, None)
+        return None
+    # LRU: move to end
+    _response_cache.move_to_end(key)
+    return body, meta
+
+
+def _cache_put(key: str, body: bytes, meta: dict) -> None:
+    """Insert into cache; evict oldest entry if at capacity."""
+    if key in _response_cache:
+        _response_cache.move_to_end(key)
+    _response_cache[key] = (body, meta, time.monotonic())
+    while len(_response_cache) > _RESPONSE_CACHE_MAXLEN:
+        _response_cache.popitem(last=False)
+
 
 _COPILOT_HOST_PATTERN = re.compile(r'(^|\.)githubcopilot\.com$')
 
@@ -482,6 +527,24 @@ class MyelinAddon:
         if flow.request.method != 'POST':
             return
 
+        if THRASH_CACHE:
+            # Thrash detection: return cached response for repeated identical requests
+            cache_key = _cache_key(host, path, flow.request.content or b'')
+            flow.metadata['myelin_cache_key'] = cache_key
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                cached_body, cached_meta = cached
+                flow.response = http.Response.make(
+                    200,
+                    cached_body,
+                    {'content-type': 'application/json'},
+                )
+                flow.metadata['myelin_cache_hit'] = True
+                flow.metadata.update(cached_meta)
+                if LOG_SAVINGS:
+                    ctx.log.info(f'[myelin] cache-hit {host}{path} ({len(cached_body)}B saved)')
+                return
+
         # Arrival-port gating: this same addon may run on both an ingress
         # listener (tool-filter/compress/redirect) and a dedicated egress-only
         # listener (pure tunnel + block-bypass) within one mitmdump process.
@@ -711,6 +774,28 @@ class MyelinAddon:
                     f'{tok_pct}'
                     f' → HTTP {flow.response.status_code}'
                 )
+
+        if THRASH_CACHE and (
+            not flow.metadata.get('myelin_cache_hit')
+            and not flow.metadata.get('myelin_via_override')
+            and flow.response is not None
+            and flow.response.status_code == 200
+            and 'myelin_original_bytes' in flow.metadata
+        ):
+            resp_body = flow.response.content or b''
+            if resp_body:
+                meta = {
+                    'myelin_original_bytes': flow.metadata.get('myelin_original_bytes', 0),
+                    'myelin_final_bytes':    flow.metadata.get('myelin_final_bytes', 0),
+                    'myelin_tok_before':     flow.metadata.get('myelin_tok_before', 0),
+                    'myelin_tok_after':      flow.metadata.get('myelin_tok_after', 0),
+                }
+                req_key = flow.metadata.get('myelin_cache_key') or _cache_key(
+                    flow.request.pretty_host,
+                    flow.request.path,
+                    flow.request.content or b'',
+                )
+                _cache_put(req_key, resp_body, meta)
 
 
 # Hosts that must NOT be TLS-intercepted — client certificates (mTLS) won't survive CONNECT proxy.
