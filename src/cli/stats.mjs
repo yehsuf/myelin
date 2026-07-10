@@ -31,26 +31,55 @@ function row(label, value) {
 
 function parseMitmLog(logPath) {
   const lines = readFileSync(logPath, 'utf8').split('\n');
-  const compRe = /\[myelin\] ✓ (\S+) (\d+)→(\d+)B \(([\d.]+)%\)(?: tokens (\d+)→(\d+))?/;
+  // Request compressed:  ✓ host BEFORE→AFTERB (PCT%)
+  const compRe = /^\[(\d{2}:\d{2}:\d{2}\.\d+)\] \[myelin\] ✓ (\S+) (\d+)→(\d+)B \(([\d.]+)%\)/;
+  // Tool filter:          tools BEFORE→AFTER
   const toolRe = /\[myelin\] tools (\d+)→(\d+)/;
-  const usageRe = /\[myelin\] usage \S+ in=(\d+) out=(\d+) cache_read=(\d+) cache_write=(\d+) cost=\$([\d.]+) saved=\$([\d.]+)/;
-  let totalBefore = 0, totalAfter = 0, reqCount = 0;
-  let totalTokBefore = 0, totalTokAfter = 0, tokCount = 0;
-  let totalSavedUsd = 0, usageCount = 0;
+  // Provider usage:       usage HOST in=N out=N ... cost=$X saved=$X model=M
+  const usageRe = /\[myelin\] usage (\S+) in=(\d+) out=(\d+) cache_read=(\d+) cache_write=(\d+) cost=\$([\d.]+) saved=\$([\d.]+)(?:\s+model=(\S+))?/;
+  // Error lines
+  const errRe = /\[myelin\] .*(unreachable|error|failed)/i;
+
+  let totalBefore = 0, totalAfter = 0, reqCount = 0, pctSum = 0;
+  let totalSavedUsd = 0, totalCostUsd = 0, usageCount = 0;
+  let totalCacheRead = 0, totalCacheWrite = 0;
   let totalToolsBefore = 0, totalToolsAfter = 0, toolFilterCount = 0;
+  let lastTimestamp = '', errorCount = 0;
+  const models = new Map();
+  const hosts = new Map();
+
   for (const line of lines) {
     const cm = compRe.exec(line);
     if (cm) {
-      const [,, before, after,, tb, ta] = cm;
-      totalBefore += parseInt(before); totalAfter += parseInt(after); reqCount++;
-      if (tb) { totalTokBefore += parseInt(tb); totalTokAfter += parseInt(ta); tokCount++; }
+      const [, ts, host, before, after, pct] = cm;
+      totalBefore += parseInt(before); totalAfter += parseInt(after);
+      pctSum += parseFloat(pct); reqCount++;
+      lastTimestamp = ts;
+      hosts.set(host, (hosts.get(host) ?? 0) + 1);
     }
     const tm = toolRe.exec(line);
     if (tm) { totalToolsBefore += parseInt(tm[1]); totalToolsAfter += parseInt(tm[2]); toolFilterCount++; }
     const um = usageRe.exec(line);
-    if (um) { totalSavedUsd += parseFloat(um[6]); usageCount++; }
+    if (um) {
+      totalCostUsd += parseFloat(um[6]); totalSavedUsd += parseFloat(um[7]); usageCount++;
+      totalCacheRead += parseInt(um[4]); totalCacheWrite += parseInt(um[5]);
+      const model = um[8] ?? 'unknown';
+      models.set(model, (models.get(model) ?? 0) + 1);
+    }
+    if (errRe.test(line)) errorCount++;
   }
-  return { reqCount, totalBefore, totalAfter, totalTokBefore, totalTokAfter, tokCount, totalSavedUsd, usageCount, totalToolsBefore, totalToolsAfter, toolFilterCount };
+
+  const avgPct = reqCount > 0 ? (pctSum / reqCount).toFixed(1) : '0.0';
+  const savedMb = ((totalBefore - totalAfter) / 1024 / 1024).toFixed(0);
+  const processedGb = (totalBefore / 1024 / 1024 / 1024).toFixed(2);
+
+  return {
+    reqCount, avgPct, savedMb, processedGb, lastTimestamp, errorCount,
+    totalCostUsd, totalSavedUsd, usageCount, totalCacheRead, totalCacheWrite,
+    totalToolsBefore, totalToolsAfter, toolFilterCount,
+    topHosts: [...hosts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3),
+    topModels: [...models.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3),
+  };
 }
 
 export async function runStats() {
@@ -102,21 +131,24 @@ export async function runStats() {
         }
         const d = parseMitmLog(logPath);
         if (d.reqCount === 0) { console.log('  running  (no compressed requests yet)'); return; }
-        const savedBytes = d.totalBefore - d.totalAfter;
-        const pct = (savedBytes / d.totalBefore * 100).toFixed(1);
         row('Status:', 'running');
-        row('Requests compressed:', String(d.reqCount));
-        row('Bytes saved:', `${(savedBytes / 1024).toFixed(0)} KB  (${pct}%)`);
-        if (d.tokCount > 0) {
-          const tokSaved = d.totalTokBefore - d.totalTokAfter;
-          const tokPct = d.totalTokBefore > 0 ? (tokSaved / d.totalTokBefore * 100).toFixed(1) : '0.0';
-          row('Token compression:', `${(d.totalTokBefore / 1000).toFixed(0)}K → ${(d.totalTokAfter / 1000).toFixed(0)}K  (${tokPct}%)`);
-        }
-        if (d.usageCount > 0) row('Cost saved:', `$${d.totalSavedUsd.toFixed(4)}`);
+        row('Requests compressed:', `${d.reqCount}  (processed ${d.processedGb} GB)`);
+        row('Avg compression:', `${d.avgPct}%  (${d.savedMb} MB saved)`);
         if (d.toolFilterCount > 0) {
           const toolPct = ((d.totalToolsBefore - d.totalToolsAfter) / d.totalToolsBefore * 100).toFixed(0);
-          row('Tools filtered:', `avg ${Math.round(d.totalToolsBefore / d.toolFilterCount)}→${Math.round(d.totalToolsAfter / d.toolFilterCount)} per req (${toolPct}%)`);
+          row('Tool filtering:', `avg ${Math.round(d.totalToolsBefore / d.toolFilterCount)}→${Math.round(d.totalToolsAfter / d.toolFilterCount)} defs/req  (${toolPct}% stripped)`);
         }
+        if (d.lastTimestamp) row('Last request:', d.lastTimestamp);
+        if (d.usageCount > 0) {
+          row('API calls logged:', `${d.usageCount}  (cost $${d.totalCostUsd.toFixed(3)})`);
+          if (d.totalCacheRead > 0 || d.totalCacheWrite > 0)
+            row('Cache tokens:', `read ${(d.totalCacheRead/1000).toFixed(0)}K  write ${(d.totalCacheWrite/1000).toFixed(0)}K`);
+          if (d.topModels.length > 0)
+            row('Models seen:', d.topModels.map(([m, n]) => `${m} (${n})`).join(', '));
+        }
+        if (d.topHosts.length > 0)
+          row('Top provider:', d.topHosts.map(([h, n]) => `${h.replace('api.','').replace('.com','')} (${n})`).join(', '));
+        if (d.errorCount > 0) console.log(`  ⚠  ${d.errorCount} errors in log`);
       },
     });
   }
