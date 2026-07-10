@@ -26,7 +26,6 @@ import {
 } from './service/token-optimizer.mjs';
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
-import { buildBashBanRawHookSource } from './hooks/bash-ban-raw.mjs';
 import { ensureUv } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk, getRtkVersionWarning, runRtkInit } from './tools/rtk.mjs';
@@ -148,42 +147,6 @@ if ($existing -notlike "*$target*") {
   } finally {
     try { unlinkSync(tmp); } catch {}
   }
-}
-
-function installHooks(dir) {
-  writeFileSync(join(dir, 'discovery-gate.mjs'), `#!/usr/bin/env node
-// Myelin: gates raw file reads until Serena is used once
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-const ppid = process.ppid ?? 'x';
-const used = join(tmpdir(), \`myelin-serena-used-\${ppid}\`);
-const once = join(tmpdir(), \`myelin-blocked-\${ppid}\`);
-let input = {};
-try { input = JSON.parse(readFileSync('/dev/stdin', 'utf8')); } catch {}
-const tool = input?.tool_name ?? '';
-if (['Read','Grep','Glob','Search'].includes(tool) && !existsSync(used) && !existsSync(once)) {
-  writeFileSync(once, '1');
-  process.stderr.write('[myelin] Use serena_find_symbol first. Gate disarms after one Serena call.\\n');
-  process.exit(2);
-}
-process.exit(0);
-`);
-
-  writeFileSync(join(dir, 'serena-marker.mjs'), `#!/usr/bin/env node
-// Myelin: disarms discovery-gate after Serena is used
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-let input = {};
-try { input = JSON.parse(readFileSync('/dev/stdin', 'utf8')); } catch {}
-if ((input?.tool_name ?? '').toLowerCase().includes('serena')) {
-  writeFileSync(join(tmpdir(), \`myelin-serena-used-\${process.ppid ?? 'x'}\`), '1');
-}
-process.exit(0);
-`);
-
-  writeFileSync(join(dir, 'bash-ban-raw.mjs'), buildBashBanRawHookSource());
 }
 
 function printStateTable(tools, caBundles, proxy) {
@@ -1501,11 +1464,7 @@ ${initSkillBody}`);
 
   // 6. Hooks
   if (claudeCC) {
-    step('[6/7] Enforcement hooks...');
-    const hooksDir = join(home, '.claude', 'hooks');
-    mkdirSync(hooksDir, { recursive: true });
-    installHooks(hooksDir);
-    ok('discovery-gate.mjs, serena-marker.mjs, bash-ban-raw.mjs');
+    step('[6/7] Hooks: managed per-project by `myelin init`');
   } else { step('[6/7] Hooks: skipped (--copilot-only)'); }
 
   // 7. Summary
