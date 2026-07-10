@@ -40,7 +40,8 @@ export function checkSelfUpdateWorkingTree({ repoDir, force = false, warn = cons
   if (!dirty) return { dirty: false, bypassed: false, aborted: false };
   if (!force) {
     warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
-    warn('    Commit or stash your changes, then re-run: myelin update --self\n');
+    warn('    Commit or stash your changes, then re-run: myelin update --self');
+    warn('    Or bypass this check: myelin update --self --force\n');
     return { dirty: true, bypassed: false, aborted: true };
   }
   warn('  ⚠ Uncommitted changes present but --force specified — proceeding anyway.');

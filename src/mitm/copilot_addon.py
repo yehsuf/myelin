@@ -68,6 +68,14 @@ logger = logging.getLogger(__name__)
 
 HEADROOM_PORT   = int(os.environ.get('MYELIN_HEADROOM_PORT', '8787'))
 HEADROOM_BASE   = f'http://127.0.0.1:{HEADROOM_PORT}'
+# 20s (up from an original hardcoded 8s): Headroom's own internal compression
+# timeout (its primary Claude Code full-pipeline path) is 30s
+# (proxy/helpers.py: COMPRESSION_TIMEOUT_SECONDS = 30.0) — 8s was tight
+# relative to that precedent and caused intermittent "compression error:
+# timed out" fallbacks on larger payloads. Configurable since Copilot CLI's
+# own client-side HTTP timeout tolerance isn't confirmed from this codebase;
+# raise further only after checking it doesn't stack badly with that.
+HEADROOM_COMPRESS_TIMEOUT_SECONDS = float(os.environ.get('MYELIN_HEADROOM_COMPRESS_TIMEOUT', '20'))
 
 COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
 TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
@@ -279,7 +287,7 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
         method='POST',
     )
     try:
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS) as resp:
             result = json.loads(resp.read())
             compressed = result.get('messages')
             if isinstance(compressed, list) and compressed:

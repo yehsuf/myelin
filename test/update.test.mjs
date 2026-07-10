@@ -119,7 +119,8 @@ describe('runSelfUpdate', () => {
       assert.deepEqual(execStub.calls, []);
       assert.deepEqual(consoleCapture.warns, [
         '  ✗ Uncommitted changes present — aborting self-update to avoid data loss.',
-        '    Commit or stash your changes, then re-run: myelin update --self\n',
+        '    Commit or stash your changes, then re-run: myelin update --self',
+        '    Or bypass this check: myelin update --self --force\n',
       ]);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
