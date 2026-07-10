@@ -1108,8 +1108,13 @@ async function main() {
     if (mitmdumpBin) {
       const addonPath = mitmAddonPath(home, os);
       const mitmPort = mitmCfg.port ?? 8888;
+      const copilotHeadroomPort = copilotHeadroomCfg.enabled ? (copilotHeadroomCfg.port ?? 8788) : undefined;
       const mitmEnv = {
         MYELIN_HEADROOM_PORT: String(port),
+        // When copilot_headroom is enabled, tell the addon to redirect Copilot
+        // traffic to the dedicated headroom instance so it gets the full pipeline
+        // (cache-mode, TOIN, stats) instead of the stateless /v1/compress sidecar.
+        ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
         ...(cfg.budget_routing?.litellm ? { MYELIN_COMPRESS: '0' } : {}),
         ...(mitmCfg.block_bypass    ? { MYELIN_BLOCK_BYPASS:    '1'                      } : {}),
         ...(mitmCfg.block_marker    ? { MYELIN_BLOCK_MARKER:    mitmCfg.block_marker     } : {}),
@@ -1141,7 +1146,7 @@ async function main() {
         // stateless /v1/compress-only sidecar call. Opt-in — disabled by
         // default until validated on your own install (see schema.mjs).
         if (copilotHeadroomCfg.enabled) {
-          const copilotHeadroomPort = copilotHeadroomCfg.port ?? 8788;
+          // copilotHeadroomPort already defined above (used in mitmEnv)
           try {
             await installCopilotHeadroomService({
               headroomBin: binPath,
