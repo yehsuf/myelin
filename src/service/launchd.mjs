@@ -9,12 +9,14 @@ const WATCHDOG_LABEL = 'com.myelin.watchdog';
 const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';
 
 export function generatePlist({ headroomBin, port, envVars = {}, logPath, interceptToolResults }) {
-  const envEntries = Object.entries(envVars)
+  // Use HEADROOM_INTERCEPT_ENABLED=1 env var instead of --intercept-tool-results CLI flag
+  // (the flag calls ensure_tools() which can block in restricted-network environments)
+  const mergedEnv = interceptToolResults
+    ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars }
+    : envVars;
+  const envEntries = Object.entries(mergedEnv)
     .map(([k, v]) => `        <key>${k}</key>\n        <string>${v}</string>`)
     .join('\n');
-  const extraArgs = interceptToolResults
-    ? '\n        <string>--intercept-tool-results</string>'
-    : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -26,7 +28,7 @@ export function generatePlist({ headroomBin, port, envVars = {}, logPath, interc
         <string>${headroomBin}</string>
         <string>proxy</string>
         <string>--port</string>
-        <string>${port}</string>${extraArgs}
+        <string>${port}</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

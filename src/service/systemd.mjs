@@ -4,14 +4,14 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 
 export function generateSystemdUnit({ headroomBin, port, envVars = {}, interceptToolResults }) {
-  const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
-  const extraArgs = interceptToolResults ? ' --intercept-tool-results' : '';
+  const mergedEnv = interceptToolResults ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars } : envVars;
+  const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   return `[Unit]
 Description=Myelin Headroom AI Proxy
 After=network.target
 
 [Service]
-ExecStart=${headroomBin} proxy --port ${port}${extraArgs}
+ExecStart=${headroomBin} proxy --port ${port}
 Restart=always
 RestartSec=10
 ${envLines}

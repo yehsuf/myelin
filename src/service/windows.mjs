@@ -141,8 +141,12 @@ function joinArguments(args = []) {
   return args.map(quoteWindowsArgument).join(' ');
 }
 
-function buildHeadroomArgumentString({ port, interceptToolResults }) {
-  return `proxy --port ${port}${interceptToolResults ? ' --intercept-tool-results' : ''}`;
+function buildHeadroomArgumentString({ port }) {
+  // Note: --intercept-tool-results is deliberately NOT included here.
+  // That flag calls `ensure_tools()` at startup which downloads ast-grep if not
+  // found — this hangs in restricted-network Task Scheduler sessions (e.g. NetFree).
+  // Instead, set HEADROOM_INTERCEPT_ENABLED=1 in the process env (see installService).
+  return `proxy --port ${port}`;
 }
 
 function buildCopilotHeadroomArgumentString({ port, mode }) {
@@ -531,8 +535,11 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, w
 
 
 export async function installService({ headroomBin, port, envVars = {}, logPath, home, interceptToolResults, manager = 'registry' }) {
+  // Move --intercept-tool-results from CLI flag to env var to avoid startup hang
+  // (the CLI flag triggers ensure_tools() which downloads ast-grep; env var bypasses it)
+  const mergedEnv = interceptToolResults ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars } : envVars;
   if (manager !== 'winsw') {
-    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars }));
+    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults: false, envVars: mergedEnv }));
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
@@ -540,8 +547,8 @@ export async function installService({ headroomBin, port, envVars = {}, logPath,
     name: 'Myelin Headroom',
     description: 'Myelin token-efficiency proxy (Headroom)',
     executable: headroomBin,
-    arguments: buildHeadroomArgumentString({ port, interceptToolResults }),
-    envVars,
+    arguments: buildHeadroomArgumentString({ port }),
+    envVars: mergedEnv,
     logPath,
     home,
   });

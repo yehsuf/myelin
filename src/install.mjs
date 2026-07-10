@@ -1496,10 +1496,14 @@ ${initSkillBody}`);
   // the PowerShell module above remains the primary, proven mechanism.
   if (os === 'windows') {
     const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+    const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
       HEADROOM_PORT: String(port),
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
       OPENAI_TARGET_API_URL: _winCfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
+      // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
+      // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
+      ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
       ...sslEnv,
     };
     if (setUserEnvVars(registryVars)) {

@@ -53,13 +53,15 @@ describe('launchd plist generator', () => {
     const xml = generatePlist(OPTS);
     assert.ok(xml.includes('HEADROOM_PORT'));
   });
-  it('omits --intercept-tool-results by default', () => {
+  it('omits --intercept-tool-results flag by default (uses env var instead)', () => {
     const xml = generatePlist(OPTS);
-    assert.ok(!xml.includes('--intercept-tool-results'));
+    assert.ok(!xml.includes('--intercept-tool-results'), 'flag not in plist args');
   });
-  it('adds --intercept-tool-results when requested', () => {
+  it('sets HEADROOM_INTERCEPT_ENABLED=1 env var when interceptToolResults=true', () => {
     const xml = generatePlist({ ...OPTS, interceptToolResults: true });
-    assert.ok(xml.includes('--intercept-tool-results'));
+    assert.ok(xml.includes('HEADROOM_INTERCEPT_ENABLED'), 'env var present');
+    assert.ok(xml.includes('1'), 'value is 1');
+    assert.ok(!xml.includes('--intercept-tool-results'), 'flag not in args');
   });
 });
 
@@ -105,13 +107,14 @@ describe('systemd unit generator', () => {
     const unit = generateSystemdUnit(OPTS);
     assert.ok(unit.includes('HEADROOM_PORT'));
   });
-  it('omits --intercept-tool-results by default', () => {
+  it('omits --intercept-tool-results flag (uses HEADROOM_INTERCEPT_ENABLED env var)', () => {
     const unit = generateSystemdUnit(OPTS);
-    assert.ok(!unit.includes('--intercept-tool-results'));
+    assert.ok(!unit.includes('--intercept-tool-results'), 'flag not in ExecStart');
   });
-  it('adds --intercept-tool-results when requested', () => {
+  it('sets HEADROOM_INTERCEPT_ENABLED=1 env var when interceptToolResults=true', () => {
     const unit = generateSystemdUnit({ ...OPTS, interceptToolResults: true });
-    assert.ok(unit.includes('--intercept-tool-results'));
+    assert.ok(unit.includes('HEADROOM_INTERCEPT_ENABLED=1'), 'env var set');
+    assert.ok(!unit.includes('--intercept-tool-results'), 'flag not in ExecStart');
   });
 });
 
@@ -160,13 +163,14 @@ describe('windows run-script generator', () => {
     const script = generateHeadroomRunScript(OPTS);
     assert.ok(script.includes('8787'));
   });
-  it('omits --intercept-tool-results by default', () => {
+  it('omits --intercept-tool-results flag (uses HEADROOM_INTERCEPT_ENABLED env var)', () => {
     const script = generateHeadroomRunScript(OPTS);
-    assert.ok(!script.includes('--intercept-tool-results'));
+    assert.ok(!script.includes('--intercept-tool-results'), 'flag not in script');
   });
-  it('adds --intercept-tool-results when requested', () => {
-    const script = generateHeadroomRunScript({ ...OPTS, interceptToolResults: true });
-    assert.ok(script.includes('--intercept-tool-results'));
+  it('sets HEADROOM_INTERCEPT_ENABLED=1 env var when interceptToolResults passed via envVars', () => {
+    const script = generateHeadroomRunScript({ ...OPTS, envVars: { HEADROOM_INTERCEPT_ENABLED: '1' } });
+    assert.ok(script.includes('HEADROOM_INTERCEPT_ENABLED'), 'env var in script');
+    assert.ok(!script.includes('--intercept-tool-results'), 'flag not in script');
   });
   it('stops only the process matching this exact port (not all headroom.exe instances)', () => {
     const script = generateHeadroomRunScript(OPTS);

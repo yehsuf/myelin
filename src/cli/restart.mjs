@@ -45,8 +45,9 @@ export async function runRestart() {
       } else {
         const bin = headroomBinPath();
         const port = cfg?.proxy?.headroom?.port ?? 8787;
-        const intercept = cfg?.proxy?.headroom?.intercept_tool_results !== false;
-        const argStr = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])].join(' ');
+        // No --intercept-tool-results CLI flag — use HEADROOM_INTERCEPT_ENABLED=1 env var instead
+        // (the flag calls ensure_tools() which blocks in restricted-network Task Scheduler sessions)
+        const argStr = `proxy --port ${port}`;
         execSync('powershell -Command "Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
         await new Promise(r => setTimeout(r, 500));
         const { spawnDetachedService } = await import('../service/windows.mjs');
