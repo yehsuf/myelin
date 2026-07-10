@@ -1,14 +1,19 @@
 import { execSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
 import { installWinsw } from '../tools/winsw.mjs';
+import { isWsl } from '../detect/wsl.mjs';
 
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const HEADROOM_KEY = 'MyelinHeadroom';
 const MITM_KEY = 'MyelinMitmproxy';
 const COPILOT_HEADROOM_KEY = 'MyelinCopilotHeadroom';
+const WSL_SYSTEM_PROFILE_NAMES = new Set(['public', 'all users', 'default', 'default user', 'windows', 'wpsystem']);
+const nodeExecSync = execSync;
+const nodeExistsSync = existsSync;
+const nodeReaddirSync = readdirSync;
 
 export const HEADROOM_SERVICE_ID = 'myelin-headroom';
 export const MITM_SERVICE_ID = 'myelin-mitmproxy';
@@ -47,6 +52,21 @@ function windowsPath(value = '') {
   return String(value ?? '').replace(/\//g, '\\');
 }
 
+function trimPowershellOutput(value = '') {
+  return String(value ?? '')
+    .replace(/^\uFEFF/, '')
+    .replace(/\r/g, '')
+    .split('\n')[0]
+    .trim();
+}
+
+function wslMountToWindowsPath(value = '') {
+  const match = String(value ?? '').match(/^\/mnt\/([a-zA-Z])\/?(.*)$/u);
+  if (!match) return value;
+  const [, drive, rest = ''] = match;
+  return rest ? `${drive.toUpperCase()}:/${rest}` : `${drive.toUpperCase()}:/`;
+}
+
 function xmlEscape(value = '') {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -56,8 +76,47 @@ function xmlEscape(value = '') {
     .replace(/'/g, '&apos;');
 }
 
-function defaultWindowsHome(home = process.env.USERPROFILE ?? homedir()) {
-  return windowsPath(home);
+export function resolveWslWindowsHome({
+  execSync = nodeExecSync,
+  existsSync = nodeExistsSync,
+  readdirSync = nodeReaddirSync,
+} = {}) {
+  const scopes = ['User', 'Machine'];
+  for (const scope of scopes) {
+    try {
+      const home = trimPowershellOutput(execSync(
+        `powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('USERPROFILE','${scope}')"`
+      ));
+      if (home) return home;
+    } catch {}
+  }
+
+  try {
+    if (!existsSync('/mnt/c/Users')) return null;
+    const candidates = readdirSync('/mnt/c/Users', { withFileTypes: true })
+      .filter(entry => {
+        const name = typeof entry === 'string' ? entry : entry.name;
+        const isDirectory = typeof entry === 'string' ? true : entry.isDirectory();
+        return isDirectory && !WSL_SYSTEM_PROFILE_NAMES.has(name.toLowerCase());
+      })
+      .map(entry => typeof entry === 'string' ? entry : entry.name);
+    if (candidates.length === 1) return `/mnt/c/Users/${candidates[0]}`;
+  } catch {}
+
+  return null;
+}
+
+export function defaultWindowsHome(
+  home,
+  {
+    isWslImpl = isWsl,
+    resolveWslWindowsHomeImpl = resolveWslWindowsHome,
+    homedirImpl = homedir,
+  } = {},
+) {
+  const wsl = isWslImpl();
+  const resolvedHome = home ?? process.env.USERPROFILE ?? (wsl ? resolveWslWindowsHomeImpl() : null) ?? homedirImpl();
+  return windowsPath(wsl ? wslMountToWindowsPath(resolvedHome) : resolvedHome);
 }
 
 function defaultServiceEnv({ home, envVars = {} } = {}) {
@@ -157,15 +216,15 @@ function stopByPortScript(processExeName, port) {
   return `Get-CimInstance Win32_Process -Filter "Name = '${processExeName}'" | Where-Object { $_.CommandLine -like '*--port ${port}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
 }
 
-export function winswServiceDir({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function winswServiceDir({ id, home } = {}) {
   return pathWin32.join(defaultWindowsHome(home), '.myelin', 'services', id);
 }
 
-export function winswExecutablePath({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function winswExecutablePath({ id, home } = {}) {
   return pathWin32.join(winswServiceDir({ id, home }), `${id}.exe`);
 }
 
-export function winswConfigPath({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function winswConfigPath({ id, home } = {}) {
   return pathWin32.join(winswServiceDir({ id, home }), `${id}.xml`);
 }
 
@@ -174,11 +233,11 @@ export function windowsWatchdogTaskName({ id }) {
   return 'Myelin Headroom Watchdog';
 }
 
-function winswWatchdogScriptPath({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+function winswWatchdogScriptPath({ id, home } = {}) {
   return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.ps1');
 }
 
-function winswWatchdogLogPath({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+function winswWatchdogLogPath({ id, home } = {}) {
   return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.log');
 }
 
@@ -284,7 +343,7 @@ export async function installWinswService({
   arguments: serviceArguments,
   envVars = {},
   logPath,
-  home = process.env.USERPROFILE ?? homedir(),
+  home,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
 }) {
@@ -323,7 +382,7 @@ export async function installWinswService({
   return { id, serviceExePath, configPath, logDir };
 }
 
-export function winswServiceStatus({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function winswServiceStatus({ id, home } = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
   if (!existsSync(serviceExePath) || !existsSync(configPath)) {
@@ -342,7 +401,7 @@ export function winswServiceStatus({ id, home = process.env.USERPROFILE ?? homed
   return { ...parseWinswServiceStatus(raw), label: id };
 }
 
-export function restartWinswService({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function restartWinswService({ id, home } = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
   if (!existsSync(serviceExePath) || !existsSync(configPath)) return false;
@@ -363,7 +422,7 @@ Start-Sleep -Seconds 1
   }
 }
 
-export function uninstallWinswService({ id, home = process.env.USERPROFILE ?? homedir() } = {}) {
+export function uninstallWinswService({ id, home } = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
   const legacyRunKey = legacyRunKeyForService(id);
@@ -618,7 +677,7 @@ export function installWindowsWatchdogTask({
   healthUrl,
   intervalMinutes = 2,
   winswConfigPath: configPathOverride,
-  home = process.env.USERPROFILE ?? homedir(),
+  home,
 } = {}) {
   const winHome = defaultWindowsHome(home);
   const serviceExePath = winswExecutablePath({ id, home: winHome });

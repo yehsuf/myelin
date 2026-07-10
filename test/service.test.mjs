@@ -8,6 +8,7 @@ import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } fr
 import {
   HEADROOM_SERVICE_ID,
   collapseRedundantBackslashes,
+  defaultWindowsHome,
   generateCopilotHeadroomRunScript,
   generateHeadroomRunScript,
   generateMitmRunScript,
@@ -16,6 +17,7 @@ import {
   generateWindowsWatchdogTaskCreateScript,
   generateWinswConfigXml,
   parseWinswServiceStatus,
+  resolveWslWindowsHome,
   winswConfigPath,
   winswExecutablePath,
 } from '../src/service/windows.mjs';
@@ -236,6 +238,95 @@ describe('WinSW status parser', () => {
       state: 'NonExistent',
       raw: 'NonExistent',
     });
+  });
+});
+
+describe('resolveWslWindowsHome', () => {
+  const dir = (name) => ({ name, isDirectory: () => true });
+
+  it('returns a cleaned USERPROFILE value from PowerShell output', () => {
+    const home = resolveWslWindowsHome({
+      execSync: () => Buffer.from('\uFEFFC:\\Users\\alice\r\nignored\r\n'),
+      existsSync: () => false,
+      readdirSync: () => [],
+    });
+    assert.equal(home, 'C:\\Users\\alice');
+  });
+
+  it('falls through from User scope to Machine scope', () => {
+    const calls = [];
+    const home = resolveWslWindowsHome({
+      execSync: (command) => {
+        calls.push(command);
+        if (command.includes("'User')")) return Buffer.from('\r\n');
+        return Buffer.from('C:\\Users\\machine\r\n');
+      },
+      existsSync: () => false,
+      readdirSync: () => [],
+    });
+    assert.equal(home, 'C:\\Users\\machine');
+    assert.equal(calls.length, 2);
+  });
+
+  it('falls back to a single non-system profile under /mnt/c/Users', () => {
+    const home = resolveWslWindowsHome({
+      execSync: () => { throw new Error('interop disabled'); },
+      existsSync: (path) => path === '/mnt/c/Users',
+      readdirSync: () => [
+        dir('Public'),
+        dir('Default'),
+        dir('alice'),
+      ],
+    });
+    assert.equal(home, '/mnt/c/Users/alice');
+  });
+
+  it('returns null when the filesystem scan is empty or ambiguous', () => {
+    assert.equal(resolveWslWindowsHome({
+      execSync: () => { throw new Error('interop disabled'); },
+      existsSync: (path) => path === '/mnt/c/Users',
+      readdirSync: () => [dir('Public'), dir('Default')],
+    }), null);
+    assert.equal(resolveWslWindowsHome({
+      execSync: () => { throw new Error('interop disabled'); },
+      existsSync: (path) => path === '/mnt/c/Users',
+      readdirSync: () => [dir('alice'), dir('bob')],
+    }), null);
+  });
+});
+
+describe('defaultWindowsHome', () => {
+  it('preserves the previous non-WSL fallback behavior when WSL is not detected', () => {
+    const savedUserProfile = process.env.USERPROFILE;
+    delete process.env.USERPROFILE;
+    try {
+      assert.equal(defaultWindowsHome(undefined, {
+        isWslImpl: () => false,
+        resolveWslWindowsHomeImpl: () => { throw new Error('should not be called'); },
+        homedirImpl: () => '/home/alice',
+      }), '\\home\\alice');
+      assert.equal(defaultWindowsHome('C:/Users/alice', {
+        isWslImpl: () => false,
+      }), 'C:\\Users\\alice');
+    } finally {
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+    }
+  });
+
+  it('converts a mounted WSL home path into a Windows home path', () => {
+    const savedUserProfile = process.env.USERPROFILE;
+    delete process.env.USERPROFILE;
+    try {
+      assert.equal(defaultWindowsHome(undefined, {
+        isWslImpl: () => true,
+        resolveWslWindowsHomeImpl: () => '/mnt/c/Users/alice',
+        homedirImpl: () => '/home/alice',
+      }), 'C:\\Users\\alice');
+    } finally {
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+    }
   });
 });
 

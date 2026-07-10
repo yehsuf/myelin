@@ -6,6 +6,7 @@ import { detectRtkHookArtifacts, formatRtkVersionDetail } from '../tools/rtk.mjs
 import { which } from '../detect/which.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { detectOS } from '../detect/os.mjs';
 
 function ensureWindowsPath() {
   if (process.platform !== 'win32') return;
@@ -32,6 +33,12 @@ function ensureWindowsPath() {
   } catch {}
   for (const p of extra) {
     if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + (process.env.PATH || '');
+  }
+}
+
+export function printVerifyEnvironmentNote({ detectOSImpl = detectOS, log = console.log } = {}) {
+  if (detectOSImpl(true).wsl) {
+    log('ℹ Detected: running inside WSL — bridging to Windows service management via PowerShell interop.');
   }
 }
 
@@ -156,6 +163,7 @@ export async function runVerify() {
   results.push({ name: 'headroom proxy', ok: hr.installed, detail: hr.installed ? hr.version : 'not found in venv — run: myelin update' });
 
   const width = Math.max(...results.map(r => r.name.length));
+  printVerifyEnvironmentNote();
   console.log('\nMyelin Component Status\n' + '─'.repeat(60));
   for (const r of results) {
     console.log(`  ${r.ok ? '✓' : '✗'} ${r.name.padEnd(width + 2)} ${r.detail}`);
