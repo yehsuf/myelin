@@ -512,7 +512,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } 
     `$reg = Register-ScheduledTask -TaskName $tn -Action $act -Principal $pri -Settings $set -Force -ErrorAction SilentlyContinue`,
     `if ($reg) {`,
     `  Start-ScheduledTask -TaskName $tn`,
-    `  Start-Sleep -Seconds 2`,
+    `  Start-Sleep -Seconds 5`,
     `  Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
     `} else {`,
     loadEnvFallback,

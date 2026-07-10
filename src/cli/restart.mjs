@@ -129,7 +129,7 @@ export async function runRestart() {
 
   // Health check
   const port = 8787;
-  const healthy = await waitForHeadroom(port, 20000);
+  const healthy = await waitForHeadroom(port, 30000);
   healthy ? console.log(`  ✓ headroom healthy on :${port}`) : console.warn(`  ⚠ headroom not responding on :${port}`);
   console.log();
 }
