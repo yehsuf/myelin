@@ -27,7 +27,7 @@ import {
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
 import { buildBashBanRawHookSource } from './hooks/bash-ban-raw.mjs';
-import { ensureUv, uvToolInstall } from './tools/uv.mjs';
+import { ensureUv } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk, getRtkVersionWarning, runRtkInit } from './tools/rtk.mjs';
 import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
@@ -872,8 +872,23 @@ async function main() {
   step('[2/7] Code discovery tools...');
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
-    execSync('uv tool install --python 3.12 "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'inherit' });
-    ok('serena installed');
+    if (os === 'windows') {
+      try { execSync('powershell -Command "Get-Process -Name \'serena-agent\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    try {
+      execSync('uv tool install --python 3.12 "serena-agent @ git+https://github.com/oraios/serena.git"', { stdio: 'pipe' });
+      ok('serena installed');
+    } catch (e) {
+      const output = `${e?.message ?? ''}\n${e?.stderr?.toString?.() ?? ''}\n${e?.stdout?.toString?.() ?? ''}`.toLowerCase();
+      if (os === 'windows' && (output.includes('access is denied') || output.includes('os error 5') || output.includes('cannot access the file'))) {
+        warn('serena install failed: MCP server process still locked. Stop Claude Code / Copilot CLI and re-run: myelin install --yes');
+      } else {
+        if (e?.stdout) process.stdout.write(e.stdout);
+        if (e?.stderr) process.stderr.write(e.stderr);
+        throw e;
+      }
+    }
   } else { skip(`serena (${tools.serena.version})`); }
   // Always ensure bottle<0.13 in serena env — 0.13+ is pyzapp (no .py), breaks webview
   try {
@@ -890,11 +905,31 @@ async function main() {
   } catch {}
 
   if (!tools.semble.installed) {
-    console.log('  Installing Semble...'); uvToolInstall('semble[mcp]');
+    console.log('  Installing Semble...');
+    if (os === 'windows') {
+      try { execSync('powershell -Command "Get-Process -Name \'semble\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      await new Promise(r => setTimeout(r, 500));
+    }
+    let sembleInstalled = false;
     try {
-      execSync(`semble install ${claudeCC ? '--agent claude --type mcp subagent' : ''} --yes`, { stdio: 'pipe' });
-    } catch {}
-    ok('semble installed');
+      execSync('uv tool install "semble[mcp]"', { stdio: 'pipe' });
+      sembleInstalled = true;
+    } catch (e) {
+      const output = `${e?.message ?? ''}\n${e?.stderr?.toString?.() ?? ''}\n${e?.stdout?.toString?.() ?? ''}`.toLowerCase();
+      if (os === 'windows' && (output.includes('access is denied') || output.includes('os error 5') || output.includes('cannot access the file'))) {
+        warn('semble install failed: MCP server process still locked. Stop Claude Code / Copilot CLI and re-run: myelin install --yes');
+      } else {
+        if (e?.stdout) process.stdout.write(e.stdout);
+        if (e?.stderr) process.stderr.write(e.stderr);
+        throw e;
+      }
+    }
+    if (sembleInstalled) {
+      try {
+        execSync(`semble install ${claudeCC ? '--agent claude --type mcp subagent' : ''} --yes`, { stdio: 'pipe' });
+      } catch {}
+      ok('semble installed');
+    }
   } else { skip('semble (installed)'); }
 
   // agentcairn — best-in-class local memory MCP (Obsidian vault + DuckDB, LongMemEval top score)
