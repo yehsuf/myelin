@@ -47,10 +47,11 @@ export async function runRestart() {
         const port = cfg?.proxy?.headroom?.port ?? 8787;
         const intercept = cfg?.proxy?.headroom?.intercept_tool_results !== false;
         const argStr = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])].join(' ');
+        const workDir = join(homedir(), '.myelin', 'headroom-main');
         execSync('powershell -Command "Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue"', { stdio: 'pipe' });
         await new Promise(r => setTimeout(r, 500));
         const { spawnDetachedService } = await import('../service/windows.mjs');
-        spawnDetachedService('MyelinHeadroom', bin, argStr);
+        spawnDetachedService('MyelinHeadroom', bin, argStr, { workingDir: workDir });
         console.log('  ✓ headroom restarted');
       }
     } catch { console.warn('  ⚠ headroom restart failed'); }
@@ -118,7 +119,9 @@ export async function runRestart() {
         if (m) {
           try { execSync('powershell -Command "Get-Process -Name headroom -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq \'\'} | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
           const { spawnDetachedService } = await import('../service/windows.mjs');
-          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim());
+          const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
+          const copilotWorkDir = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
+          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), { workingDir: copilotWorkDir });
           console.log('  ✓ copilot-headroom restarted (:8788)');
         }
       } else {
@@ -127,9 +130,9 @@ export async function runRestart() {
     } catch (e) { console.warn(`  ⚠ copilot-headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
-  // Health check
+  // Health check — give headroom longer to start on Windows (two instances competing)
   const port = 8787;
-  const healthy = await waitForHeadroom(port, 30000);
+  const healthy = await waitForHeadroom(port, 60000);
   healthy ? console.log(`  ✓ headroom healthy on :${port}`) : console.warn(`  ⚠ headroom not responding on :${port}`);
   console.log();
 }

@@ -489,24 +489,30 @@ Write-Host "[myelin] headroom started (hidden)"
  * @param {string}   argStr    Argument string (may contain spaces and quoted paths)
  * @param {object}   [deps]    Injected dependencies for testing
  */
-export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } = {}) {
+export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, workingDir = '' } = {}) {
   const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeExe  = escapePs(exe);
   const safeArgs = escapePs(argStr);
+  const safeWd   = workingDir ? escapePs(windowsPath(workingDir)) : '';
   // User-scope env vars to pre-load in the fallback path
   const envKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
                    'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
   const loadEnvFallback = envKeys
     .map(k => `$v = [Environment]::GetEnvironmentVariable('${k}','User'); if ($v) { Set-Item -Path 'Env:${k}' -Value $v }`)
     .join('\n');
-  // Note: no PowerShell backtick line-continuations here — they are hard to
-  // embed reliably inside JS template literals. Everything is on one line.
+  // WorkingDirectory in the task action isolates each headroom instance's state
+  // files (proxy_savings.json etc.) so two headroom instances don't conflict.
+  const actLine = safeWd
+    ? `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr -WorkingDirectory '${safeWd}'`
+    : `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`;
+  const mkdirLine = safeWd ? `New-Item -ItemType Directory -Force -Path '${safeWd}' | Out-Null` : '';
   runPsFn([
     `$tn = '${safeName}'`,
     `$exe = '${safeExe}'`,
     `$argStr = '${safeArgs}'`,
+    ...(mkdirLine ? [mkdirLine] : []),
     `Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
-    `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`,
+    actLine,
     `$pri = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited`,
     `$set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)`,
     `$reg = Register-ScheduledTask -TaskName $tn -Action $act -Principal $pri -Settings $set -Force -ErrorAction SilentlyContinue`,
@@ -516,7 +522,9 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } 
     `  Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
     `} else {`,
     loadEnvFallback,
-    `  Start-Process -FilePath $exe -ArgumentList $argStr.Split(' ') -WindowStyle Hidden`,
+    ...(safeWd ? [`  New-Item -ItemType Directory -Force -Path '${safeWd}' | Out-Null`] : []),
+    ...(safeWd ? [`  Set-Location '${safeWd}'`] : []),
+    `  Start-Process -FilePath $exe -ArgumentList $argStr.Split(' ') -WindowStyle Hidden${safeWd ? ` -WorkingDirectory '${safeWd}'` : ''}`,
     `}`,
   ].join('\n'));
 }
