@@ -61,7 +61,7 @@ export async function runVerify() {
       detail: hlResp?.status === 'ok' ? `running — mode: ${hlResp.mode}` : 'unexpected response',
     });
   } catch {
-    results.push({ name: `headroom-lite (:${hlPort})`, ok: false, detail: `not running — run: headroom-lite` });
+    results.push({ name: `headroom-lite (:${hlPort})`, ok: false, detail: `not running — run: myelin restart` });
   }
 
   // Old headroom (opt-in via proxy.headroom.enabled — skipped entirely when

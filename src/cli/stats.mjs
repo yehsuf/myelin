@@ -95,8 +95,8 @@ export async function runStats() {
       title: `headroom-lite  (:${hlPort})`,
       print() {
         if (!hlStats || hlStats.service !== 'headroom-lite') {
-          console.log('  ⚠  not running — run: headroom-lite');
-          console.log('     or: ANTHROPIC_BASE_URL=http://127.0.0.1:8790 node src/index.mjs');
+          console.log('  ⚠  not running — run: myelin restart');
+          console.log("     (install: npm i -g @yehsuf/headroom-lite; headroom-lite is myelin's compression sidecar)");
           return;
         }
         const uptime = hlStats.uptime_seconds ?? 0;
@@ -107,7 +107,7 @@ export async function runStats() {
         row('Compress calls:', String(hlStats.compress_requests ?? 0));
         row('Token compression:', `${hlStats.compress_pct ?? '0.0'}%  (${((hlStats.compress_tokens_saved ?? 0) / 1000).toFixed(0)}K tokens saved)`);
         if ((hlStats.compress_requests ?? 0) === 0)
-          console.log('  ℹ  No requests yet — set ANTHROPIC_BASE_URL=http://127.0.0.1:8790');
+          console.log('  ℹ  No requests yet — traffic reaches headroom-lite via mitmproxy sidecar or the _claude wrapper');
       },
     });
   }

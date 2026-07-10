@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readdirSync, existsSync } from 'node:fs';
@@ -6,11 +6,107 @@ import { detectOS } from '../detect/os.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 
+/**
+ * Start (or restart) headroom-lite on the given port.
+ *
+ * Cross-platform:
+ *   - Uses `shell: true` so we resolve npm-global shims (headroom-lite.cmd on
+ *     Windows, /usr/local/bin/headroom-lite on macOS/Linux) without hardcoding.
+ *   - Detaches + unref()s so the process outlives the current `myelin restart`
+ *     invocation, mirroring how the copilot-headroom Task Scheduler task
+ *     already behaves on Windows.
+ *   - Passes HEADROOM_LITE_PORT explicitly so port is deterministic even if
+ *     the user's shell has a different default set.
+ *   - Fails soft when the binary isn't installed (prints a hint) — this is
+ *     currently an optional service, not a hard dependency of `myelin restart`.
+ */
+async function restartHeadroomLite(port, osKind) {
+  // Best-effort probe: is the binary available? Using shell so npm shims work.
+  const probeCmd = osKind === 'windows'
+    ? `powershell -Command "if (Get-Command headroom-lite -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"`
+    : `command -v headroom-lite >/dev/null 2>&1`;
+  try {
+    execSync(probeCmd, { stdio: 'pipe' });
+  } catch {
+    console.log('  ↷ headroom-lite not installed — run: npm i -g @yehsuf/headroom-lite');
+    return;
+  }
+
+  // Kill any existing headroom-lite process on this port so we don't collide.
+  if (osKind === 'windows') {
+    try {
+      execSync(
+        `powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: 'pipe' }
+      );
+    } catch {}
+  } else {
+    try {
+      execSync(`lsof -ti :${port} | xargs -r kill -9 2>/dev/null`, { stdio: 'pipe', shell: '/bin/bash' });
+    } catch {}
+  }
+  await new Promise(r => setTimeout(r, 400));
+
+  // Detached spawn — survives the current `myelin restart` invocation.
+  // NB: we deliberately do NOT set ANTHROPIC_BASE_URL / HTTPS_PROXY in the child
+  // env. headroom-lite is a server, not a client — see src/service/wrappers.mjs
+  // SERVER_FORBIDDEN_ENV for the full list of vars that must not leak in.
+  const childEnv = { ...process.env, HEADROOM_LITE_PORT: String(port) };
+  delete childEnv.ANTHROPIC_BASE_URL;
+  delete childEnv.HTTPS_PROXY;
+  delete childEnv.HTTP_PROXY;
+  delete childEnv.NO_PROXY;
+
+  try {
+    const child = spawn('headroom-lite', [], {
+      detached: true,
+      stdio: 'ignore',
+      shell: true,
+      env: childEnv,
+    });
+    child.unref();
+    console.log(`  ✓ headroom-lite started (:${port})`);
+  } catch (e) {
+    console.warn(`  ⚠ headroom-lite start failed: ${e?.message?.split('\n')[0] ?? e}`);
+    return;
+  }
+
+  // Quick health probe — headroom-lite is a small Node.js server, usually up
+  // in <1s. Don't block for long.
+  const healthy = await waitForHeadroomLite(port, 5000);
+  if (healthy) {
+    console.log(`  ✓ headroom-lite healthy on :${port}`);
+  } else {
+    console.log(`  ↷ headroom-lite still starting — run: myelin verify to confirm`);
+  }
+}
+
+/** Reuse waitForHeadroom's polling loop but target headroom-lite's /health path. */
+async function waitForHeadroomLite(port, timeoutMs = 5000) {
+  const url = `http://127.0.0.1:${port}/health`;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(500) });
+      if (res.ok) return true;
+    } catch {}
+    await new Promise(r => setTimeout(r, 100));
+  }
+  return false;
+}
+
 export async function runRestart() {
   const os = detectOS();
-  const cfg = os === 'windows' ? await loadConfig() : null;
+  const cfg = await loadConfig();
   const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
   console.log('\n🔄 Restarting Myelin services...');
+
+  // headroom-lite (multi-provider sidecar) — restart first so subsequent
+  // services find it healthy. Skipped when explicitly disabled via config.
+  if (cfg?.proxy?.headroom_lite?.enabled !== false) {
+    const hlPort = cfg?.proxy?.headroom_lite?.port ?? 8790;
+    await restartHeadroomLite(hlPort, os);
+  }
 
   // On Windows with copilot_headroom enabled, reverse the startup order:
   // start copilot-headroom FIRST (lighter --mode cache), wait for it to be

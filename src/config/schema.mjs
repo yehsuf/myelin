@@ -23,6 +23,15 @@ export const DEFAULT_CONFIG = {
       corporate_proxy: '',
       openai_target_url: 'https://api.githubcopilot.com',
     },
+    // headroom-lite (@yehsuf/headroom-lite): multi-provider, deterministic
+    // compression sidecar that replaces the older Python `headroom` on
+    // per-provider routes. Runs as a small Node.js server managed by
+    // `myelin restart` when `enabled !== false`. Falls back gracefully to a
+    // hint if the `headroom-lite` binary isn't installed.
+    headroom_lite: {
+      enabled: true,
+      port: 8790,
+    },
     mitm: {
       enabled: true,
       port: 8888,
