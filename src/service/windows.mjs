@@ -478,33 +478,32 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs } 
   const safeName = taskName.replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeExe  = escapePs(exe);
   const safeArgs = escapePs(argStr);
-  // User-scope env vars to pre-load in the fallback path (needed in non-interactive contexts)
+  // User-scope env vars to pre-load in the fallback path
   const envKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
                    'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
   const loadEnvFallback = envKeys
-    .map(k => `  $v = [Environment]::GetEnvironmentVariable('${k}','User'); if ($v) { Set-Item -Path 'Env:${k}' -Value $v }`)
+    .map(k => `$v = [Environment]::GetEnvironmentVariable('${k}','User'); if ($v) { Set-Item -Path 'Env:${k}' -Value $v }`)
     .join('\n');
-  runPsFn(`
-$taskName = '${safeName}'
-$exe      = '${safeExe}'
-$argStr   = '${safeArgs}'
-Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-$action   = New-ScheduledTaskAction -Execute $exe -Argument $argStr
-$principal = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited
-$settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) \`
-              -DisallowStartIfOnBatteries:$false -StopIfGoingOnBatteries:$false
-$reg = Register-ScheduledTask -TaskName $taskName -Action $action \`
-       -Principal $principal -Settings $settings -Force -ErrorAction SilentlyContinue
-if ($reg) {
-    Start-ScheduledTask -TaskName $taskName
-    Start-Sleep -Seconds 2
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-} else {
-    # Fallback: load User-scope env vars explicitly then use Start-Process
-${loadEnvFallback}
-    Start-Process -FilePath $exe -ArgumentList $argStr -WindowStyle Hidden
-}
-`);
+  // Note: no PowerShell backtick line-continuations here — they are hard to
+  // embed reliably inside JS template literals. Everything is on one line.
+  runPsFn([
+    `$tn = '${safeName}'`,
+    `$exe = '${safeExe}'`,
+    `$argStr = '${safeArgs}'`,
+    `Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
+    `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`,
+    `$pri = New-ScheduledTaskPrincipal -UserId ([Environment]::UserName) -LogonType Interactive -RunLevel Limited`,
+    `$set = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero)`,
+    `$reg = Register-ScheduledTask -TaskName $tn -Action $act -Principal $pri -Settings $set -Force -ErrorAction SilentlyContinue`,
+    `if ($reg) {`,
+    `  Start-ScheduledTask -TaskName $tn`,
+    `  Start-Sleep -Seconds 2`,
+    `  Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue`,
+    `} else {`,
+    loadEnvFallback,
+    `  Start-Process -FilePath $exe -ArgumentList $argStr.Split(' ') -WindowStyle Hidden`,
+    `}`,
+  ].join('\n'));
 }
 
 
