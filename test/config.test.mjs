@@ -64,9 +64,15 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.copilot_headroom.port = 8788', () => {
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.port, 8788);
   });
-  it('DEFAULT_CONFIG has proxy.copilot_headroom target URLs pointed at Copilot Business', () => {
-    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, 'https://api.business.githubcopilot.com');
-    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, 'https://api.business.githubcopilot.com');
+  it('DEFAULT_CONFIG has proxy.copilot_headroom target URLs empty (must be set explicitly to avoid leaking maintainer account tier)', () => {
+    // Copilot's API host depends on the user's account tier (individual vs.
+    // Business/Enterprise). Defaulting to either one silently misroutes
+    // traffic for the other tier and previously leaked the maintainer's
+    // own tier (api.business.githubcopilot.com) into every fresh install.
+    // install.mjs now warns and skips service registration when these are
+    // empty AND copilot_headroom.enabled === true.
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, '');
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, '');
   });
   it('DEFAULT_CONFIG has proxy.windows_service.manager = registry (safe default, unchanged behavior)', () => {
     assert.equal(DEFAULT_CONFIG.proxy.windows_service.manager, 'registry');

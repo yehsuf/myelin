@@ -64,20 +64,21 @@ export const DEFAULT_CONFIG = {
     // traffic the same full pipeline treatment (cache-mode, content_router,
     // TOIN, stats) instead of the stateless /v1/compress-only sidecar call.
     // Disabled by default — opt-in until validated on your own install.
-    // See docs/copilot-headroom-architecture.md for the full
-    // design: mitmproxy redirects /v1/messages and /chat/completions to this
-    // instance's loopback port; its own outbound call tunnels back out
-    // through proxy.mitm.egress_port so mitmproxy remains the sole owner of
-    // real network egress (NetFree bypass, corp CA, etc.).
+    //
+    // If you enable this, you MUST set anthropic_target_url + openai_target_url
+    // to Copilot's real API host for YOUR account tier:
+    //   Individual:          https://api.githubcopilot.com
+    //   Business/Enterprise: https://api.business.githubcopilot.com
+    // Empty defaults on purpose — we won't pretend to know which tier you're
+    // on, and shipping a wrong URL silently misroutes traffic.
+    //
+    // See docs/copilot-headroom-architecture.md for the full design.
     copilot_headroom: {
       enabled: false,
       port: 8788,
       mode: 'cache',
-      // anthropic/openai_target_url: Copilot's real API host. Use
-      // api.business.githubcopilot.com for Business/Enterprise accounts,
-      // api.githubcopilot.com for individual accounts.
-      anthropic_target_url: 'https://api.business.githubcopilot.com',
-      openai_target_url: 'https://api.business.githubcopilot.com',
+      anthropic_target_url: '',
+      openai_target_url: '',
     },
     // windows_service: controls HOW Windows services are managed.
     // - manager: 'registry' (default, current shipped behavior — unchanged,

@@ -12,7 +12,13 @@ export function generateLiteLLMConfig({
   litellmPort = 4000,
   cheapModel = 'claude-haiku-4-5',
   complexModel = 'claude-sonnet-4-6',
-  apiBase = 'https://api.business.githubcopilot.com',
+  // No default — Copilot's API host depends on the user's account tier
+  // (Individual → api.githubcopilot.com; Business/Enterprise →
+  // api.business.githubcopilot.com). Hardcoding either one silently
+  // misroutes traffic and leaks the maintainer's tier into fresh installs.
+  // Caller must pass an explicit apiBase; empty causes litellm to fail
+  // loudly at startup which is the right signal for "you didn't configure me".
+  apiBase = '',
 } = {}) {
   return `# Myelin LiteLLM proxy config — managed by myelin install
 # Edit via: myelin config set budget_routing.*

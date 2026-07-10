@@ -904,15 +904,29 @@ async function main() {
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
+      // Reuse proxy.copilot_headroom.anthropic_target_url — it's the same
+      // "which Copilot API host does your account tier use" question. Empty
+      // is deliberate: caller (litellm) will fail loudly at startup, which
+      // is the correct signal to run:
+      //   myelin config set proxy.copilot_headroom.anthropic_target_url <url>
+      const apiBase = existingCfg.proxy?.copilot_headroom?.anthropic_target_url?.trim() || '';
+      if (!apiBase) {
+        warn(
+          'litellm enabled but proxy.copilot_headroom.anthropic_target_url is empty. ' +
+          'Set it via `myelin config set proxy.copilot_headroom.anthropic_target_url https://api.githubcopilot.com` ' +
+          '(or https://api.business.githubcopilot.com for Business/Enterprise) and re-run — writing config anyway; litellm will fail to start until this is set.'
+        );
+      }
       const content = generateLiteLLMConfig({
         headroomPort: existingCfg.proxy?.headroom?.port ?? 8787,
         litellmPort,
         cheapModel: existingCfg.budget_routing?.cheap_model ?? 'claude-haiku-4-5',
         complexModel: existingCfg.budget_routing?.complex_model ?? 'claude-sonnet-4-6',
+        apiBase,
       });
       writeFileSync(cfgPath, content, 'utf8');
       ok(`litellm config written → ${cfgPath}`);
-      ok(`Set ANTHROPIC_BASE_URL=http://127.0.0.1:${litellmPort} in your shell, then start LiteLLM manually`);
+      ok(`LiteLLM will listen on :${litellmPort}. To route Claude Code through it, use the _claude wrapper with headroom_port set to ${litellmPort} (never set ANTHROPIC_BASE_URL globally — see _claude wrapper in src/service/wrappers.mjs).`);
     } catch (e) {
       warn(`litellm install failed: ${e.message.split('\n')[0]}`);
     }
@@ -1054,24 +1068,41 @@ async function main() {
         // default until validated on your own install (see schema.mjs).
         if (copilotHeadroomCfg.enabled) {
           // copilotHeadroomPort already defined above (used in mitmEnv)
-          try {
-            await installCopilotHeadroomService({
-              headroomBin: binPath,
-              port: copilotHeadroomPort,
-              envVars: {
-                ANTHROPIC_TARGET_API_URL: copilotHeadroomCfg.anthropic_target_url ?? 'https://api.business.githubcopilot.com',
-                OPENAI_TARGET_API_URL: copilotHeadroomCfg.openai_target_url ?? 'https://api.business.githubcopilot.com',
-                HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
-                HTTPS_PROXY: `http://127.0.0.1:${egressPort}`,
-                NO_PROXY: '127.0.0.1,localhost,::1',
-                ...sslEnv,
-              },
-              home,
-              manager: winManager,
-            });
-            ok(`copilot-headroom service registered (port ${copilotHeadroomPort})`);
-          } catch (e) {
-            warn(`copilot-headroom service registration failed: ${e.message}`);
+          //
+          // Require explicit target URLs. Defaults are empty (see schema.mjs)
+          // because Copilot's API host depends on the user's account tier
+          // (Individual → api.githubcopilot.com; Business/Enterprise →
+          // api.business.githubcopilot.com). Silently defaulting to either
+          // one misroutes traffic and previously leaked the maintainer's own
+          // account tier into every fresh install.
+          const anthropicTarget = copilotHeadroomCfg.anthropic_target_url?.trim() || '';
+          const openaiTarget    = copilotHeadroomCfg.openai_target_url?.trim() || '';
+          if (!anthropicTarget || !openaiTarget) {
+            warn(
+              'copilot-headroom is enabled but proxy.copilot_headroom.anthropic_target_url / openai_target_url are empty. ' +
+              'Set them via `myelin config set proxy.copilot_headroom.anthropic_target_url https://api.githubcopilot.com` ' +
+              '(or https://api.business.githubcopilot.com for Business/Enterprise) and re-run `myelin install`. Skipping service registration.'
+            );
+          } else {
+            try {
+              await installCopilotHeadroomService({
+                headroomBin: binPath,
+                port: copilotHeadroomPort,
+                envVars: {
+                  ANTHROPIC_TARGET_API_URL: anthropicTarget,
+                  OPENAI_TARGET_API_URL: openaiTarget,
+                  HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
+                  HTTPS_PROXY: `http://127.0.0.1:${egressPort}`,
+                  NO_PROXY: '127.0.0.1,localhost,::1',
+                  ...sslEnv,
+                },
+                home,
+                manager: winManager,
+              });
+              ok(`copilot-headroom service registered (port ${copilotHeadroomPort})`);
+            } catch (e) {
+              warn(`copilot-headroom service registration failed: ${e.message}`);
+            }
           }
         }
       } catch (e) {
