@@ -138,6 +138,19 @@ export const DEFAULT_CONFIG = {
     // provider, model) and placement rules.
     token_efficiency: true,
   },
+  observability: {
+    // token_optimizer: opt-in integration of alexgreensh/token-optimizer
+    // (https://github.com/alexgreensh/token-optimizer) — PolyForm
+    // Noncommercial License 1.0.0
+    // (https://polyformproject.org/licenses/noncommercial/1.0.0). Free for
+    // personal/noncommercial/educational/government use; company/commercial
+    // use requires a separate license from the author (see the LICENSE file,
+    // or contact via the repo). Disabled by default — Myelin always prints
+    // this license notice again before performing any install step, even
+    // after this flag is enabled, so enabling it here is not silent/implicit
+    // consent to the install action itself.
+    token_optimizer: false,
+  },
   // copilot_hud: opt-in Copilot CLI status-line plugin for live context /
   // token-burn visibility. Disabled by default because setup also requires a
   // one-time interactive `/copilot-hud:setup` run that the installer cannot

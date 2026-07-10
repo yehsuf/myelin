@@ -529,6 +529,48 @@ These flags control Myelin's own deterministic compression helpers — native re
 
 ---
 
+### `observability.token_optimizer`
+**Type:** boolean | **Default:** `false` (opt-in)
+
+**What it does:** Enables the real `alexgreensh/token-optimizer` integration for Claude Code and GitHub Copilot. On macOS/Linux, Myelin can clone the upstream repo and run its Copilot installer. For Claude Code, Myelin prints the verified slash-command steps, but it cannot automate those in-session commands.
+
+**What you gain:** Bash/command output compression, file re-read delta/skeleton compression, quality scoring, checkpoint/restore support across auto-compaction, a local session SQLite database, and zero-telemetry / zero-network helper behavior.
+
+**What you lose:** Requires Python 3.9+ on PATH. Claude Code still needs a one-time manual `/token-optimizer` setup inside the session. Native Windows cannot be automated here — for Copilot CLI you must run the upstream installer from inside WSL.
+
+> **License:** PolyForm Noncommercial License 1.0.0 (`https://polyformproject.org/licenses/noncommercial/1.0.0`). Free for personal, noncommercial, educational, and government use. Company/commercial use requires contacting the author for a separate license.
+
+**Warning behavior:** Myelin will print this license notice again immediately before performing any install action, regardless of this config flag's value — enabling the flag is not implicit consent to skip the warning.
+
+**When to enable:** Sessions where you want upstream token-efficiency hooks and diagnostics in addition to Myelin's own proxy/hook stack.
+
+```bash
+myelin config set observability.token_optimizer true
+# macOS/Linux: re-run install to let Myelin clone + run the Copilot installer
+myelin install
+```
+
+**Claude Code (manual, not automatable by Myelin):**
+
+```text
+/plugin marketplace add alexgreensh/token-optimizer
+/plugin install token-optimizer@alexgreensh-token-optimizer
+/token-optimizer
+```
+
+**GitHub Copilot CLI (automatable on macOS/Linux, manual on Windows/WSL):**
+
+```bash
+git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git ~/.myelin/token-optimizer
+cd ~/.myelin/token-optimizer
+bash install.sh --copilot
+TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor
+```
+
+On Windows, run the same Copilot commands from inside a **WSL shell**. Myelin will not try to invoke WSL for you automatically.
+
+---
+
 ### `copilot_hud.enabled`
 **Type:** boolean | **Default:** `false` (opt-in)
 
@@ -666,7 +708,6 @@ These ideas were researched or designed, but they are **not** valid config keys 
 
 - `conversation_memory.mem0` — Would extract and reinject conversation facts between turns; rejected because mem0 silently calls OpenAI by default (not free), and a local SQLite + summarization approach was the recommended alternative instead.
 - `observability.helicone` — Would add a request observability dashboard for token/cost tracing; rejected because the self-hosted Docker stack adds substantial operational overhead and roughly 750MB-1.3GB of RAM usage.
-- `observability.token_optimizer` — Would surface live token/context telemetry inside Claude Code; not implemented, and the similar token-optimizer plugin's PolyForm Noncommercial license conflicts with Myelin's MIT distribution model.
 - `observability.ai_engineering_coach` — Would generate weekly prompt-quality and anti-pattern reports; not yet built because it depends on a VS Code extension with local file-access review/privacy considerations.
 - `stacklit.enabled` — Would generate `stacklit.json` and `DEPENDENCIES.md` repo snapshots; `--with-stacklit` existed in the installer but was a stubbed no-op.
 - `semgrep.enabled` — Would wire Semgrep into the toolchain for structural/security rules; no implementation or install path exists today.

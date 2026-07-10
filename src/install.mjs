@@ -19,6 +19,11 @@ import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
+import {
+  installTokenOptimizerForCopilot,
+  tokenOptimizerClaudeCodeInstructions,
+  tokenOptimizerLicenseNotice,
+} from './service/token-optimizer.mjs';
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
 import { buildBashBanRawHookSource } from './hooks/bash-ban-raw.mjs';
@@ -822,6 +827,7 @@ async function main() {
   mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
+  const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
   // Gated on BOTH the config flag AND actual presence — a leftover global
   // install from a prior "enabled: true" run (or an unrelated `npm install -g
@@ -961,6 +967,24 @@ async function main() {
     }
   } else if (copilotHudEnabled && !copilot) {
     skip('copilot-hud skipped (--claude-only)');
+  }
+
+  if (tokenOptimizerEnabled && copilot) {
+    installTokenOptimizerForCopilot({
+      os,
+      exec: (command, options = {}) => execSync(command, { stdio: 'inherit', ...options }),
+      log: (message = '') => console.log(`  ${message}`),
+      warn,
+    });
+  } else if (tokenOptimizerEnabled && !copilot) {
+    skip('token-optimizer Copilot install skipped (--claude-only)');
+  }
+
+  if (tokenOptimizerEnabled && claudeCC) {
+    warn(tokenOptimizerLicenseNotice());
+    console.log(`  ${tokenOptimizerClaudeCodeInstructions().replace(/\n/g, '\n  ')}`);
+  } else if (tokenOptimizerEnabled && !claudeCC) {
+    skip('token-optimizer Claude Code instructions skipped (--copilot-only)');
   }
 
   if (codegraphEnabled) {

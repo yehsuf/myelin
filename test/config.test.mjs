@@ -78,10 +78,16 @@ describe('config schema', () => {
     assert.equal(DEFAULT_CONFIG.proxy.windows_service.watchdog_interval_minutes, 2);
   });
   it('DEFAULT_CONFIG excludes removed vaporware keys', () => {
-    for (const key of ['conversation_memory', 'observability', 'stacklit', 'semgrep', 'budget_routing', 'learning']) {
+    for (const key of ['conversation_memory', 'stacklit', 'semgrep', 'budget_routing', 'learning']) {
       assert.equal(key in DEFAULT_CONFIG, false);
     }
+    assert.equal('helicone' in DEFAULT_CONFIG.observability, false);
+    assert.equal('ai_engineering_coach' in DEFAULT_CONFIG.observability, false);
+    assert.equal('headroom_learn' in (DEFAULT_CONFIG.learning ?? {}), false);
     assert.equal('srt' in DEFAULT_CONFIG.output_sandboxing, false);
+  });
+  it('DEFAULT_CONFIG has observability.token_optimizer = false (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.observability.token_optimizer, false);
   });
   it('DEFAULT_CONFIG retains real config keys unchanged', () => {
     assert.equal(DEFAULT_CONFIG.output_sandboxing.context_mode, true);
