@@ -112,6 +112,7 @@ export const DEFAULT_CONFIG = {
     // vs Myelin's own >=20). Opt in after validating it on your own repos.
     codegraph: false,
     mcp_git: true,
+    mcp_git_extra: true,
     cbm_fallback: { enabled: true, mcp_limit_threshold: 3 },
   },
   shell_compression: { rtk: true },

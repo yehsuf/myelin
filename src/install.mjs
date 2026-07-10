@@ -1205,6 +1205,14 @@ async function main() {
   const memoryFile = os === 'windows'
     ? join(home, '.myelin', 'memory.jsonl').replace(/\//g, '\\')
     : join(home, '.myelin', 'memory.jsonl');
+  const repoRoot = resolveRepoRoot(home, os);
+  const gitExtraEnabled = existingCfg.code_discovery?.mcp_git_extra !== false;
+  const gitExtraServer = gitExtraEnabled
+    ? {
+        command: os === 'windows' ? 'python' : 'python3',
+        args: [join(repoRoot, 'src', 'mcp', 'git-extra.py')],
+      }
+    : undefined;
 
   const claudeMcpServers = {
     serena: { command: serenaWrapper, args: [] },
@@ -1214,6 +1222,7 @@ async function main() {
     // disabled again — see codegraphReady comment above.
     codegraph: toolPaths.codegraphWrapper ? { command: toolPaths.codegraphWrapper, args: [] } : undefined,
     'mcp-git': { command: toolPaths.uvx, args: ['mcp-server-git'] },
+    'git-extra': gitExtraServer,
     memory: { command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile } },
     cairn: { command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'] },
   };
@@ -1223,6 +1232,7 @@ async function main() {
     semble: { type: 'local', command: toolPaths.semble, args: [], env: {}, tools: ['*'] },
     codegraph: toolPaths.codegraphWrapper ? { type: 'local', command: toolPaths.codegraphWrapper, args: [], env: {}, tools: ['*'] } : undefined,
     'mcp-git': { type: 'local', command: toolPaths.uvx, args: ['mcp-server-git'], env: {}, tools: ['*'] },
+    'git-extra': gitExtraServer ? { type: 'local', ...gitExtraServer, env: {}, tools: ['*'] } : undefined,
     memory: { type: 'local', command: 'npx', args: ['-y', '--registry', 'https://registry.npmjs.org', '@modelcontextprotocol/server-memory'], env: { MEMORY_FILE_PATH: memoryFile }, tools: ['*'] },
     cairn: { type: 'local', command: toolPaths.uvx, args: ['--python', '3.12', 'agentcairn'], env: {}, tools: ['*'] },
   };
