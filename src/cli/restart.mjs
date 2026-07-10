@@ -53,6 +53,11 @@ export async function runRestart() {
         const { spawnDetachedService } = await import('../service/windows.mjs');
         spawnDetachedService('MyelinHeadroom', bin, argStr);
         console.log('  ✓ headroom restarted');
+        // Wait for headroom to be healthy before starting mitmproxy —
+        // concurrent Python startup causes resource contention and delays.
+        if (!await waitForHeadroom(port, 20000)) {
+          console.log('  ↷ headroom still starting — mitmproxy will follow');
+        }
       }
     } catch (e) { console.warn(`  ⚠ headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
