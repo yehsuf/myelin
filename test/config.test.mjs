@@ -78,13 +78,20 @@ describe('config schema', () => {
     assert.equal(DEFAULT_CONFIG.proxy.windows_service.watchdog_interval_minutes, 2);
   });
   it('DEFAULT_CONFIG excludes removed vaporware keys', () => {
-    for (const key of ['conversation_memory', 'stacklit', 'semgrep', 'budget_routing', 'learning']) {
+    for (const key of ['conversation_memory', 'stacklit', 'semgrep', 'learning']) {
       assert.equal(key in DEFAULT_CONFIG, false);
     }
     assert.equal('helicone' in DEFAULT_CONFIG.observability, false);
     assert.equal('ai_engineering_coach' in DEFAULT_CONFIG.observability, false);
     assert.equal('headroom_learn' in (DEFAULT_CONFIG.learning ?? {}), false);
     assert.equal('srt' in DEFAULT_CONFIG.output_sandboxing, false);
+  });
+  it('DEFAULT_CONFIG has budget_routing defaults (opt-in)', () => {
+    assert.equal(DEFAULT_CONFIG.budget_routing.litellm, false);
+    assert.equal(DEFAULT_CONFIG.budget_routing.litellm_port, 4000);
+    assert.equal(DEFAULT_CONFIG.budget_routing.cheap_model, 'claude-haiku-4-5');
+    assert.equal(DEFAULT_CONFIG.budget_routing.complex_model, 'claude-sonnet-4-6');
+    assert.equal(DEFAULT_CONFIG.budget_routing.cheap_threshold, 0.3);
   });
   it('DEFAULT_CONFIG has observability.token_optimizer = false (opt-in)', () => {
     assert.equal(DEFAULT_CONFIG.observability.token_optimizer, false);

@@ -160,6 +160,13 @@ export const DEFAULT_CONFIG = {
   copilot: {
     model: 'claude-sonnet-4-6',   // change with: myelin config set copilot.model <model>
   },
+  budget_routing: {
+    litellm: false,
+    litellm_port: 4000,
+    cheap_model: 'claude-haiku-4-5',
+    complex_model: 'claude-sonnet-4-6',
+    cheap_threshold: 0.3,
+  },
 };
 
 function isPlainObject(value) {

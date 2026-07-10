@@ -792,6 +792,7 @@ async function main() {
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
+  const venv = join(home, '.myelin', 'venv');
   // Gated on BOTH the config flag AND actual presence — a leftover global
   // install from a prior "enabled: true" run (or an unrelated `npm install -g
   // @optave/codegraph` on the machine) must never cause MCP registration
@@ -814,7 +815,7 @@ async function main() {
 
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
-    const dryRunTools = ['uv', 'serena', 'semble', 'ast-grep', ...(codegraphEnabled ? ['codegraph'] : []), 'rtk', 'mitmproxy'];
+    const dryRunTools = ['uv', 'serena', 'semble', 'ast-grep', ...(existingCfg.budget_routing?.litellm ? ['litellm'] : []), ...(codegraphEnabled ? ['codegraph'] : []), 'rtk', 'mitmproxy'];
     console.log(`  ${dryRunTools.join(', ')}`);
     if (copilotHudEnabled && copilot) console.log('  copilot-hud plugin');
     if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
@@ -985,6 +986,31 @@ async function main() {
     skip('token-optimizer Claude Code instructions skipped (--copilot-only)');
   }
 
+  // LiteLLM budget routing (opt-in)
+  if (existingCfg.budget_routing?.litellm) {
+    step('LiteLLM budget router...');
+    try {
+      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
+        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
+      }
+      execSync(`uv pip install --python "${venv}" "litellm[proxy]>=1.92"`, { stdio: 'inherit' });
+      const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
+      const cfgPath = liteLLMConfigPath(home);
+      const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
+      const content = generateLiteLLMConfig({
+        headroomPort: existingCfg.proxy?.headroom?.port ?? 8787,
+        litellmPort,
+        cheapModel: existingCfg.budget_routing?.cheap_model ?? 'claude-haiku-4-5',
+        complexModel: existingCfg.budget_routing?.complex_model ?? 'claude-sonnet-4-6',
+      });
+      writeFileSync(cfgPath, content, 'utf8');
+      ok(`litellm config written → ${cfgPath}`);
+      ok(`Set ANTHROPIC_BASE_URL=http://127.0.0.1:${litellmPort} in your shell, then start LiteLLM manually`);
+    } catch (e) {
+      warn(`litellm install failed: ${e.message.split('\n')[0]}`);
+    }
+  }
+
   if (codegraphEnabled) {
     if (codegraphReady) {
       skip(`codegraph (${tools.codegraph.version})`);
@@ -1007,13 +1033,12 @@ async function main() {
   if (!flags['no-headroom']) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
-      const venv = join(home, '.myelin', 'venv');
       if (!existsSync(join(venv, 'pyvenv.cfg'))) {
-        execSync(`uv venv ${venv}`, { stdio: 'pipe' });
+        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
       }
       // Single quotes break on Windows cmd — use double quotes or no quotes
       const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
-      execSync(`uv pip install --python ${venv} ${headroomPkg}`, { stdio: 'inherit' });
+      execSync(`uv pip install --python "${venv}" ${headroomPkg}`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
     } else { skip(`headroom (${tools.headroom.version})`); }
   }
@@ -1085,6 +1110,7 @@ async function main() {
       const mitmPort = mitmCfg.port ?? 8888;
       const mitmEnv = {
         MYELIN_HEADROOM_PORT: String(port),
+        ...(cfg.budget_routing?.litellm ? { MYELIN_COMPRESS: '0' } : {}),
         ...(mitmCfg.block_bypass    ? { MYELIN_BLOCK_BYPASS:    '1'                      } : {}),
         ...(mitmCfg.block_marker    ? { MYELIN_BLOCK_MARKER:    mitmCfg.block_marker     } : {}),
         ...(mitmCfg.override_proxy  ? { MYELIN_OVERRIDE_PROXY:  mitmCfg.override_proxy   } : {}),

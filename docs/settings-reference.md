@@ -572,6 +572,26 @@ On Windows, run the same Copilot commands from inside a **WSL shell**. Myelin wi
 
 ---
 
+### `budget_routing`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `litellm` | `false` | Enable opt-in LiteLLM proxy config generation and package install with the Headroom pre-call guardrail. Re-run `myelin install` after enabling. |
+| `litellm_port` | `4000` | Port for the LiteLLM proxy. |
+| `cheap_model` | `claude-haiku-4-5` | Model used for low-complexity requests. |
+| `complex_model` | `claude-sonnet-4-6` | Model used for high-complexity requests. |
+| `cheap_threshold` | `0.3` | Complexity score below which the cheap model is used. Phase 1 stores the threshold only; routing policy enforcement comes later. |
+
+**Enable LiteLLM routing:**
+1. `myelin config set budget_routing.litellm true`
+2. `myelin install` — installs `litellm[proxy]` into `~/.myelin/venv` and writes `~/.myelin/litellm-config.yaml`
+3. Start LiteLLM manually: `~/.myelin/venv/bin/python -m litellm --config ~/.myelin/litellm-config.yaml --port 4000`
+4. Set `ANTHROPIC_BASE_URL=http://127.0.0.1:4000` in your shell profile
+
+The generated LiteLLM config wires the native `headroom` guardrail in `pre_call` mode to `http://127.0.0.1:<proxy.headroom.port>/v1/compress`, so the existing Headroom sidecar stays the compression contract while LiteLLM handles model routing. When this flag is enabled, Myelin also sets `MYELIN_COMPRESS=0` on the mitmproxy service leg to avoid double-compressing LiteLLM-forwarded requests.
+
+---
+
 ### `copilot_hud.enabled`
 **Type:** boolean | **Default:** `false` (opt-in)
 
@@ -712,7 +732,6 @@ These ideas were researched or designed, but they are **not** valid config keys 
 - `observability.ai_engineering_coach` — Would generate weekly prompt-quality and anti-pattern reports; not yet built because it depends on a VS Code extension with local file-access review/privacy considerations.
 - `stacklit.enabled` — Would generate `stacklit.json` and `DEPENDENCIES.md` repo snapshots; `--with-stacklit` existed in the installer but was a stubbed no-op.
 - `semgrep.enabled` — Would wire Semgrep into the toolchain for structural/security rules; no implementation or install path exists today.
-- `budget_routing.litellm` / `cheap_model` / `complex_model` / `cheap_threshold` — Would route cheap turns to a lower-cost model and complex turns to a stronger model; designed but never wired, although LiteLLM's native `headroom` guardrail (`POST /v1/compress`) was identified as a promising future integration point.
 - `learning.headroom_learn` — Would mine failed sessions for reusable rule proposals to append to `CLAUDE.md`; designed, but never built.
 - `output_sandboxing.srt` — Would have wrapped tool execution in Anthropic's sandbox runtime with a claimed Windows skip-path; no implementation exists on any platform, and there is no corresponding npm dependency.
 
