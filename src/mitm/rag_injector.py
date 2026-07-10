@@ -1,6 +1,8 @@
 """
 Myelin rag_injector — proxy-side code context injection.
 
+Status: experimental fallback (OFF by default, MYELIN_RAG_INJECT=0).
+
 When the LLM request does NOT include serena_* tool definitions (i.e., the
 client either has no MCP config or serena is not in it), this module:
 
@@ -12,6 +14,19 @@ client either has no MCP config or serena is not in it), this module:
 In both cases the injected context is a synthetic assistant-prefill block
 appended before the current user turn — the LLM sees relevant code without
 needing to call any tool.
+
+Positioning vs serena-direct-tools (src/mitm/serena_context.py):
+  * serena_context.py injects RETRIEVED CODE SNIPPETS as a user-tail block,
+    is cache-aware (respects frozen prefix, never touches tools[]), and is the
+    recommended path. Enable via MYELIN_SERENA_CONTEXT=1.
+  * rag_injector (this module) uses the older assistant-prefill placement.
+    It fires only when MYELIN_RAG_INJECT=1 AND MYELIN_SERENA_CONTEXT=0, making
+    it a last-resort fallback for the ripgrep-only scenario (no serena binary,
+    no serena_context module available).
+
+  Both modules skip injection when serena tools are already present in
+  tools[] (detected via _has_serena_tools / has_serena_tools). They are
+  complementary, not competing.
 
 Configuration (env vars):
   MYELIN_RAG_INJECT       default: 0 (OFF — see cache-stability note below)
@@ -25,9 +40,16 @@ was actually sent to the provider — the client's next request re-sends its
 real (uninjected) history. This means the prompt-cache write for an injected
 turn diverges from what the following turn sends, forfeiting that turn's
 reusable prefix. Default is OFF until this is reworked to a cache-stable
-injection point (e.g. a stable system-tail block). Only relevant as a
-fallback anyway — it never fires when serena tools are already present in
-the request (the normal Myelin setup).
+injection point (e.g. a stable system-tail block).
+
+Cache-stable rework path (tracked as follow-up ticket
+"rag-injector-cache-stable-rework", not in scope here):
+  1. Move injection point to a suffix on the last system message (not a
+     fake assistant turn).
+  2. Cache block by (workspace_root, workspace_signature) — recompute at
+     most once per MYELIN_RAG_REFRESH_SECS (default 300).
+  3. Bound to MYELIN_RAG_MAX_CONTEXT_TOKENS (default 2000) hard cap.
+  Once reworked, may be promoted to on-by-default when serena unavailable.
 
 The workspace root is detected from the system message (Claude Code embeds
 the cwd there) or from the first user message.
