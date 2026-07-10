@@ -43,11 +43,23 @@ export async function runRestart() {
         if (!restartWinswService({ id: HEADROOM_SERVICE_ID })) throw new Error('WinSW restart failed');
         console.log('  ✓ headroom restarted (WinSW)');
       } else {
-        execSync('powershell -Command "Stop-Process -Name headroom -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500"', { stdio: 'pipe' });
         const bin = headroomBinPath();
-        if (existsSync(bin)) {
-          execSync(`powershell -Command "Start-Process -FilePath '${bin}' -ArgumentList 'proxy' -WindowStyle Hidden"`, { stdio: 'pipe' });
-        }
+        const port = cfg?.proxy?.headroom?.port ?? 8787;
+        const intercept = cfg?.proxy?.headroom?.intercept_tool_results !== false;
+        const args = ['proxy', '--port', String(port), ...(intercept ? ['--intercept-tool-results'] : [])];
+        // In non-interactive sessions (SSH, scripts) Windows User-scope env vars from
+        // HKCU\Environment are NOT automatically inherited — headroom needs SSL_CERT_FILE
+        // and REQUESTS_CA_BUNDLE to connect through corporate CAs. Load them explicitly.
+        const userEnvKeys = ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'HEADROOM_CA_BUNDLE',
+                             'NODE_EXTRA_CA_CERTS', 'OPENAI_TARGET_URL', 'ANTHROPIC_BASE_URL'];
+        const loadEnv = userEnvKeys
+          .map(k => `$env:${k} = [Environment]::GetEnvironmentVariable('${k}','User')`)
+          .join('; ');
+        const argList = args.map(a => `'${a}'`).join(',');
+        execSync(
+          `powershell -Command "${loadEnv}; Stop-Process -Name headroom -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 500; Start-Process -FilePath '${bin}' -ArgumentList ${argList} -WindowStyle Hidden"`,
+          { stdio: 'pipe' }
+        );
         console.log('  ✓ headroom restarted');
       }
     } catch { console.warn('  ⚠ headroom restart failed'); }
