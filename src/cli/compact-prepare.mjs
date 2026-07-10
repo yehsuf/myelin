@@ -24,7 +24,7 @@ import os from 'node:os';
 
 const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
-const MAX_HINT = 4800;
+const MAX_HINT = 4000; // Copilot CLI customInstructions hard cap
 
 // ─── small helpers ────────────────────────────────────────────
 function tryRead(p) {
@@ -479,14 +479,25 @@ function modePrepare(data) {
   const hint = renderHint(sections);
   dashboard(data, hint.length);
   console.log('-'.repeat(64));
-  console.log('  Copy the block below (WITHOUT the sentinel lines) after /compact:');
+  console.log('  SESSION STATE BRIEF — agent, use this + your session memory');
+  console.log('  to compose the actual compact hint (max 4000 chars).');
   console.log('-'.repeat(64));
   console.log('');
-  console.log('<<<COMPACT_HINT>>>');
+  console.log('<<<SESSION_STATE_BRIEF>>>');
   console.log(hint);
-  console.log('<<<END_COMPACT_HINT>>>');
+  console.log('<<<END_SESSION_STATE_BRIEF>>>');
   console.log('');
   console.log('-'.repeat(64));
+  console.log('  Agent instructions:');
+  console.log('  1. Read the SESSION STATE BRIEF above (source of truth for facts).');
+  console.log('  2. Compose the actual /compact hint yourself using your memory of');
+  console.log('     this session — accomplishments, decisions, next-priority work,');
+  console.log('     unresolved blockers. Do NOT just paste the brief.');
+  console.log('  3. Keep the hint under 4000 characters (Copilot CLI hard cap).');
+  console.log('  4. Print it between:  >>> COMPACT HINT >>>  and  <<< END COMPACT HINT <<<');
+  console.log('  5. Tell the user to copy that hint (WITHOUT sentinel lines)');
+  console.log('     after `/compact ` in their next message.');
+  console.log('');
   console.log('  After /compact completes, run:');
   console.log('    node ~/.copilot/skills/compact/compact-prepare.mjs resume');
   console.log('='.repeat(64));

@@ -158,6 +158,11 @@ describe('parseCompactYaml', () => {
 
 // ─── unit tests: rendering ─────────────────────────────────────
 describe('buildHintSections / renderHint', () => {
+  it('MAX_HINT matches the Copilot CLI customInstructions hard cap (4000)', () => {
+    assert.equal(MAX_HINT, 4000,
+      'MAX_HINT must be 4000 — Copilot CLI aborts /compact if customInstructions exceeds 4000 chars.');
+  });
+
   it('produces sections and stays within MAX_HINT for typical input', () => {
     const data = {
       sid: 'abcdef1234567890',
@@ -240,7 +245,7 @@ describe('buildHintSections / renderHint', () => {
 
 // ─── integration: subprocess modes ─────────────────────────────
 describe('CLI modes', () => {
-  it('prepare mode produces dashboard + sentinels', () => {
+  it('prepare mode produces dashboard + SESSION_STATE_BRIEF sentinels + agent instructions', () => {
     const { home, sid, gitRoot } = makeSession('sid-prepare', {
       todos: [{ id: 'T1', title: 'work on X', description: 'stuff', status: 'in_progress' }],
       planMd: '# plan\n\n## Next\n\nfinish X\n',
@@ -249,11 +254,18 @@ describe('CLI modes', () => {
     const r = runScript(sid, home, gitRoot, 'prepare');
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     assert.match(r.stdout, /compact-prepare — session/);
-    assert.match(r.stdout, /<<<COMPACT_HINT>>>/);
-    assert.match(r.stdout, /<<<END_COMPACT_HINT>>>/);
+    assert.match(r.stdout, /<<<SESSION_STATE_BRIEF>>>/);
+    assert.match(r.stdout, /<<<END_SESSION_STATE_BRIEF>>>/);
     assert.match(r.stdout, /COMPACT_STATE_V1/);
     assert.match(r.stdout, /IN-PROGRESS:/);
     assert.match(r.stdout, /NEXT:\s*\nfinish X/);
+    // Prepare mode must instruct the agent to compose the hint, not paste it.
+    assert.match(r.stdout, /YOU \(the agent\)|agent, use this|Compose the actual|compose the actual/i);
+    assert.match(r.stdout, /4000/);
+    assert.match(r.stdout, />>> COMPACT HINT >>>/);
+    assert.match(r.stdout, /<<< END COMPACT HINT <<</);
+    // The old sentinel names must be gone.
+    assert.doesNotMatch(r.stdout, /<<<COMPACT_HINT>>>/);
   });
 
   it('emit mode emits ONLY the hint, no sentinels, no dashboard', () => {
@@ -262,6 +274,7 @@ describe('CLI modes', () => {
     });
     const r = runScript(sid, home, gitRoot, 'emit');
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.doesNotMatch(r.stdout, /<<<SESSION_STATE_BRIEF>>>/);
     assert.doesNotMatch(r.stdout, /<<<COMPACT_HINT>>>/);
     assert.doesNotMatch(r.stdout, /compact-prepare — session/);
     assert.match(r.stdout, /^COMPACT_STATE_V1/);
@@ -274,6 +287,7 @@ describe('CLI modes', () => {
     const r = runScript(sid, home, gitRoot, 'resume');
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     assert.match(r.stdout, /CONTEXT RESTORED/);
+    assert.doesNotMatch(r.stdout, /<<<SESSION_STATE_BRIEF>>>/);
     assert.doesNotMatch(r.stdout, /<<<COMPACT_HINT>>>/);
     assert.doesNotMatch(r.stdout, /After \/compact completes/);
     assert.match(r.stdout, /Top priority:\s*top task — important/);
