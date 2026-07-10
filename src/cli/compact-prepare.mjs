@@ -547,9 +547,14 @@ function main() {
   else if (mode === 'resume') modeResume(data);
 }
 
-// Only run main if invoked directly (not imported for tests)
+// Only run main if invoked directly (not imported for tests).
+// Use realpathSync on argv[1] so symlinks are resolved before comparing
+// against import.meta.url (which Node.js always resolves to the real path).
 import { fileURLToPath } from 'node:url';
-const isDirect = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+import { realpathSync } from 'node:fs';
+const _scriptReal = fileURLToPath(import.meta.url);
+const _argvReal = process.argv[1] ? (() => { try { return realpathSync(process.argv[1]); } catch { return path.resolve(process.argv[1]); } })() : '';
+const isDirect = _argvReal === _scriptReal;
 if (isDirect) main();
 
 export { resolveSessionId, collectData, loadTodos, loadPlanNext, loadCheckpoints, repoInfo, MAX_HINT };
