@@ -30,6 +30,26 @@ function upgradeCommands(os) {
   };
 }
 
+const _UPGRADE_STOP_PROCESS = {
+  headroom: ['headroom'],
+  serena: ['serena-agent'],
+  semble: ['semble'],
+};
+
+export function _stopForUpgrade(name, execSyncFn = execSync) {
+  const names = _UPGRADE_STOP_PROCESS[name];
+  if (!names) return;
+  const joined = names.map(processName => `'${processName}'`).join(',');
+  try {
+    execSyncFn(
+      `powershell -Command "Get-Process -Name ${joined} -ErrorAction SilentlyContinue | Stop-Process -Force"`,
+      { stdio: 'pipe', timeout: 5000 }
+    );
+    const start = Date.now();
+    while (Date.now() - start < 500) {}
+  } catch {}
+}
+
 export function isRepoDirty(repoDir) {
   return execSync('git status --porcelain -- . ":(exclude).serena"', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
 }
@@ -87,8 +107,17 @@ export async function runUpdate(options = {}) {
     console.log(`  ${icon} ${label.padEnd(14)} ${status}`);
     if (!check) {
       if (!cmd.upgrade) { console.log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
+      if (os === 'windows') _stopForUpgrade(name);
       try { execSync(cmd.upgrade, { stdio: 'inherit' }); console.log('    ✓ done'); }
-      catch (e) { console.warn(`    ✗ failed: ${e.message.split('\n')[0]}`); }
+      catch (e) {
+        const msg = e?.message ?? String(e);
+        const isLocked = /os error (32|5)|Access is denied|cannot access the file/i.test(msg);
+        if (os === 'windows' && isLocked) {
+          console.warn('    ✗ failed: file locked — close Claude Code / Copilot sessions and re-run: myelin update');
+        } else {
+          console.warn(`    ✗ failed: ${msg.split('\n')[0]}`);
+        }
+      }
     } else {
       console.log(`    → ${cmd.upgrade ?? '(manual)'}`);
     }

@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { isRepoDirty, runSelfUpdate, checkStaleConfigKeys } from '../src/cli/update.mjs';
+import { _stopForUpgrade, isRepoDirty, runSelfUpdate, checkStaleConfigKeys } from '../src/cli/update.mjs';
 
 function makeRepoFixture() {
   const repoDir = mkdtempSync(join(homedir(), '.tokenstack-update-test-'));
@@ -51,6 +51,39 @@ function makeSelfUpdateExecSyncStub({ current = '83c7d35', latest = 'c6e333d', u
     },
   };
 }
+
+describe('_stopForUpgrade', () => {
+  it('calls powershell Stop-Process for headroom on windows', () => {
+    const calls = [];
+    const stub = (cmd) => calls.push(cmd);
+
+    _stopForUpgrade('headroom', stub);
+
+    assert.ok(calls.length === 1);
+    assert.ok(calls[0].includes('headroom'));
+    assert.ok(calls[0].includes('Stop-Process'));
+  });
+
+  it('calls Stop-Process for serena-agent', () => {
+    const calls = [];
+
+    _stopForUpgrade('serena', cmd => calls.push(cmd));
+
+    assert.ok(calls[0].includes('serena-agent'));
+  });
+
+  it('no-ops for unknown tool name', () => {
+    const calls = [];
+
+    _stopForUpgrade('uv', cmd => calls.push(cmd));
+
+    assert.strictEqual(calls.length, 0);
+  });
+
+  it('swallows errors from execSync', () => {
+    assert.doesNotThrow(() => _stopForUpgrade('headroom', () => { throw new Error('ps failed'); }));
+  });
+});
 
 describe('isRepoDirty', () => {
   it('ignores changes confined to .serena/', () => {
