@@ -88,6 +88,10 @@ TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
 # once the injection point is reworked to be cache-stable (e.g. system-tail
 # placement instead of mid-history). See docs/settings-reference.md.
 RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '0') == '1'
+# Request-side Serena code context injection (SSE-safe: never touches
+# responses, never mutates tools[] or frozen prompt-cache prefix).
+# See src/mitm/serena_context.py for full invariants and env vars.
+SERENA_CONTEXT = os.environ.get('MYELIN_SERENA_CONTEXT', '0') == '1'
 THRASH_CACHE = os.environ.get('MYELIN_THRASH_CACHE', '1') == '1'
 LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
 
@@ -587,8 +591,24 @@ class MyelinAddon:
 
         original_size = len(body)
 
+        # 1a. Serena context injection (request-side, SSE-safe).
+        # Runs before rag_injector so both env vars can co-exist without
+        # double-injection.
+        if SERENA_CONTEXT:
+            try:
+                from serena_context import inject_serena_context
+                data, _sc_meta = inject_serena_context(data, provider.get('fmt', 'anthropic'))
+                messages = data.get('messages', messages)
+                if _sc_meta.get('injected') and LOG_SAVINGS:
+                    ctx.log.info(
+                        f"[myelin] serena-context: {_sc_meta.get('snippet_count',0)} snippets "
+                        f"injected (frozen_count={_sc_meta.get('frozen_count',0)})"
+                    )
+            except Exception as _sc_err:
+                ctx.log.debug(f'[myelin] serena_context skipped: {_sc_err}')
+
         # 1. RAG: inject code context when serena MCP is absent
-        if RAG_INJECT:
+        if RAG_INJECT and not SERENA_CONTEXT:
             try:
                 from rag_injector import inject_rag_context
                 data = inject_rag_context(data)
