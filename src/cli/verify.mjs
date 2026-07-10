@@ -7,6 +7,7 @@ import { which } from '../detect/which.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { detectOS } from '../detect/os.mjs';
+import { execSync } from 'node:child_process';
 
 function ensureWindowsPath() {
   if (process.platform !== 'win32') return;
@@ -50,7 +51,20 @@ export async function runVerify() {
   const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
   const results = [];
 
-  // Headroom (opt-in via proxy.headroom.enabled — skipped entirely when
+  // headroom-lite (replaces old headroom — always checked)
+  const hlPort = cfg?.proxy?.headroom_lite?.port ?? 8790;
+  try {
+    const hlResp = JSON.parse(execSync(`curl -sf --max-time 3 http://127.0.0.1:${hlPort}/health`, { timeout: 4000 }).toString());
+    results.push({
+      name: `headroom-lite (:${hlPort})`,
+      ok: hlResp?.status === 'ok',
+      detail: hlResp?.status === 'ok' ? `running — mode: ${hlResp.mode}` : 'unexpected response',
+    });
+  } catch {
+    results.push({ name: `headroom-lite (:${hlPort})`, ok: false, detail: `not running — run: headroom-lite` });
+  }
+
+  // Old headroom (opt-in via proxy.headroom.enabled — skipped entirely when
   // disabled, so a machine that has intentionally turned it off doesn't
   // show a confusing failing row; matches the copilot_headroom pattern below).
   if (cfg.proxy?.headroom?.enabled) {
@@ -156,11 +170,9 @@ export async function runVerify() {
   })();
   results.push({ name: 'ast-grep', ok: astgrep.installed, detail: astgrep.installed ? astgrep.version : 'not found — run: myelin update' });
   // semble uses subcommands, not --version
-  const { detectSemble, detectHeadroom } = await import('../detect/tools.mjs');
+  const { detectSemble } = await import('../detect/tools.mjs');
   const semble = await detectSemble();
   results.push({ name: 'semble', ok: semble.installed, detail: semble.installed ? semble.version : 'not found — run: myelin update' });
-  const hr = await detectHeadroom();
-  results.push({ name: 'headroom proxy', ok: hr.installed, detail: hr.installed ? hr.version : 'not found in venv — run: myelin update' });
 
   const width = Math.max(...results.map(r => r.name.length));
   printVerifyEnvironmentNote();
