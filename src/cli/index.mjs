@@ -89,6 +89,40 @@ program.command('install')
     process.exit(result.status ?? 0);
   });
 
+program.command('compact')
+  .description('Prepare a /compact hint from live session state, or re-orient after /compact')
+  .argument('[mode]', 'prepare | emit | resume (default: prepare)')
+  .action(async (mode = 'prepare') => {
+    const { spawnSync } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const { join: pjoin, dirname } = await import('node:path');
+    const script = pjoin(dirname(fileURLToPath(import.meta.url)), 'compact-prepare.mjs');
+    const r = spawnSync(process.execPath, [script, mode], { stdio: 'inherit' });
+    process.exit(r.status ?? 0);
+  });
+
+program.command('constitution')
+  .description('Manage project constitution (.github/copilot-instructions.md)')
+  .argument('<cmd>', 'init | show | check | append | lock')
+  .argument('[args...]', 'For append: <section> <bullet>')
+  .option('--repo <path>', 'Override repo root')
+  .option('--force', 'Force append even on near-duplicate bullet')
+  .action(async (cmd, args, opts) => {
+    const { cmdInit, cmdShow, cmdCheck, cmdAppend, cmdLock } = await import('./constitution.mjs');
+    let code = 0;
+    switch (cmd) {
+      case 'init':   code = cmdInit({ repo: opts.repo }); break;
+      case 'show':   code = cmdShow({ repo: opts.repo }); break;
+      case 'check':  code = cmdCheck({ repo: opts.repo }); break;
+      case 'append': code = cmdAppend(args[0], args[1], { repo: opts.repo, force: opts.force }); break;
+      case 'lock':   code = cmdLock({ repo: opts.repo }); break;
+      default:
+        console.error(`Unknown constitution subcommand: ${cmd}. Use init|show|check|append|lock`);
+        code = 1;
+    }
+    process.exit(code ?? 0);
+  });
+
 program.command('serena-guard')
   .description('[internal] Serena hook bridge for Copilot CLI / Claude Code - wired per-project by `myelin init`')
   .requiredOption('--event <event>', 'hook event name: preToolUse, preToolUseAutoApprove, sessionStart, or stop')
