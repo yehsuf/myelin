@@ -98,7 +98,7 @@ export async function runRestart() {
           console.warn('  ⚠ mitmproxy registry entry not found — run: myelin install --yes');
         }
       }
-    } catch { console.warn('  ⚠ mitmproxy restart failed'); }
+    } catch (e) { console.warn(`  ⚠ mitmproxy restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
   // Health check
