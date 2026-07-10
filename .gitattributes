@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+bin/myelin text eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.ps1 text eol=lf
