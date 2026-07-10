@@ -130,9 +130,14 @@ export async function runRestart() {
     } catch (e) { console.warn(`  ⚠ copilot-headroom restart failed: ${e.message?.split('\n')[0] ?? e}`); }
   }
 
-  // Health check — give headroom longer to start on Windows (two instances competing)
+  // Health check — headroom can take 30-90s to start via Task Scheduler on first run
+  // (Python module compilation). Don't block — show tip to run `myelin verify`.
   const port = 8787;
-  const healthy = await waitForHeadroom(port, 60000);
-  healthy ? console.log(`  ✓ headroom healthy on :${port}`) : console.warn(`  ⚠ headroom not responding on :${port}`);
+  const healthy = await waitForHeadroom(port, 8000);   // quick probe only
+  if (healthy) {
+    console.log(`  ✓ headroom healthy on :${port}`);
+  } else {
+    console.log(`  ↷ headroom starting in background — run: myelin verify to confirm`);
+  }
   console.log();
 }
