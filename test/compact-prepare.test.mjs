@@ -62,7 +62,7 @@ function makeSession(sid, opts = {}) {
     }));
   }
   if (opts.planMd) {
-    writeFileSync(path.join(gitRoot, 'plan.md'), opts.planMd);
+    writeFileSync(path.join(sessionDir, 'plan.md'), opts.planMd);
   }
   if (opts.compactYaml) {
     writeFileSync(path.join(sessionDir, 'compact.yaml'), opts.compactYaml);

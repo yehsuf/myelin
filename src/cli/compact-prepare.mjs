@@ -417,7 +417,7 @@ function collectData(sid, sessionDir) {
   }
 
   const todos = loadTodos(sessionDir);
-  const plan = loadPlanNext(cwd);
+  const plan = loadPlanNext(sessionDir);
   const checkpoints = loadCheckpoints(sessionDir);
 
   const constitutionLoaded = existsSync(path.join(gitRoot, '.github', 'copilot-instructions.md'));
