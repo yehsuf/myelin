@@ -67,37 +67,61 @@ def _has_serena_tools(tools: list[dict]) -> bool:
 
 
 def _is_serena_running() -> bool:
-    """Cross-platform check for a running serena-agent process."""
-    # Try psutil first (optional dep, most reliable)
+    """Cross-platform check for a running serena-agent process.
+
+    Checks the FULL command line, not just the executable name, because
+    serena is commonly launched via `uvx serena-agent` — the OS-visible
+    process is `python.exe` (or `uv.exe`), not `serena.exe`.
+
+    Order of preference:
+      1. psutil (any OS) — cleanest, checks argv via p.info['cmdline'].
+      2. Windows fallback: PowerShell `Get-CimInstance Win32_Process`
+         filtered on `CommandLine LIKE '%serena%'`.
+      3. POSIX fallback: `pgrep -f serena` (matches full argv).
+    Any failure at any layer degrades to False (never raises).
+    """
+    # 1. psutil path — use p.info (cached from process_iter attrs) to avoid
+    # extra syscall and AccessDenied burst on Windows
     try:
         import psutil
         for p in psutil.process_iter(['cmdline']):
             try:
-                cmd = ' '.join(p.cmdline())
+                cmd = ' '.join(p.info.get('cmdline') or [])
                 if 'serena' in cmd.lower():
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+                continue
         return False
     except ImportError:
+        pass
+    except Exception:
         pass
 
     import platform
     system = platform.system()
     try:
         if system == 'Windows':
-            out = subprocess.run(
-                ['tasklist', '/FI', 'IMAGENAME eq serena.exe', '/FO', 'CSV'],
-                capture_output=True, text=True, timeout=2,
+            # PowerShell CIM query — inspects CommandLine, catches
+            # `python.exe ... serena_agent ...` from `uvx serena-agent`.
+            script = (
+                "$ErrorActionPreference='SilentlyContinue';"
+                "$p = Get-CimInstance Win32_Process -Filter "
+                "\"CommandLine LIKE '%serena%'\" "
+                "-ErrorAction SilentlyContinue | Select-Object -First 1;"
+                "if ($p) { Write-Output 'FOUND' } else { Write-Output 'NONE' }"
             )
-            return 'serena' in out.stdout.lower()
+            out = subprocess.run(
+                ['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                capture_output=True, text=True, timeout=5,
+            )
+            return 'FOUND' in (out.stdout or '')
         else:
             out = subprocess.run(
                 ['pgrep', '-f', 'serena'],
                 capture_output=True, timeout=2,
             )
             return out.returncode == 0
-    except Exception:
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, Exception):
         return False
 
 
