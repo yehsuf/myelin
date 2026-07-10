@@ -4,6 +4,9 @@ import { detectOS } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
+import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
 
 function upgradeCommands(os) {
   const venv = join(homedir(), '.myelin', 'venv');
@@ -49,6 +52,24 @@ export function checkSelfUpdateWorkingTree({ repoDir, force = false, warn = cons
   return { dirty: true, bypassed: true, aborted: false };
 }
 
+export async function checkStaleConfigKeys({
+  configPath = DEFAULT_CONFIG_PATH,
+  warn = console.warn,
+  existsSyncFn = existsSync,
+  readUserConfigFn = readUserConfig,
+  schema = DEFAULT_CONFIG,
+} = {}) {
+  if (!existsSyncFn(configPath)) return { exists: false, staleKeys: [] };
+
+  const rawUserConfig = await readUserConfigFn(configPath, warn);
+  const staleKeys = listUnknownKeyPaths(rawUserConfig, schema);
+  if (staleKeys.length === 0) return { exists: true, staleKeys };
+
+  warn(`ℹ Your ${configPath} has ${staleKeys.length} stale config key(s) no longer used by this version.`);
+  warn('  Run: myelin config prune --dry-run to preview, or myelin config prune to clean them up.');
+  return { exists: true, staleKeys };
+}
+
 export async function runUpdate(options = {}) {
   const { check = false } = options;
   const os = detectOS();
@@ -87,6 +108,7 @@ export async function runSelfUpdate(options = {}, deps = {}) {
   const log = deps.log ?? console.log;
   const warn = deps.warn ?? console.warn;
   const repoDir = deps.repoDir ?? repoDirFromMetaUrl();
+  const staleConfigChecker = deps.checkStaleConfigKeysFn ?? checkStaleConfigKeys;
 
   log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
   try {
@@ -123,8 +145,9 @@ export async function runSelfUpdate(options = {}, deps = {}) {
       warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
       warn(`  ↳ Run manually: node "${join(repoDir, 'src', 'install.mjs')}" --yes`);
     }
+    const staleConfig = await staleConfigChecker({ warn });
     log();
-    return { status: 'updated', current, latest, ...workingTree };
+    return { status: 'updated', current, latest, staleKeys: staleConfig.staleKeys, ...workingTree };
   } catch (e) {
     warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
     return { status: 'failed', error: e };

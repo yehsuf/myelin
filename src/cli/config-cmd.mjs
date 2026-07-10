@@ -1,10 +1,11 @@
 import { Command } from 'commander';
-import { loadConfig, DEFAULT_CONFIG_PATH } from '../config/reader.mjs';
+import { loadConfig, readUserConfig, DEFAULT_CONFIG_PATH } from '../config/reader.mjs';
 import { setConfigValue, getConfigValue, writeConfig } from '../config/writer.mjs';
-import { DEFAULT_CONFIG } from '../config/schema.mjs';
+import { DEFAULT_CONFIG, pruneUnknownKeys, listUnknownKeyPaths } from '../config/schema.mjs';
 import { dump } from 'js-yaml';
 import { execSync } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 export function defaultConfigEditor(platform = process.platform) {
   return platform === 'win32' ? 'notepad' : 'nano';
@@ -20,6 +21,41 @@ export function platformConfigBanner(
   editor = defaultConfigEditor(platform),
 ) {
   return `Config: ${configPath} — edit: myelin config edit (${editor}) — syntax: myelin config --help`;
+}
+
+function displayConfigPath(configPath = DEFAULT_CONFIG_PATH, homeDir = homedir()) {
+  return configPath.startsWith(homeDir) ? `~${configPath.slice(homeDir.length)}` : configPath;
+}
+
+export async function pruneConfig({
+  configPath = DEFAULT_CONFIG_PATH,
+  dryRun = false,
+  log = console.log,
+  readUserConfigFn = readUserConfig,
+  writeConfigFn = writeConfig,
+  schema = DEFAULT_CONFIG,
+} = {}) {
+  const rawUserConfig = await readUserConfigFn(configPath);
+  const prunedConfig = pruneUnknownKeys(rawUserConfig, schema);
+  const staleKeys = listUnknownKeyPaths(rawUserConfig, schema);
+  const shownPath = displayConfigPath(configPath);
+
+  if (staleKeys.length === 0) {
+    log('✓ No stale config keys found.');
+    return { changed: false, dryRun, staleKeys, configPath: shownPath };
+  }
+
+  log('Stale config keys to remove:');
+  staleKeys.forEach((key) => log(`  - ${key}`));
+
+  if (dryRun) {
+    log(`✓ Dry run: ${staleKeys.length} stale key(s) would be removed from ${shownPath}.`);
+    return { changed: false, dryRun: true, staleKeys, configPath: shownPath };
+  }
+
+  await writeConfigFn(prunedConfig, configPath);
+  log(`✓ Pruned ${staleKeys.length} stale key(s) from ${shownPath} (backup saved).`);
+  return { changed: true, dryRun: false, staleKeys, configPath: shownPath };
 }
 
 export function configCommand() {
@@ -66,6 +102,13 @@ export function configCommand() {
       }
       await writeConfig(DEFAULT_CONFIG);
       console.log(`✓ Configuration reset to defaults at ${DEFAULT_CONFIG_PATH}`);
+    });
+
+  cmd.command('prune')
+    .description('Remove stale keys no longer present in the config schema')
+    .option('--dry-run', 'Preview stale keys without rewriting config')
+    .action(async ({ dryRun }) => {
+      await pruneConfig({ dryRun });
     });
 
   cmd.command('edit')

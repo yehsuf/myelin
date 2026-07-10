@@ -6,15 +6,20 @@ import { join } from 'node:path';
 
 export const DEFAULT_CONFIG_PATH = join(homedir(), '.myelin', 'config.yaml');
 
-export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
+export function readUserConfig(configPath = DEFAULT_CONFIG_PATH, warn = console.warn) {
   let userConfig = {};
   if (existsSync(configPath)) {
     try {
       userConfig = parse(readFileSync(configPath, 'utf8')) ?? {};
     } catch (e) {
-      console.warn(`[myelin] Warning: Could not parse config at ${configPath}: ${e.message}`);
+      warn(`[myelin] Warning: Could not parse config at ${configPath}: ${e.message}`);
     }
   }
+  return userConfig;
+}
+
+export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
+  const userConfig = readUserConfig(configPath);
   let merged = mergeDeep(DEFAULT_CONFIG, userConfig);
 
   // Env var overrides (highest priority)

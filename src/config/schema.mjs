@@ -148,14 +148,54 @@ export const DEFAULT_CONFIG = {
   },
 };
 
+function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function mergeDeep(base, override) {
-  if (typeof base !== 'object' || base === null) return override;
-  if (typeof override !== 'object' || override === null) return override;
+  if (!isPlainObject(base)) return override;
+  if (!isPlainObject(override)) return override;
   const result = { ...base };
   for (const key of Object.keys(override)) {
-    result[key] = (typeof override[key] === 'object' && !Array.isArray(override[key]) && override[key] !== null)
+    result[key] = isPlainObject(override[key])
       ? mergeDeep(base[key] ?? {}, override[key])
       : override[key];
   }
   return result;
+}
+
+export function pruneUnknownKeys(userConfig, schema = DEFAULT_CONFIG) {
+  if (!isPlainObject(schema)) return userConfig;
+  if (!isPlainObject(userConfig)) return userConfig;
+
+  const result = {};
+  for (const key of Object.keys(userConfig)) {
+    if (!Object.hasOwn(schema, key)) continue;
+    result[key] = (isPlainObject(schema[key]) && isPlainObject(userConfig[key]))
+      ? pruneUnknownKeys(userConfig[key], schema[key])
+      : userConfig[key];
+  }
+  return result;
+}
+
+function collectLeafPaths(value, prefix) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0) return [prefix];
+  return Object.entries(value).flatMap(([key, nested]) => collectLeafPaths(nested, `${prefix}.${key}`));
+}
+
+export function listUnknownKeyPaths(userConfig, schema = DEFAULT_CONFIG, prefix = '') {
+  if (!isPlainObject(userConfig) || !isPlainObject(schema)) return [];
+
+  const staleKeys = [];
+  for (const key of Object.keys(userConfig)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (!Object.hasOwn(schema, key)) {
+      staleKeys.push(...collectLeafPaths(userConfig[key], path));
+      continue;
+    }
+    if (isPlainObject(userConfig[key]) && isPlainObject(schema[key])) {
+      staleKeys.push(...listUnknownKeyPaths(userConfig[key], schema[key], path));
+    }
+  }
+  return staleKeys;
 }

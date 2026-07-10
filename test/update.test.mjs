@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { isRepoDirty, runSelfUpdate } from '../src/cli/update.mjs';
+import { isRepoDirty, runSelfUpdate, checkStaleConfigKeys } from '../src/cli/update.mjs';
 
 function makeRepoFixture() {
   const repoDir = mkdtempSync(join(homedir(), '.tokenstack-update-test-'));
@@ -89,7 +89,13 @@ describe('runSelfUpdate', () => {
 
       const result = await runSelfUpdate(
         { force: true },
-        { repoDir, execSync: execStub.execSync, log: consoleCapture.log, warn: consoleCapture.warn }
+        {
+          repoDir,
+          execSync: execStub.execSync,
+          log: consoleCapture.log,
+          warn: consoleCapture.warn,
+          checkStaleConfigKeysFn: async () => ({ staleKeys: [] }),
+        }
       );
 
       assert.equal(result.status, 'updated');
@@ -111,7 +117,13 @@ describe('runSelfUpdate', () => {
 
       const result = await runSelfUpdate(
         {},
-        { repoDir, execSync: execStub.execSync, log: consoleCapture.log, warn: consoleCapture.warn }
+        {
+          repoDir,
+          execSync: execStub.execSync,
+          log: consoleCapture.log,
+          warn: consoleCapture.warn,
+          checkStaleConfigKeysFn: async () => ({ staleKeys: [] }),
+        }
       );
 
       assert.equal(result.status, 'aborted-dirty');
@@ -137,13 +149,61 @@ describe('runSelfUpdate', () => {
 
       const result = await runSelfUpdate(
         { force: true },
-        { repoDir, execSync: execStub.execSync, log: consoleCapture.log, warn: consoleCapture.warn }
+        {
+          repoDir,
+          execSync: execStub.execSync,
+          log: consoleCapture.log,
+          warn: consoleCapture.warn,
+          checkStaleConfigKeysFn: async () => ({ staleKeys: [] }),
+        }
       );
 
       assert.equal(result.status, 'updated');
       assert.equal(result.bypassed, false);
       assert.ok(execStub.calls.includes('git rev-parse --short HEAD'));
       assert.equal(consoleCapture.warns.length, 0);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('checkStaleConfigKeys', () => {
+  it('prints an informational note when stale config keys exist', async () => {
+    const repoDir = mkdtempSync(join(homedir(), '.tokenstack-update-test-'));
+    try {
+      const configPath = join(repoDir, 'config.yaml');
+      writeFileSync(configPath, 'conversation_memory:\n  mem0: true\nproxy:\n  headroom:\n    port: 9999\n', 'utf8');
+      const consoleCapture = captureConsole();
+
+      const result = await checkStaleConfigKeys({ configPath, warn: consoleCapture.warn });
+
+      assert.deepEqual(result.staleKeys, ['conversation_memory.mem0']);
+      assert.deepEqual(consoleCapture.warns, [
+        `ℹ Your ${configPath} has 1 stale config key(s) no longer used by this version.`,
+        '  Run: myelin config prune --dry-run to preview, or myelin config prune to clean them up.',
+      ]);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stays quiet when the config is clean or missing', async () => {
+    const repoDir = mkdtempSync(join(homedir(), '.tokenstack-update-test-'));
+    try {
+      const cleanPath = join(repoDir, 'clean.yaml');
+      const missingPath = join(repoDir, 'missing.yaml');
+      writeFileSync(cleanPath, 'proxy:\n  headroom:\n    port: 9999\n', 'utf8');
+
+      const cleanCapture = captureConsole();
+      const cleanResult = await checkStaleConfigKeys({ configPath: cleanPath, warn: cleanCapture.warn });
+      assert.deepEqual(cleanResult.staleKeys, []);
+      assert.deepEqual(cleanCapture.warns, []);
+
+      const missingCapture = captureConsole();
+      const missingResult = await checkStaleConfigKeys({ configPath: missingPath, warn: missingCapture.warn });
+      assert.equal(missingResult.exists, false);
+      assert.deepEqual(missingCapture.warns, []);
     } finally {
       rmSync(repoDir, { recursive: true, force: true });
     }

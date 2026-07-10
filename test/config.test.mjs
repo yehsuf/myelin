@@ -1,14 +1,26 @@
 import { describe, it, before, after } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { DEFAULT_CONFIG, mergeDeep } from '../src/config/schema.mjs';
-import { loadConfig, DEFAULT_CONFIG_PATH } from '../src/config/reader.mjs';
+import { DEFAULT_CONFIG, mergeDeep, pruneUnknownKeys } from '../src/config/schema.mjs';
+import { loadConfig, readUserConfig, DEFAULT_CONFIG_PATH } from '../src/config/reader.mjs';
 import { writeConfig, setConfigValue, getConfigValue } from '../src/config/writer.mjs';
-import { platformConfigBanner } from '../src/cli/config-cmd.mjs';
+import { platformConfigBanner, pruneConfig } from '../src/cli/config-cmd.mjs';
 
 const TEST_DIR = join(homedir(), '.tokenstack-test');
+
+function captureLogs() {
+  const logs = [];
+  return {
+    logs,
+    log: (message = '') => logs.push(message),
+  };
+}
+
+function backupFiles(dir, baseName) {
+  return readdirSync(dir).filter(file => file.startsWith(`${baseName}.bak.`));
+}
 
 describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.headroom.port = 8787', () => {
@@ -86,6 +98,34 @@ describe('config schema', () => {
     const result = mergeDeep({ a: 1, b: 2 }, { b: 99 });
     assert.equal(result.a, 1);
     assert.equal(result.b, 99);
+  });
+  it('pruneUnknownKeys removes flat stale keys', () => {
+    const result = pruneUnknownKeys({ index_tier: 'full', old_flag: true });
+    assert.deepEqual(result, { index_tier: 'full' });
+  });
+  it('pruneUnknownKeys removes nested stale sections', () => {
+    const result = pruneUnknownKeys({
+      conversation_memory: { mem0: true },
+      proxy: { headroom: { port: 9999 } },
+    });
+    assert.deepEqual(result, { proxy: { headroom: { port: 9999 } } });
+  });
+  it('pruneUnknownKeys preserves real user values unchanged', () => {
+    const result = pruneUnknownKeys({
+      proxy: { headroom: { port: 9999 } },
+      output_sandboxing: { context_mode: false, srt: true },
+    });
+    assert.deepEqual(result, {
+      proxy: { headroom: { port: 9999 } },
+      output_sandboxing: { context_mode: false },
+    });
+  });
+  it('pruneUnknownKeys returns clean configs unchanged', () => {
+    const userConfig = {
+      proxy: { headroom: { port: 9999, enabled: false } },
+      output_style: { hooks: false, code_navigation: true },
+    };
+    assert.deepEqual(pruneUnknownKeys(userConfig), userConfig);
   });
 });
 
@@ -170,5 +210,107 @@ describe('config CLI banner', () => {
   it('mentions nano on non-win32 platforms', () => {
     const banner = platformConfigBanner('darwin', '/Users/alice/.myelin/config.yaml');
     assert.ok(banner.includes('nano'));
+  });
+});
+
+describe('config prune', () => {
+  before(() => mkdirSync(TEST_DIR, { recursive: true }));
+  after(() => rmSync(TEST_DIR, { recursive: true, force: true }));
+
+  it('reports when there is nothing to prune', async () => {
+    const dir = join(TEST_DIR, 'prune-clean');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const configPath = join(dir, 'config.yaml');
+    writeFileSync(configPath, 'proxy:\n  headroom:\n    port: 9999\n', 'utf8');
+    const before = readFileSync(configPath, 'utf8');
+    const consoleCapture = captureLogs();
+
+    const result = await pruneConfig({ configPath, log: consoleCapture.log });
+
+    assert.equal(result.changed, false);
+    assert.deepEqual(result.staleKeys, []);
+    assert.deepEqual(consoleCapture.logs, ['✓ No stale config keys found.']);
+    assert.equal(readFileSync(configPath, 'utf8'), before);
+    assert.deepEqual(backupFiles(dir, 'config.yaml'), []);
+  });
+
+  it('previews stale keys on dry-run without rewriting the file', async () => {
+    const dir = join(TEST_DIR, 'prune-dry-run');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const configPath = join(dir, 'config.yaml');
+    writeFileSync(configPath, [
+      'proxy:',
+      '  headroom:',
+      '    port: 9999',
+      'conversation_memory:',
+      '  mem0: true',
+      'learning:',
+      '  headroom_learn: true',
+      'output_sandboxing:',
+      '  context_mode: false',
+      '  srt: true',
+      '',
+    ].join('\n'), 'utf8');
+    const before = readFileSync(configPath, 'utf8');
+    const consoleCapture = captureLogs();
+
+    const result = await pruneConfig({ configPath, dryRun: true, log: consoleCapture.log });
+
+    assert.equal(result.changed, false);
+    assert.deepEqual(result.staleKeys, [
+      'conversation_memory.mem0',
+      'learning.headroom_learn',
+      'output_sandboxing.srt',
+    ]);
+    assert.deepEqual(consoleCapture.logs, [
+      'Stale config keys to remove:',
+      '  - conversation_memory.mem0',
+      '  - learning.headroom_learn',
+      '  - output_sandboxing.srt',
+      `✓ Dry run: 3 stale key(s) would be removed from ~/.tokenstack-test/prune-dry-run/config.yaml.`,
+    ]);
+    assert.equal(readFileSync(configPath, 'utf8'), before);
+    assert.deepEqual(backupFiles(dir, 'config.yaml'), []);
+  });
+
+  it('rewrites the config and creates a backup when stale keys exist', async () => {
+    const dir = join(TEST_DIR, 'prune-write');
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    const configPath = join(dir, 'config.yaml');
+    writeFileSync(configPath, [
+      'proxy:',
+      '  headroom:',
+      '    port: 9999',
+      'conversation_memory:',
+      '  mem0: true',
+      'output_sandboxing:',
+      '  context_mode: false',
+      '  srt: true',
+      '',
+    ].join('\n'), 'utf8');
+    const consoleCapture = captureLogs();
+
+    const result = await pruneConfig({ configPath, log: consoleCapture.log });
+    const pruned = readUserConfig(configPath);
+
+    assert.equal(result.changed, true);
+    assert.deepEqual(result.staleKeys, [
+      'conversation_memory.mem0',
+      'output_sandboxing.srt',
+    ]);
+    assert.deepEqual(pruned, {
+      proxy: { headroom: { port: 9999 } },
+      output_sandboxing: { context_mode: false },
+    });
+    assert.ok(backupFiles(dir, 'config.yaml').length >= 1);
+    assert.deepEqual(consoleCapture.logs, [
+      'Stale config keys to remove:',
+      '  - conversation_memory.mem0',
+      '  - output_sandboxing.srt',
+      `✓ Pruned 2 stale key(s) from ~/.tokenstack-test/prune-write/config.yaml (backup saved).`,
+    ]);
   });
 });
