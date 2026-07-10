@@ -1,5 +1,4 @@
 node_modules/
-.github/copilot-instructions.md
 # Personal/machine-specific overrides
 docs/personal/
 src/mitm/__pycache__/
