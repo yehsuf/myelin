@@ -8,10 +8,12 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.resolve(__dirname, '..', 'src', 'cli', 'compact-prepare.mjs');
+// Windows absolute paths (C:\...) are invalid as ESM specifiers — use file:// URL
+const SCRIPT_URL = pathToFileURL(SCRIPT).href;
 
 // Isolated HOME under the repo (NOT /tmp) so tests are hermetic
 const FIXTURE_ROOT = path.resolve(__dirname, '.compact-fixture');
@@ -22,7 +24,7 @@ const {
   parseCompactYaml,
   parseWorkspaceYaml,
   MAX_HINT,
-} = await import(SCRIPT);
+} = await import(SCRIPT_URL);
 
 // ─── helpers ───────────────────────────────────────────────────
 function makeSession(sid, opts = {}) {
