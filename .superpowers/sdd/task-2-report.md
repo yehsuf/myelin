@@ -51,3 +51,8 @@
 - Windows registry-mode `myelin restart` now always rebuilds/persists the Copilot-Headroom launcher from current config before spawning it, while stopping the previously managed instance from the recorded Run-key identity so port changes do not leave the old owned process behind.
 - Headroom Lite restart now verifies the recorded managed PID before unlinking or replacing state; if the tracked owned Lite process is still alive on the old port, restart stops it first instead of forgetting ownership and starting a second managed Lite instance.
 - Added restart regressions for both edges: Copilot-Headroom launcher regeneration on Windows registry restarts and Lite managed-PID cleanup during port transitions.
+
+## WSL and Headroom Migration Fix
+- Windows registry-mode Copilot-Headroom restart now resolves the effective Windows home before rebuilding launcher state, persists the launcher through PowerShell at the real Windows path, and can recover launcher-backed process identity even when WSL cannot read `C:\...` paths through the local POSIX filesystem.
+- Windows managed Python Headroom stop/reinstall now keeps the tracked PID tied to the managed launcher path, so a port migration still stops the owned instance before deleting the PID file or replacing registration state.
+- Added focused regressions for WSL launcher recovery/path resolution and for managed Headroom launcher/PID stop-script ownership checks during port migrations.

@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   buildCopilotHeadroomTaskEnv,
   buildManagedHeadroomEnv,
+  defaultStopManagedCopilotHeadroomProcess,
   defaultRestartCopilotHeadroom,
   defaultRestartManagedHeadroom,
   defaultRestartMitm,
@@ -72,6 +73,7 @@ describe('defaultRestartCopilotHeadroom', () => {
       opts: {
         headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
         argStr: 'proxy --port 9797 --mode observe --connect-timeout-seconds 10',
+        execSyncImpl: actions[1].opts.execSyncImpl,
         taskEnv: buildCopilotHeadroomTaskEnv({
           home: 'C:\\Users\\alice',
           copilotPort: 9797,
@@ -86,6 +88,80 @@ describe('defaultRestartCopilotHeadroom', () => {
       exe: 'powershell.exe',
       args: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
     });
+  });
+
+  it('resolves a WSL home to the Windows launcher path before rebuilding the registry launcher', async () => {
+    const actions = [];
+    await defaultRestartCopilotHeadroom({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          mitm: { egress_port: 8889 },
+          copilot_headroom: {
+            enabled: true,
+            port: 8788,
+            mode: 'cache',
+          },
+        },
+      },
+      winManager: 'registry',
+      log: () => {},
+      warn: () => {},
+      execSyncImpl: () => Buffer.from(''),
+      homedirImpl: () => '/home/alice',
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      headroomBinPathImpl: () => 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      stopManagedCopilotHeadroomProcessImpl: (opts) => actions.push({ type: 'stop', opts }),
+      waitImpl: async () => {},
+      persistCopilotHeadroomLauncherImpl: (opts) => {
+        actions.push({ type: 'persist', opts });
+        return {
+          exe: 'powershell.exe',
+          args: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1"',
+        };
+      },
+      spawnDetachedServiceImpl: (taskName, exe, args) => actions.push({ type: 'spawn', taskName, exe, args }),
+    });
+
+    assert.equal(actions[1].type, 'persist');
+    assert.deepEqual(actions[1].opts.taskEnv, buildCopilotHeadroomTaskEnv({
+      home: 'C:\\Users\\alice',
+      copilotPort: 8788,
+      egressPort: 8889,
+      mode: 'cache',
+    }));
+  });
+});
+
+describe('defaultStopManagedCopilotHeadroomProcess', () => {
+  it('reads a Windows launcher via PowerShell when the run-key path is not locally accessible', async () => {
+    const commands = [];
+    let stopCall = null;
+    const stopped = await defaultStopManagedCopilotHeadroomProcess({
+      runKeyValue: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1"',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-Content -Path')) {
+          return Buffer.from([
+            "# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.",
+            "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 8788 --mode cache --connect-timeout-seconds 10' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\headroom-copilot-8788' -WindowStyle Hidden",
+          ].join('\n'));
+        }
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('should not read a Windows path with local fs');
+      },
+      stopHeadroomProcessByExecutablePathImpl: (opts) => {
+        stopCall = opts;
+      },
+    });
+
+    assert.equal(stopped, true);
+    assert.equal(stopCall.port, 8788);
+    assert.equal(stopCall.executablePath, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1' -Raw")));
   });
 });
 

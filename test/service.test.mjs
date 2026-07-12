@@ -160,6 +160,8 @@ describe('windows run-script generator', () => {
     assert.ok(script.includes(`$pidPath =`));
     assert.ok(script.includes(`Get-Content -Path $pidPath`));
     assert.ok(script.includes(`ProcessId = $managedPid`));
+    assert.ok(script.includes('ParentProcessId'));
+    assert.ok(script.includes('start-headroom\\.ps1'));
     assert.ok(script.includes('proxy'));
     assert.ok(script.includes(`--port\\s+8787(\\s|$)`));
     assert.ok(!script.includes('Get-NetTCPConnection'));

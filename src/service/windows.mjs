@@ -261,19 +261,31 @@ export function managedMitmPidPath({ home } = {}) {
   return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
 }
 
-export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath } = {}) {
+export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath, launcherPath } = {}) {
   const pidPath = windowsPath(pidFilePath ?? managedHeadroomPidPath());
+  const managedLauncherPath = windowsPath(launcherPath ?? managedHeadroomLauncherPath());
+  const launcherRegex = escapePs(escapePsRegex(managedLauncherPath));
   return [
     `$pidPath = '${escapePs(pidPath)}'`,
+    `$launcherRegex = '${launcherRegex}'`,
     `if (Test-Path $pidPath) {`,
     `  $managedPid = (Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1)`,
     `  if ($managedPid -and $managedPid.ToString().Trim() -match '^[0-9]+$') {`,
     `    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
-    `    if ($proc -and $proc.Name -ieq '${processExeName}' -and $proc.CommandLine -match 'proxy' -and $proc.CommandLine -match '(^|\\s)--port\\s+${port}(\\s|$)') {`,
-    `      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `    if (-not $proc) {`,
+    `      Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
+    `    } elseif ($proc.Name -ieq '${processExeName}' -and $proc.CommandLine -match 'proxy') {`,
+    `      $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+    `      $matchesManagedLauncher = $parent -and $parent.CommandLine -match $launcherRegex`,
+    `      $matchesCurrentPort = $proc.CommandLine -match '(^|\\s)--port\\s+${port}(\\s|$)'`,
+    `      if ($matchesManagedLauncher -or $matchesCurrentPort) {`,
+    `        Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `        Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
+    `      }`,
     `    }`,
+    `  } else {`,
+    `    Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
     `  }`,
-    `  Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
     `}`,
   ].join('\n');
 }
@@ -308,6 +320,7 @@ export function stopManagedHeadroomProcess({
     port,
     processExeName,
     pidFilePath: managedHeadroomPidPath({ home }),
+    launcherPath: managedHeadroomLauncherPath({ home }),
   });
   const legacyRunKey = parseLegacyManagedHeadroomRunKeyValue({ port, runKeyValue: runKeyStatus?.raw });
   if (legacyRunKey?.executablePath) {
@@ -898,7 +911,7 @@ Write-Host "[myelin] copilot-headroom started (hidden)"
 
 export async function installCopilotHeadroomService({ headroomBin, port, envVars = {}, logPath, home, manager = 'registry' }) {
   if (manager !== 'winsw') {
-    const workingDirectory = join(home ?? process.env.USERPROFILE ?? '.', '.myelin', 'copilot-headroom');
+    const workingDirectory = pathWin32.join(defaultWindowsHome(home), '.myelin', 'copilot-headroom');
     runPs(generateCopilotHeadroomRunScript({ headroomBin, port, mode: envVars.HEADROOM_MODE, workingDirectory, envVars }));
     return { ok: true, manager: 'registry' };
   }
