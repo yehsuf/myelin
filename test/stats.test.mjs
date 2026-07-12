@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { spawnSync } from 'node:child_process';
 import {
   collectWideLocalStatsSections,
   getWideStatsHint,
@@ -79,6 +80,16 @@ describe('renderLocalStatsRows', () => {
       available: false,
       rows: [['Status', 'unavailable']],
     });
+  });
+
+  it('advertises --wide in myelin stats --help', () => {
+    const result = spawnSync(process.execPath, ['bin/myelin', 'stats', '--help'], {
+      cwd: '/Users/ysufrin/tokenstack-wt-feat-stats-wide',
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /--wide\s+Show wide stats output/);
   });
 
   describe('wide local stats discovery', () => {
