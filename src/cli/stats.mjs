@@ -3,8 +3,10 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
+import { headroomHealthUrl } from '../tools/headroom.mjs';
 
 const SEP = '─'.repeat(60);
+const WIDE_DISCOVERY_HINT = 'More detail: myelin stats --wide';
 
 function probe(url, timeoutMs = 2000) {
   try {
@@ -14,23 +16,193 @@ function probe(url, timeoutMs = 2000) {
   } catch { return null; }
 }
 
-// TCP-level alive check — succeeds even if the service returns non-200 or non-JSON
-function isAlive(host, port, timeoutMs = 2000) {
+function isHealthy(url, timeoutMs = 2000) {
   try {
-    execSync(`curl -s --max-time 2 -o /dev/null http://${host}:${port}/`, { timeout: timeoutMs + 500 });
+    execSync(`curl -sf --max-time 2 -o /dev/null ${url}`, { timeout: timeoutMs + 500 });
+    return true;
+  } catch { return false; }
+}
+
+export function isAliveRoot(host, port, timeoutMs = 2000, exec = execSync) {
+  try {
+    exec(`curl -s --max-time 2 -o /dev/null http://${host}:${port}/`, { timeout: timeoutMs + 500 });
     return true;
   } catch (e) {
-    // exit 7 = connection refused, others = some response (alive)
     return e.status !== 7 && e.status !== undefined;
   }
 }
 
-function row(label, value) {
-  console.log(`  ${label.padEnd(22)}${value}`);
+function row(log, label, value) {
+  log(`  ${label.padEnd(22)}${value}`);
 }
 
-function parseMitmLog(logPath) {
-  const lines = readFileSync(logPath, 'utf8').split('\n');
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toFiniteNumber(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatCount(value) {
+  return value === null ? null : new Intl.NumberFormat('en-US').format(value);
+}
+
+function formatPercent(value) {
+  return `${value.toFixed(1)}%`;
+}
+
+function unavailableStatsRows() {
+  return { available: false, rows: [['Status', 'unavailable']] };
+}
+
+function renderHeadroomLiteStatsRows(payload) {
+  if (!isRecord(payload) || payload.service !== 'headroom-lite') {
+    return unavailableStatsRows();
+  }
+
+  const requestCount = toFiniteNumber(payload.proxy_requests);
+  const compressedRequestCount = toFiniteNumber(payload.compress_requests);
+  const compressionPct = toFiniteNumber(payload.compress_pct);
+  const tokensSaved = toFiniteNumber(payload.compress_tokens_saved);
+
+  if (
+    requestCount === null ||
+    compressedRequestCount === null ||
+    compressionPct === null ||
+    tokensSaved === null
+  ) {
+    return unavailableStatsRows();
+  }
+
+  return {
+    available: true,
+    rows: [
+      ['Status', 'running'],
+      ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+      ['Compression', formatPercent(compressionPct)],
+      ['Tokens', `${formatCount(tokensSaved)} saved`],
+    ],
+  };
+}
+
+function renderCopilotHeadroomStatsRows(payload) {
+  if (!isRecord(payload)) {
+    return unavailableStatsRows();
+  }
+
+  const summary = isRecord(payload.summary) ? payload.summary : null;
+  const compression = isRecord(summary?.compression) ? summary.compression : null;
+  if (!summary || !compression) {
+    return unavailableStatsRows();
+  }
+
+  const requestCount = toFiniteNumber(summary.api_requests);
+  const compressedRequestCount = toFiniteNumber(compression.requests_compressed);
+  const tokensBefore = toFiniteNumber(compression.total_tokens_before_with_cli_filtering);
+  const tokensSaved = toFiniteNumber(compression.total_tokens_saved_with_cli_filtering);
+
+  if (
+    requestCount === null ||
+    compressedRequestCount === null ||
+    tokensBefore === null ||
+    tokensSaved === null ||
+    tokensBefore === 0
+  ) {
+    return unavailableStatsRows();
+  }
+
+  const compressionPct = (tokensSaved / tokensBefore) * 100;
+  if (!Number.isFinite(compressionPct)) {
+    return unavailableStatsRows();
+  }
+
+  return {
+    available: true,
+    rows: [
+      ['Status', 'running'],
+      ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+      ['Compression', formatPercent(compressionPct)],
+      ['Tokens', `${formatCount(tokensSaved)} saved`],
+    ],
+  };
+}
+
+export function renderLocalStatsRows(payload) {
+  if (isRecord(payload) && payload.service === 'headroom-lite') {
+    return renderHeadroomLiteStatsRows(payload);
+  }
+
+  return renderCopilotHeadroomStatsRows(payload);
+}
+
+const LOCAL_STATS_SERVICE_DESCRIPTORS = [
+  {
+    label: 'headroom-lite',
+    isEnabled: (config) => config?.proxy?.headroom_lite?.enabled !== false,
+    port: (config) => config?.proxy?.headroom_lite?.port ?? 8790,
+    healthUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/health`,
+    statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/stats`,
+    formatter: renderLocalStatsRows,
+  },
+  {
+    label: 'copilot-headroom',
+    isEnabled: (config) => config?.proxy?.copilot_headroom?.enabled ?? false,
+    port: (config) => config?.proxy?.copilot_headroom?.port ?? 8788,
+    healthUrl: (config) => headroomHealthUrl(config?.proxy?.copilot_headroom?.port ?? 8788),
+    statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.copilot_headroom?.port ?? 8788}/stats`,
+    formatter: renderLocalStatsRows,
+  },
+];
+
+function getConfiguredLocalStatsDescriptors(config) {
+  return LOCAL_STATS_SERVICE_DESCRIPTORS
+    .filter((descriptor) => descriptor.isEnabled(config))
+    .map((descriptor) => {
+      const port = descriptor.port(config);
+      return {
+        ...descriptor,
+        port,
+        title: `${descriptor.label}  (:${port})`,
+        healthUrl: descriptor.healthUrl(config),
+        url: descriptor.statsUrl(config),
+      };
+    });
+}
+
+export function getWideStatsHint(config) {
+  return getConfiguredLocalStatsDescriptors(config).length > 0 ? WIDE_DISCOVERY_HINT : null;
+}
+
+export async function collectWideLocalStatsSections({
+  config,
+  wide = false,
+  fetchStats = probe,
+} = {}) {
+  if (!wide) return [];
+
+  return Promise.all(
+    getConfiguredLocalStatsDescriptors(config).map(async (descriptor) => {
+      let payload = null;
+      try {
+        payload = await fetchStats(descriptor.url);
+      } catch {
+        payload = null;
+      }
+
+      const rendered = descriptor.formatter(payload);
+      return {
+        label: descriptor.label,
+        title: descriptor.title,
+        available: rendered.available,
+        rows: rendered.rows,
+      };
+    })
+  );
+}
+
+function parseMitmLog(logPath, readFile = readFileSync) {
+  const lines = readFile(logPath, 'utf8').split('\n');
   // Request compressed:  ✓ host BEFORE→AFTERB (PCT%)
   const compRe = /^\[(\d{2}:\d{2}:\d{2}\.\d+)\] \[myelin\] ✓ (\S+) (\d+)→(\d+)B \(([\d.]+)%\)/;
   // Tool filter:          tools BEFORE→AFTER
@@ -82,115 +254,122 @@ function parseMitmLog(logPath) {
   };
 }
 
-export async function runStats() {
-  const home = homedir();
-  const cfg = await loadConfig();
+function buildLocalStatusSections(config, probeHealth) {
+  return getConfiguredLocalStatsDescriptors(config).map((descriptor) => ({
+    label: descriptor.label,
+    title: descriptor.title,
+    print(log) {
+      if (!probeHealth(descriptor.healthUrl, descriptor.label)) {
+        log('  ⚠  not running — run: myelin restart');
+        return;
+      }
+      log('  running');
+    },
+  }));
+}
+
+function buildWideLocalStatsPrintSections(sections) {
+  return sections.map((section) => ({
+    label: section.label,
+    title: section.title,
+    print(log) {
+      for (const [label, value] of section.rows) {
+        row(log, `${label}:`, value);
+      }
+    },
+  }));
+}
+
+export async function runStats({ wide = false } = {}, {
+  loadConfig: loadConfigFn = loadConfig,
+  log = console.log,
+  probeHealth = (url) => isHealthy(url),
+  probeRoot = (port) => isAliveRoot('127.0.0.1', port),
+  readStats = probe,
+  pathExists = existsSync,
+  readFile = readFileSync,
+  homeDir = homedir(),
+} = {}) {
+  const cfg = await loadConfigFn();
   const sections = [];
 
-  // ── headroom-lite (always check — it's the replacement for headroom) ────────
-  const hlPort = cfg?.proxy?.headroom_lite?.port ?? 8790;
-  if (cfg?.proxy?.headroom_lite?.enabled !== false) {
-    const hlStats = probe(`http://127.0.0.1:${hlPort}/stats`);
-    sections.push({
-      title: `headroom-lite  (:${hlPort})`,
-      print() {
-        if (!hlStats || hlStats.service !== 'headroom-lite') {
-          console.log('  ⚠  not running — run: myelin restart');
-          console.log("     (install: npm i -g @yehsuf/headroom-lite; headroom-lite is myelin's compression sidecar)");
-          return;
-        }
-        const uptime = hlStats.uptime_seconds ?? 0;
-        const uptimeStr = uptime < 60 ? `${uptime}s` : uptime < 3600
-          ? `${Math.floor(uptime / 60)}m` : `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`;
-        row('Status:', `running  (up ${uptimeStr})`);
-        row('Proxy requests:', String(hlStats.proxy_requests ?? 0));
-        row('Compress calls:', String(hlStats.compress_requests ?? 0));
-        row('Token compression:', `${hlStats.compress_pct ?? '0.0'}%  (${((hlStats.compress_tokens_saved ?? 0) / 1000).toFixed(0)}K tokens saved)`);
-        if ((hlStats.compress_requests ?? 0) === 0)
-          console.log('  ℹ  No requests yet — traffic reaches headroom-lite via mitmproxy sidecar or the _claude wrapper');
-      },
-    });
-  }
+  const localSections = wide
+    ? buildWideLocalStatsPrintSections(await collectWideLocalStatsSections({
+      config: cfg,
+      wide,
+      fetchStats: readStats,
+    }))
+    : buildLocalStatusSections(cfg, probeHealth);
+  const headroomLiteSection = localSections.find((section) => section.label === 'headroom-lite');
+  const copilotHeadroomSection = localSections.find((section) => section.label === 'copilot-headroom');
+
+  if (headroomLiteSection) sections.push(headroomLiteSection);
 
   // ── mitmproxy (if enabled in config) ───────────────────────────────────────
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;
   const mitmPort = cfg?.proxy?.mitm?.port ?? 8888;
   if (mitmEnabled) {
-    const mitmAlive = isAlive('127.0.0.1', mitmPort);
-    const logPath = join(home, '.myelin', 'mitmproxy.log');
+    const mitmAlive = probeRoot(mitmPort, 'mitmproxy');
+    const logPath = join(homeDir, '.myelin', 'mitmproxy.log');
     sections.push({
       title: `mitmproxy  (:${mitmPort})  — Copilot CLI`,
-      print() {
+      print(logFn) {
         if (!mitmAlive) {
-          console.log('  ⚠  not running — run: myelin restart');
+          logFn('  ⚠  not running — run: myelin restart');
           return;
         }
-        if (!existsSync(logPath)) {
-          console.log('  running  (no log data yet — start a Copilot session)');
+        if (!pathExists(logPath)) {
+          logFn('  running  (no log data yet — start a Copilot session)');
           return;
         }
-        const d = parseMitmLog(logPath);
-        if (d.reqCount === 0) { console.log('  running  (no compressed requests yet)'); return; }
-        row('Status:', 'running');
-        row('Requests compressed:', `${d.reqCount}  (processed ${d.processedGb} GB)`);
-        row('Avg compression:', `${d.avgPct}%  (${d.savedMb} MB saved)`);
+        const d = parseMitmLog(logPath, readFile);
+        if (d.reqCount === 0) {
+          logFn('  running  (no compressed requests yet)');
+          return;
+        }
+        row(logFn, 'Status:', 'running');
+        row(logFn, 'Requests compressed:', `${d.reqCount}  (processed ${d.processedGb} GB)`);
+        row(logFn, 'Avg compression:', `${d.avgPct}%  (${d.savedMb} MB saved)`);
         if (d.toolFilterCount > 0) {
           const toolPct = ((d.totalToolsBefore - d.totalToolsAfter) / d.totalToolsBefore * 100).toFixed(0);
-          row('Tool filtering:', `avg ${Math.round(d.totalToolsBefore / d.toolFilterCount)}→${Math.round(d.totalToolsAfter / d.toolFilterCount)} defs/req  (${toolPct}% stripped)`);
+          row(logFn, 'Tool filtering:', `avg ${Math.round(d.totalToolsBefore / d.toolFilterCount)}→${Math.round(d.totalToolsAfter / d.toolFilterCount)} defs/req  (${toolPct}% stripped)`);
         }
-        if (d.lastTimestamp) row('Last request:', d.lastTimestamp);
+        if (d.lastTimestamp) row(logFn, 'Last request:', d.lastTimestamp);
         if (d.usageCount > 0) {
-          row('API calls logged:', `${d.usageCount}  (cost $${d.totalCostUsd.toFixed(3)})`);
-          if (d.totalCacheRead > 0 || d.totalCacheWrite > 0)
-            row('Cache tokens:', `read ${(d.totalCacheRead/1000).toFixed(0)}K  write ${(d.totalCacheWrite/1000).toFixed(0)}K`);
-          if (d.topModels.length > 0)
-            row('Models seen:', d.topModels.map(([m, n]) => `${m} (${n})`).join(', '));
+          row(logFn, 'API calls logged:', `${d.usageCount}  (cost $${d.totalCostUsd.toFixed(3)})`);
+          if (d.totalCacheRead > 0 || d.totalCacheWrite > 0) {
+            row(logFn, 'Cache tokens:', `read ${(d.totalCacheRead / 1000).toFixed(0)}K  write ${(d.totalCacheWrite / 1000).toFixed(0)}K`);
+          }
+          if (d.topModels.length > 0) {
+            row(logFn, 'Models seen:', d.topModels.map(([m, n]) => `${m} (${n})`).join(', '));
+          }
         }
-        if (d.topHosts.length > 0)
-          row('Top provider:', d.topHosts.map(([h, n]) => `${h.replace('api.','').replace('.com','')} (${n})`).join(', '));
-        if (d.errorCount > 0) console.log(`  ⚠  ${d.errorCount} errors in log`);
+        if (d.topHosts.length > 0) {
+          row(logFn, 'Top provider:', d.topHosts.map(([h, n]) => `${h.replace('api.', '').replace('.com', '')} (${n})`).join(', '));
+        }
+        if (d.errorCount > 0) logFn(`  ⚠  ${d.errorCount} errors in log`);
       },
     });
   }
 
-  // ── copilot-headroom (if enabled in config) ────────────────────────────────
-  const copilotHrEnabled = cfg?.proxy?.copilot_headroom?.enabled ?? false;
-  const copilotHrPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
-  if (copilotHrEnabled) {
-    const chStats = probe(`http://127.0.0.1:${copilotHrPort}/stats`);
-    sections.push({
-      title: `copilot-headroom  (:${copilotHrPort})`,
-      print() {
-        if (!chStats) {
-          console.log('  ⚠  not running — run: myelin restart');
-          return;
-        }
-        const s = chStats.summary ?? {};
-        const c = s.compression ?? {};
-        const bd = s.cost?.breakdown ?? {};
-        const tokBefore = c.total_tokens_before_with_cli_filtering ?? 0;
-        const tokSaved = c.total_tokens_saved_with_cli_filtering ?? 0;
-        const pct = tokBefore > 0 ? (tokSaved / tokBefore * 100).toFixed(1) : '0.0';
-        const totalSaved = (bd.cache_savings_usd ?? 0) + (bd.compression_savings_usd ?? 0);
-        row('Status:', 'running');
-        row('Requests:', `${s.api_requests ?? 0} total, ${c.requests_compressed ?? 0} compressed`);
-        row('Token compression:', `${pct}%  (${(tokSaved / 1000).toFixed(0)}K tokens saved)`);
-        row('Cost saved:', `$${totalSaved.toFixed(2)}  (cache $${(bd.cache_savings_usd ?? 0).toFixed(2)} + compression $${(bd.compression_savings_usd ?? 0).toFixed(2)})`);
-      },
-    });
-  }
+  if (copilotHeadroomSection) sections.push(copilotHeadroomSection);
 
   // ── Render ─────────────────────────────────────────────────────────────────
-  console.log('\nMyelin Compression Statistics');
+  log('\nMyelin Compression Statistics');
   if (sections.length === 0) {
-    console.log(SEP);
-    console.log('  No services configured. Run: myelin install --yes');
+    log(SEP);
+    log('  No services configured. Run: myelin install --yes');
   } else {
     for (const s of sections) {
-      console.log(SEP);
-      console.log(`  ${s.title}`);
-      s.print();
+      log(SEP);
+      log(`  ${s.title}`);
+      s.print(log);
+    }
+    const wideHint = !wide ? getWideStatsHint(cfg) : null;
+    if (wideHint) {
+      log(SEP);
+      log(`  ${wideHint}`);
     }
   }
-  console.log(SEP + '\n');
+  log(SEP + '\n');
 }
