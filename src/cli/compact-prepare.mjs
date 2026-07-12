@@ -21,6 +21,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { detectClipboardCandidates } from '../detect/clipboard.mjs';
 
 const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
@@ -392,32 +393,12 @@ export function renderHint(sections) {
  * @param {string} text
  */
 function copyToClipboard(text) {
-  // Ordered by platform likelihood. Each candidate is tried in sequence;
-  // any error (ENOENT, EPERM, non-zero exit, …) is caught and the next
-  // candidate is tried. Returns the name of the tool that succeeded, or
-  // null if none worked.
-  //
-  // PowerShell note: '$input|Set-Clipboard' is unreliable in -Command mode
-  // because $input may not be populated from stdin. Use [Console]::In instead.
-  const candidates = [
-    // macOS
-    { cmd: 'pbcopy', args: [] },
-    // Windows — clip.exe (always present, reads stdin, ASCII-safe)
-    { cmd: 'clip', args: [] },
-    // Windows — PowerShell fallback (reads stdin explicitly via [Console]::In)
-    { cmd: 'powershell',
-      args: ['-NonInteractive', '-NoProfile', '-Command',
-             '$t=[Console]::In.ReadToEnd();Set-Clipboard -Value $t'] },
-    // Linux X11
-    { cmd: 'xclip', args: ['-selection', 'clipboard'] },
-    // Linux Wayland
-    { cmd: 'wl-copy', args: [] },
-  ];
+  const candidates = detectClipboardCandidates();
   for (const { cmd, args } of candidates) {
     try {
       execFileSync(cmd, args, {
         input: text,
-        stdio: ['pipe', 'ignore', 'pipe'],   // capture stderr so it doesn't bleed through
+        stdio: ['pipe', 'ignore', 'pipe'],
         timeout: 3000,
       });
       return cmd;
