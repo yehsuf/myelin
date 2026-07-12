@@ -363,6 +363,35 @@ describe('headroom-lite ownership guards', () => {
     assert.deepEqual(killed, [5150]);
   });
 
+  it('clears a stale reused pid without killing when only the executable/port match remains', async () => {
+    const killed = [];
+    let unlinked = 0;
+    const result = await stopManagedHeadroomLite({
+      port: 8790,
+      osKind: 'linux',
+      home: '/Users/alice',
+      execSyncImpl: (command) => {
+        if (command.includes('lsof -nP -tiTCP:8790')) return Buffer.from('5150\n');
+        if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
+        if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /opt/other-service.sh\n');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => '5150\n',
+      unlinkSyncImpl: () => { unlinked += 1; },
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+      binaryPath: '/usr/local/bin/headroom-lite',
+    });
+
+    assert.equal(result.stopped, false);
+    assert.equal(result.conflict, true);
+    assert.equal(result.reason, 'headroom-lite port 8790 is owned by an unmanaged process (pid 5150)');
+    assert.deepEqual(killed, []);
+    assert.equal(unlinked, 1);
+  });
+
   it('stops the recorded managed pid before replacing state when the configured Lite port changes', async () => {
     const killed = [];
     let unlinked = 0;
@@ -388,6 +417,35 @@ describe('headroom-lite ownership guards', () => {
     assert.equal(result.stopped, true);
     assert.equal(result.conflict, false);
     assert.deepEqual(killed, [5150]);
+    assert.equal(unlinked, 1);
+  });
+
+  it('clears a stale reused pid without killing when the tracked process moved off-port', async () => {
+    const killed = [];
+    let unlinked = 0;
+    const result = await stopManagedHeadroomLite({
+      port: 8791,
+      osKind: 'linux',
+      home: '/Users/alice',
+      execSyncImpl: (command) => {
+        if (command.includes('lsof -nP -tiTCP:8791')) return Buffer.from('');
+        if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
+        if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /opt/other-service.sh\n');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => '5150\n',
+      unlinkSyncImpl: () => { unlinked += 1; },
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+      binaryPath: '/usr/local/bin/headroom-lite',
+    });
+
+    assert.equal(result.stopped, false);
+    assert.equal(result.conflict, false);
+    assert.equal(result.running, false);
+    assert.deepEqual(killed, []);
     assert.equal(unlinked, 1);
   });
 });

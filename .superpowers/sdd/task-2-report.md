@@ -71,3 +71,8 @@
 - Centralized runtime PowerShell executable selection so WSL fallback/status probes invoke `powershell.exe`, while native Windows keeps using the standard executable path for shell-out probes.
 - Managed Headroom and mitm PID-file stops now require a launcher-parent match before `Stop-Process`; PID reuse, matching ports, or matching command lines alone only clear the stale PID file and leave unrelated processes intact.
 - Added WSL status regressions plus managed-PID ownership regressions covering stale/reused PID files without breaking normal managed-stop behavior.
+
+## Remaining Ownership Paths Fix
+- Obsolete Windows Headroom Run-key cleanup in `install.mjs` now routes both the stop path and registry deletion through the centralized WSL-aware PowerShell executable selection, so WSL cleanup shells out via `powershell.exe`.
+- Headroom Lite stop/cleanup now requires launcher-backed ownership before killing a tracked PID; reused/stale PID files that only match the executable or port are cleared without stopping unrelated processes.
+- Added focused install/restart regressions for WSL Run-key cleanup routing, stale reused Lite PID cleanup, and the preserved true managed Lite stop path.

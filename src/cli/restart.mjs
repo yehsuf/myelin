@@ -119,10 +119,12 @@ function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
         `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
         'if (-not $proc) { return }',
         '$parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }',
+        '$grandparent = if ($parent -and $parent.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($parent.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }',
         '@{',
         '  command = $proc.CommandLine',
         '  executablePath = $proc.ExecutablePath',
         '  parentCommand = if ($parent) { $parent.CommandLine } else { "" }',
+        '  grandparentCommand = if ($grandparent) { $grandparent.CommandLine } else { "" }',
         '} | ConvertTo-Json -Compress',
       ].join('; ');
       const out = trimShellValue(execSyncImpl(withPowerShell(`-NoProfile -Command "${script.replace(/"/g, '\\"')}"`), {
@@ -145,7 +147,19 @@ function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
           shell: '/bin/bash',
         }).toString())
       : '';
-    return { command, executablePath: '', parentCommand };
+    const grandparentPid = parentPid
+      ? trimShellValue(execSyncImpl(`ps -p ${parentPid} -o ppid=`, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: '/bin/bash',
+        }).toString())
+      : '';
+    const grandparentCommand = grandparentPid
+      ? trimShellValue(execSyncImpl(`ps -p ${grandparentPid} -o command=`, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: '/bin/bash',
+        }).toString())
+      : '';
+    return { command, executablePath: '', parentCommand, grandparentCommand };
   } catch {
     return null;
   }
@@ -154,7 +168,7 @@ function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
 function headroomLiteMatchesManagedLauncher(processInfo, launcherPath) {
   const needle = String(launcherPath ?? '').toLowerCase();
   if (!needle) return false;
-  return [processInfo?.command, processInfo?.parentCommand].some((value) =>
+  return [processInfo?.command, processInfo?.parentCommand, processInfo?.grandparentCommand].some((value) =>
     String(value ?? '').toLowerCase().includes(needle)
   );
 }
@@ -246,21 +260,15 @@ export async function stopManagedHeadroomLite({
   const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl);
   const managedPid = readManagedHeadroomLitePid(pidPath, { existsSyncImpl, readFileSyncImpl });
   const managedProcessInfo = managedPid ? headroomLiteProcessInfo(managedPid, osKind, execSyncImpl) : null;
-  const trackedPidOwned = !!managedPid && (
-    headroomLiteMatchesManagedPid(managedProcessInfo, binaryPath)
-    || headroomLiteMatchesManagedLauncher(managedProcessInfo, launcherPath)
-  );
+  const trackedPidOwned = !!managedPid
+    && headroomLiteMatchesManagedPid(managedProcessInfo, binaryPath)
+    && headroomLiteMatchesManagedLauncher(managedProcessInfo, launcherPath);
 
   if (!ownerPid) {
     if (managedPid && managedProcessInfo) {
       if (!trackedPidOwned) {
-        return {
-          stopped: false,
-          conflict: true,
-          running: true,
-          ownerPid: managedPid,
-          reason: `tracked headroom-lite pid ${managedPid} is no longer Myelin-managed`,
-        };
+        try { unlinkSyncImpl(pidPath); } catch {}
+        return { stopped: false, conflict: false, running: false };
       }
       try {
         stopPidImpl(managedPid);
@@ -285,9 +293,12 @@ export async function stopManagedHeadroomLite({
 
   const processInfo = headroomLiteProcessInfo(ownerPid, osKind, execSyncImpl);
   const matchesLauncher = headroomLiteMatchesManagedLauncher(processInfo, launcherPath);
-  const matchesManagedPid = managedPid === ownerPid && headroomLiteMatchesManagedPid(processInfo, binaryPath);
+  const matchesManagedPid = headroomLiteMatchesManagedPid(processInfo, binaryPath);
 
-  if (!matchesManagedPid && !matchesLauncher) {
+  if (!matchesManagedPid || !matchesLauncher) {
+    if (managedPid && managedPid === ownerPid) {
+      try { unlinkSyncImpl(pidPath); } catch {}
+    }
     return {
       stopped: false,
       conflict: true,

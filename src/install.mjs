@@ -85,7 +85,21 @@ function isVersionAtLeast(version, minimum) {
   return true;
 }
 
-export async function removeManagedHeadroomRegistration({ os, winManager, home, headroomPort = 8787, warnFn = warn, okFn = ok }) {
+export function buildManagedHeadroomRunKeyCleanupCommand({ powershellExe = powerShellExecutable() } = {}) {
+  return `${powershellExe} -NoProfile -Command "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`;
+}
+
+export async function removeManagedHeadroomRegistration({
+  os,
+  winManager,
+  home,
+  headroomPort = 8787,
+  warnFn = warn,
+  okFn = ok,
+  execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
+  stopManagedHeadroomProcessImpl,
+} = {}) {
   if (os === 'darwin') {
     try {
       const { plistPath } = await import('./service/launchd.mjs');
@@ -127,13 +141,11 @@ export async function removeManagedHeadroomRegistration({ os, winManager, home, 
 
   try {
     try {
-      const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
-      stopManagedHeadroomProcess({ port: headroomPort, home });
+      const stopManagedHeadroomProcess = stopManagedHeadroomProcessImpl
+        ?? (await import('./service/windows.mjs')).stopManagedHeadroomProcess;
+      stopManagedHeadroomProcess({ port: headroomPort, home, execSyncImpl, powershellExe });
     } catch {}
-    execSync(
-      String.raw`powershell -NoProfile -Command "Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`,
-      { stdio: 'pipe' }
-    );
+    execSyncImpl(buildManagedHeadroomRunKeyCleanupCommand({ powershellExe }), { stdio: 'pipe' });
     okFn('obsolete headroom Run key removed');
   } catch (e) {
     warnFn(`obsolete headroom cleanup failed: ${e.message}`);

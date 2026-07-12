@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildMitmServiceInstallOptions, ensureManagedHeadroomService } from '../src/install.mjs';
+import {
+  buildManagedHeadroomRunKeyCleanupCommand,
+  buildMitmServiceInstallOptions,
+  ensureManagedHeadroomService,
+  removeManagedHeadroomRegistration,
+} from '../src/install.mjs';
+import { powerShellExecutable } from '../src/detect/os.mjs';
 
 describe('ensureManagedHeadroomService', () => {
   for (const os of ['darwin', 'linux', 'windows']) {
@@ -136,5 +142,51 @@ describe('buildMitmServiceInstallOptions', () => {
     assert.equal(opts.envVars.HTTPS_PROXY, 'http://corp-proxy:8080');
     assert.equal(opts.upstreamProxy, 'http://corp-upstream:8888');
     assert.ok(!opts.envVars.HTTPS_PROXY.includes('\\'));
+  });
+});
+
+describe('buildManagedHeadroomRunKeyCleanupCommand', () => {
+  it('uses the WSL-aware PowerShell executable for obsolete Run-key cleanup', () => {
+    const command = buildManagedHeadroomRunKeyCleanupCommand({
+      powershellExe: powerShellExecutable({
+        platformImpl: () => 'linux',
+        isWslImpl: () => true,
+      }),
+    });
+
+    assert.ok(command.startsWith('powershell.exe '));
+    assert.ok(command.includes("Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom'"));
+  });
+});
+
+describe('removeManagedHeadroomRegistration', () => {
+  it('routes obsolete Run-key cleanup through the WSL-aware PowerShell executable', async () => {
+    const commands = [];
+    const stops = [];
+    const powershellExe = powerShellExecutable({
+      platformImpl: () => 'linux',
+      isWslImpl: () => true,
+    });
+
+    await removeManagedHeadroomRegistration({
+      os: 'windows',
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomPort: 8787,
+      powershellExe,
+      execSyncImpl: (command) => {
+        commands.push(command);
+        return Buffer.from('');
+      },
+      stopManagedHeadroomProcessImpl: (opts) => stops.push(opts),
+      warnFn: () => {},
+      okFn: () => {},
+    });
+
+    assert.equal(stops.length, 1);
+    assert.equal(stops[0].powershellExe, 'powershell.exe');
+    assert.equal(stops[0].home, 'C:\\Users\\alice');
+    assert.equal(stops[0].port, 8787);
+    assert.ok(commands[0].startsWith('powershell.exe '));
   });
 });
