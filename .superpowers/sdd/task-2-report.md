@@ -36,3 +36,8 @@
 - `myelin restart` now rebuilds the mitmproxy service definition from config before restarting it, so `MYELIN_HEADROOM_PORT` always follows the selected engine on macOS, Linux, and Windows while keeping Copilot-Headroom egress routing intact.
 - Headroom Lite now uses a managed launcher + PID file and refuses to kill an unrelated port owner; restart/obsolete cleanup only stop a Myelin-owned Lite process and surface unmanaged conflicts instead.
 - Added focused restart tests for Lite ownership conflicts and for mitm service regeneration across all three operating systems.
+
+## Windows Mitm Transition Fix
+- Windows registry-managed mitmproxy now persists a dedicated `start-mitmproxy.ps1` launcher that rebuilds the service env in Process scope before launching `mitmdump`, including `MYELIN_HEADROOM_PORT`, `MYELIN_EGRESS_PORT`, and Copilot-Headroom routing vars.
+- The launcher clears stale optional managed env vars when they are no longer configured, preserving existing egress and Copilot-Headroom behavior without leaking prior registry-managed state into the next process tree.
+- Restart/install now stop only the Myelin-managed mitmproxy instance via the persisted launcher/PID plus exact command-line identity, instead of `Stop-Process -Name mitmdump`, so unrelated system `mitmdump` processes are left alone.

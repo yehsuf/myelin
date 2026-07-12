@@ -253,6 +253,14 @@ export function managedHeadroomPidPath({ home } = {}) {
   return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
 }
 
+export function managedMitmLauncherPath({ home } = {}) {
+  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'start-mitmproxy.ps1');
+}
+
+export function managedMitmPidPath({ home } = {}) {
+  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
+}
+
 export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath } = {}) {
   const pidPath = windowsPath(pidFilePath ?? managedHeadroomPidPath());
   return [
@@ -578,13 +586,103 @@ Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue
 `.trim();
 }
 
+const MANAGED_MITM_ENV_KEYS = [
+  'MYELIN_HEADROOM_PORT',
+  'MYELIN_EGRESS_PORT',
+  'MYELIN_COPILOT_HEADROOM_PORT',
+  'MYELIN_COMPRESS',
+  'MYELIN_BLOCK_BYPASS',
+  'MYELIN_BLOCK_MARKER',
+  'MYELIN_OVERRIDE_PROXY',
+  'MYELIN_VPN_DOMAINS_FILE',
+  'MYELIN_EXTRA_PROVIDERS',
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+  'HEADROOM_CA_BUNDLE',
+];
+
+function buildManagedMitmEnvLines(envVars = {}) {
+  const keys = new Set([...MANAGED_MITM_ENV_KEYS, ...Object.keys(envVars)]);
+  return Array.from(keys)
+    .map((key) => {
+      const value = envVars[key];
+      if (value == null || String(value).length === 0) {
+        return `[System.Environment]::SetEnvironmentVariable('${key}', $null, 'Process')`;
+      }
+      return `[System.Environment]::SetEnvironmentVariable('${key}', '${escapePs(collapseRedundantBackslashes(String(value)))}', 'Process')`;
+    })
+    .join('\n');
+}
+
+function buildManagedMitmCommandClauses({ executablePath, argStr, processVar = '$_' } = {}) {
+  const exeName = windowsPath(executablePath).split('\\').pop();
+  const clauses = [
+    `${processVar}.CommandLine`,
+    `${processVar}.CommandLine -match '${escapePs(escapePsRegex(argStr))}$'`,
+  ];
+  if (executablePath) {
+    clauses.push(`(${processVar}.ExecutablePath -eq '${escapePs(windowsPath(executablePath))}' -or ${processVar}.Name -ieq '${escapePs(exeName)}')`);
+  }
+  return clauses;
+}
+
+function buildManagedMitmStopScript({ mitmdumpBin, argStr, launcherPath, pidFilePath } = {}) {
+  const pidPath = windowsPath(pidFilePath ?? managedMitmPidPath());
+  const commandClauses = buildManagedMitmCommandClauses({
+    executablePath: mitmdumpBin,
+    argStr,
+    processVar: '$proc',
+  });
+  const fallbackClauses = buildManagedMitmCommandClauses({
+    executablePath: mitmdumpBin,
+    argStr,
+  });
+  const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+  const exeName = escapePs(windowsPath(mitmdumpBin).split('\\').pop());
+  return [
+    `$pidPath = '${escapePs(pidPath)}'`,
+    `if (Test-Path $pidPath) {`,
+    `  $managedPid = (Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1)`,
+    `  if ($managedPid -and $managedPid.ToString().Trim() -match '^[0-9]+$') {`,
+    `    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
+    `    if ($proc -and ${commandClauses.join(' -and ')}) {`,
+    `      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `    }`,
+    `  }`,
+    `  Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
+    `}`,
+    `Get-CimInstance Win32_Process -Filter "Name = '${exeName}'" | ForEach-Object {`,
+    `  $parent = if ($_.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+    `  if (${fallbackClauses.join(' -and ')} -and $parent -and $parent.CommandLine -match '${launcherRegex}') {`,
+    `    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue`,
+    `  }`,
+    `}`,
+  ].join('\n');
+}
+
+function generateManagedMitmLauncherScript({ mitmdumpBin, argStr, envVars = {}, pidPath }) {
+  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
+  const envBlock = buildManagedMitmEnvLines(envVars);
+  return `
+$ErrorActionPreference = 'Stop'
+${unsetBlock}
+${envBlock}
+try { Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue } catch {}
+$proc = Start-Process -FilePath '${escapePs(windowsPath(mitmdumpBin))}' -ArgumentList '${escapePs(argStr)}' -WindowStyle Hidden -PassThru
+Set-Content -Path '${escapePs(pidPath)}' -Value $proc.Id -Encoding ASCII
+Wait-Process -Id $proc.Id
+Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue
+`.trim();
+}
+
 export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars = {}, home } = {}) {
   const bin = windowsPath(headroomBin);
   const exeName = bin.split('\\').pop();
   const args = buildHeadroomArgumentString({ port, interceptToolResults });
   const launcherPath = managedHeadroomLauncherPath({ home });
   const pidPath = managedHeadroomPidPath({ home });
-  const launcherDir = dirname(launcherPath);
+  const launcherDir = pathWin32.dirname(launcherPath);
   const launcher = windowsPath(launcherPath);
   const launcherContent = generateManagedHeadroomLauncherScript({
     headroomBin: bin,
@@ -804,7 +902,7 @@ export function collapseRedundantBackslashes(value) {
   return uncPrefix + rest.replace(/\\{2,}/g, '\\');
 }
 
-export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
+export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, home } = {}) {
   const bin = windowsPath(mitmdumpBin);
   const addon = windowsPath(addonPath);
   const ca = windowsPath(envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '');
@@ -812,45 +910,36 @@ export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = 
   const proxyArg = (envVars.HTTPS_PROXY && !envVars.HTTPS_PROXY.includes('127.0.0.1') && !envVars.HTTPS_PROXY.includes('localhost')) ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
   const listenArg = egressPort ? `--mode regular@${port} --mode regular@127.0.0.1:${egressPort}` : `--listen-port ${port}`;
   const args = `${listenArg} -s "${addon}"${proxyArg}${caArg}`;
-  const envLines = Object.entries({
+  const launcherPath = managedMitmLauncherPath({ home });
+  const pidPath = managedMitmPidPath({ home });
+  const launcherDir = pathWin32.dirname(launcherPath);
+  const launcher = windowsPath(launcherPath);
+  const managedEnv = {
     ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
     ...envVars,
-  })
-    // PowerShell single-quoted strings are literal - backslashes never need
-    // escaping there (only a literal single-quote doubles: ' -> ''). This
-    // line previously doubled every backslash unconditionally, which is
-    // wrong on its own, and because this script persists to the registry
-    // (User scope) and gets read back as input on the next run, it silently
-    // compounded across restarts: one clean path became doubled, then
-    // quadrupled, then octupled backslashes over successive `myelin
-    // restart`/install runs - observed live as a NetFree CA path corrupted
-    // to 8 backslashes per separator. collapseRedundantBackslashes() both
-    // stops the bug and self-heals any value that was already corrupted by
-    // it in a prior run.
-    .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${collapseRedundantBackslashes(v).replace(/'/g, "''")}', 'User')`)
-    .join('\n');
-  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
+  };
+  const launcherContent = generateManagedMitmLauncherScript({
+    mitmdumpBin: bin,
+    argStr: args,
+    envVars: managedEnv,
+    pidPath: windowsPath(pidPath),
+  });
   return `
-# Clear client-side provider env vars from Process scope before starting
-# mitmdump — the addon must not see inherited ANTHROPIC_BASE_URL etc.,
-# which would confuse its provider detection or trigger unintended routing.
-${unsetBlock}
-${envLines}
-Stop-Process -Name mitmdump -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force -Path '${escapePs(windowsPath(launcherDir))}' | Out-Null
+Set-Content -Path '${escapePs(launcher)}' -Value @'
+${launcherContent}
+'@ -Encoding UTF8
+${buildManagedMitmStopScript({ mitmdumpBin: bin, argStr: args, launcherPath, pidFilePath: pidPath })}
 Start-Sleep -Milliseconds 500
-Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WindowStyle Hidden
-Set-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -Value '"${bin}" ${args}'
+Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"' -WindowStyle Hidden
+Set-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"'
 Write-Host "[myelin] mitmproxy started (hidden)"
 `;
 }
 
 export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort, manager = 'registry' }) {
   if (manager !== 'winsw') {
-    // Registry path: byte-for-byte the original behavior (no --ignore-hosts,
-    // no upstreamProxy support — those never existed on the Windows registry
-    // path before WinSW; kept exclusive to buildMitmArgumentString below so
-    // the default install is unchanged).
-    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort }));
+    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort, home }));
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({

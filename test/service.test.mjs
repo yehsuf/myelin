@@ -496,6 +496,7 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     port: 8888,
     addonPath: '/path/addon.py',
     envVars: {},
+    home: 'C:\\Users\\alice',
   };
   it('uses --listen-port when no egressPort is given (backward compatible)', () => {
     const script = generateMitmRunScript(MITM_OPTS);
@@ -513,20 +514,59 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     assert.ok(script.includes('MYELIN_EGRESS_PORT'));
   });
 
+  it('sets rebuilt managed env vars in Process scope before launching mitmdump', () => {
+    const script = generateMitmRunScript({
+      ...MITM_OPTS,
+      egressPort: 8889,
+      envVars: {
+        MYELIN_HEADROOM_PORT: '8790',
+        MYELIN_COPILOT_HEADROOM_PORT: '8788',
+        MYELIN_BLOCK_BYPASS: '1',
+      },
+    });
+
+    const headroomIdx = script.indexOf("SetEnvironmentVariable('MYELIN_HEADROOM_PORT', '8790', 'Process')");
+    const copilotIdx = script.indexOf("SetEnvironmentVariable('MYELIN_COPILOT_HEADROOM_PORT', '8788', 'Process')");
+    const bypassIdx = script.indexOf("SetEnvironmentVariable('MYELIN_BLOCK_BYPASS', '1', 'Process')");
+    const startIdx = script.lastIndexOf('-WindowStyle Hidden -PassThru');
+
+    assert.ok(headroomIdx >= 0);
+    assert.ok(copilotIdx >= 0);
+    assert.ok(bypassIdx >= 0);
+    assert.ok(startIdx > bypassIdx);
+    assert.ok(script.includes('start-mitmproxy.ps1'));
+    assert.ok(script.includes("New-Item -ItemType Directory -Force -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy'"));
+  });
+
+  it('clears stale optional managed env vars and avoids killing unrelated mitmdump processes', () => {
+    const script = generateMitmRunScript({
+      ...MITM_OPTS,
+      envVars: { MYELIN_HEADROOM_PORT: '8787' },
+    });
+
+    assert.ok(script.includes("SetEnvironmentVariable('MYELIN_COPILOT_HEADROOM_PORT', $null, 'Process')"));
+    assert.ok(script.includes("SetEnvironmentVariable('MYELIN_EGRESS_PORT', $null, 'Process')"));
+    assert.ok(script.includes("SetEnvironmentVariable('MYELIN_BLOCK_BYPASS', $null, 'Process')"));
+    assert.ok(script.includes('mitm.pid'));
+    assert.ok(script.includes('ProcessId = $managedPid'));
+    assert.ok(script.includes('ParentProcessId'));
+    assert.ok(script.includes('start-mitmproxy\\.ps1'));
+    assert.ok(!script.includes('Stop-Process -Name mitmdump'));
+  });
+
   // Regression test for a live bug: a real Windows path (e.g. a NetFree
-  // corporate CA file) got persisted with every backslash doubled, and
-  // because this script persists to the registry (User scope) and the
-  // doubled value gets read back as input on the next `myelin restart`,
-  // it silently compounded across runs - observed live as
+  // corporate CA file) got written into the managed launcher with every
+  // backslash doubled, and the doubled value got read back as input on the
+  // next `myelin restart`, silently compounding across runs - observed live as
   // C:\\\\\\\\ProgramData\\\\\\\\NetFree\\\\\\\\CA\\\\\\\\netfree-ca-list.crt
   // (8 backslashes per separator) after 3 restarts.
-  it('does not double backslashes in a persisted env var value (regression)', () => {
+  it('does not double backslashes in a managed launcher env var value (regression)', () => {
     const script = generateMitmRunScript({
       ...MITM_OPTS,
       envVars: { NODE_EXTRA_CA_CERTS: 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem' },
     });
-    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem', 'User')"));
-    assert.ok(!script.includes('C:\\\\Users'));
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\Users\\yehsuf\\.myelin\\ca-bundle.pem', 'Process')"));
+    assert.ok(!script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\\\Users"));
   });
 
   it('self-heals an already-doubled value instead of doubling it further', () => {
@@ -534,18 +574,18 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
       ...MITM_OPTS,
       envVars: { NODE_EXTRA_CA_CERTS: 'C:\\\\ProgramData\\\\NetFree\\\\CA\\\\netfree-ca-list.crt' },
     });
-    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'User')"));
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'Process')"));
   });
 
   it('self-heals a severely compounded value (the exact 8-backslash case observed live)', () => {
     const corrupted = 'C:' + '\\\\\\\\ProgramData' + '\\\\\\\\NetFree' + '\\\\\\\\CA' + '\\\\\\\\netfree-ca-list.crt';
     const script = generateMitmRunScript({ ...MITM_OPTS, envVars: { NODE_EXTRA_CA_CERTS: corrupted } });
-    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'User')"));
+    assert.ok(script.includes("SetEnvironmentVariable('NODE_EXTRA_CA_CERTS', 'C:\\ProgramData\\NetFree\\CA\\netfree-ca-list.crt', 'Process')"));
   });
 
   it('still escapes a literal single-quote in the value', () => {
     const script = generateMitmRunScript({ ...MITM_OPTS, envVars: { SOME_VAR: "it's a path" } });
-    assert.ok(script.includes("SetEnvironmentVariable('SOME_VAR', 'it''s a path', 'User')"));
+    assert.ok(script.includes("SetEnvironmentVariable('SOME_VAR', 'it''s a path', 'Process')"));
   });
 });
 
