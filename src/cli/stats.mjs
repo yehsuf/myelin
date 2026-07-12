@@ -122,8 +122,9 @@ function renderCopilotHeadroomStatsRows(payload) {
 }
 
 export function renderLocalStatsRows(payload) {
-  const headroomLite = renderHeadroomLiteStatsRows(payload);
-  if (headroomLite.available) return headroomLite;
+  if (isRecord(payload) && payload.service === 'headroom-lite') {
+    return renderHeadroomLiteStatsRows(payload);
+  }
 
   return renderCopilotHeadroomStatsRows(payload);
 }

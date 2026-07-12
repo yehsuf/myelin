@@ -51,6 +51,55 @@ describe('renderLocalStatsRows', () => {
     ]);
   });
 
+  it('returns unavailable for copilot-headroom payloads with a zero token baseline', () => {
+    assert.deepEqual(renderLocalStatsRows({
+      summary: {
+        api_requests: 100,
+        compression: {
+          requests_compressed: 25,
+          total_tokens_before_with_cli_filtering: 0,
+          total_tokens_saved_with_cli_filtering: 1500,
+        },
+      },
+    }), {
+      available: false,
+      rows: [['Status', 'unavailable']],
+    });
+  });
+
+  it('returns unavailable for copilot-headroom payloads with non-finite compression inputs', () => {
+    assert.deepEqual(renderLocalStatsRows({
+      summary: {
+        api_requests: 100,
+        compression: {
+          requests_compressed: 25,
+          total_tokens_before_with_cli_filtering: Number.POSITIVE_INFINITY,
+          total_tokens_saved_with_cli_filtering: 1500,
+        },
+      },
+    }), {
+      available: false,
+      rows: [['Status', 'unavailable']],
+    });
+  });
+
+  it('does not fall through malformed headroom-lite payloads to copilot-headroom rendering', () => {
+    assert.deepEqual(renderLocalStatsRows({
+      service: 'headroom-lite',
+      summary: {
+        api_requests: 100,
+        compression: {
+          requests_compressed: 25,
+          total_tokens_before_with_cli_filtering: 4000,
+          total_tokens_saved_with_cli_filtering: 1500,
+        },
+      },
+    }), {
+      available: false,
+      rows: [['Status', 'unavailable']],
+    });
+  });
+
   it('returns an explicit unavailable result for invalid payloads', () => {
     assert.deepEqual(renderLocalStatsRows(null), {
       available: false,
