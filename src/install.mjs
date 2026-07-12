@@ -20,7 +20,7 @@ import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
-import { buildServiceEnginePlan } from './config/engine-runtime.mjs';
+import { buildServiceEnginePlan, selectedEnginePort } from './config/engine-runtime.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import {
   installTokenOptimizerForCopilot,
@@ -480,7 +480,7 @@ function resolveRepoRoot(home, os) {
  * Return the path to the Myelin mitmproxy addon script.
  * Resolves relative to the myelin repo root so it works on all platforms.
  */
-function mitmAddonPath(home, os) {
+export function mitmAddonPath(home, os) {
   return join(resolveRepoRoot(home, os), 'src', 'mitm', 'copilot_addon.py');
 }
 
@@ -566,7 +566,7 @@ exec "${codegraphBin}" mcp "$@"
  * Detect the mitmdump binary path (cross-platform).
  * Checks existence for absolute paths, then tries running --version.
  */
-function detectMitmdump(os) {
+export function detectMitmdump(os) {
   const candidates =
     os === 'windows'
       ? [
@@ -602,6 +602,44 @@ function detectMitmdump(os) {
     } catch { /* not found in PATH */ }
   }
   return null;
+}
+
+const LOOPBACK_PROXY_PATTERN = /https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i;
+
+export function buildMitmServiceInstallOptions({
+  cfg = {},
+  os,
+  home = homedir(),
+  mitmdumpBin,
+  sslEnv = buildCorporateSslEnv(),
+  corpProxy = cfg?.proxy?.headroom?.corporate_proxy ?? '',
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  headroomPort = selectedEnginePort(cfg),
+} = {}) {
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
+  const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
+  return {
+    mitmdumpBin,
+    port: mitmCfg.port ?? 8888,
+    addonPath: mitmAddonPath(home, os),
+    envVars: {
+      MYELIN_HEADROOM_PORT: String(headroomPort),
+      MYELIN_COMPRESS,
+      ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
+      ...(mitmCfg.block_bypass ? { MYELIN_BLOCK_BYPASS: '1' } : {}),
+      ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
+      ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
+      ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
+      ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
+      ...sslEnv,
+    },
+    upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
+    logPath: join(home, '.myelin', 'mitmproxy.log'),
+    home,
+    egressPort,
+    manager: winManager,
+  };
 }
 
 /**
@@ -1226,47 +1264,21 @@ async function main() {
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
-      const addonPath = mitmAddonPath(home, os);
-      const mitmPort = mitmCfg.port ?? 8888;
-      // Honor compression.backend: disabled (and suppress the copilot_headroom
-      // redirect when disabled); emit MYELIN_COMPRESS explicitly so no stale
-      // value survives a config change.
-      const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
-      const mitmEnv = {
-        MYELIN_HEADROOM_PORT: String(enginePlan.selectedPort),
-        MYELIN_COMPRESS,
-        // When copilot_headroom is enabled (and compression not disabled), tell
-        // the addon to redirect Copilot traffic to the dedicated headroom
-        // instance so it gets the full pipeline (cache-mode, TOIN, stats)
-        // instead of the stateless /v1/compress sidecar.
-        ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
-        ...(mitmCfg.block_bypass    ? { MYELIN_BLOCK_BYPASS:    '1'                      } : {}),
-        ...(mitmCfg.block_marker    ? { MYELIN_BLOCK_MARKER:    mitmCfg.block_marker     } : {}),
-        ...(mitmCfg.override_proxy  ? { MYELIN_OVERRIDE_PROXY:  mitmCfg.override_proxy   } : {}),
-        ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
-        ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers  } : {}),
-        ...sslEnv,
-      };
+      const { copilotHeadroomPort } = resolveMitmCompression(cfg);
+      const mitmOpts = buildMitmServiceInstallOptions({
+        cfg,
+        os,
+        home,
+        mitmdumpBin,
+        sslEnv,
+        corpProxy,
+        winManager,
+        headroomPort: enginePlan.selectedPort,
+      });
+      const egressPort = mitmOpts.egressPort;
       try {
-        // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
-        const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
-        // Egress + copilot-headroom are only meaningful when the redirect is
-        // actually active. Gate on the RESOLVED copilotHeadroomPort (undefined
-        // when compression/redirect is disabled) — not raw config — so we never
-        // generate a service with `--port undefined`.
-        const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
-        await installMitmService({
-          mitmdumpBin,
-          port: mitmPort,
-          addonPath,
-          envVars: mitmEnv,
-          upstreamProxy: safeUpstream,
-          logPath: join(home, '.myelin', 'mitmproxy.log'),
-          home,
-          egressPort,
-          manager: winManager,
-        });
-        ok(`mitmproxy service registered (port ${mitmPort}${egressPort ? ` + egress ${egressPort}` : ''})`);
+        await installMitmService(mitmOpts);
+        ok(`mitmproxy service registered (port ${mitmOpts.port}${mitmOpts.egressPort ? ` + egress ${mitmOpts.egressPort}` : ''})`);
 
         // Copilot-Headroom: a SEPARATE, dedicated instance that gives Copilot
         // CLI traffic the same full pipeline treatment Claude Code already

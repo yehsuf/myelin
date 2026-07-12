@@ -31,3 +31,8 @@
 - Restored symmetric managed-headroom recovery so installer/restart re-register durable launchd/systemd/Windows services when `proxy.engine` returns from `headroom_lite` to Python headroom, even if a transient process is already healthy.
 - Tightened Windows obsolete-headroom cleanup to stop only Myelin-owned headroom processes via managed launcher/PID or exact legacy Run-key executable matching, preserving Copilot-Headroom behavior.
 - Added lifecycle/restart/Windows ownership regressions covering missing-registration recovery, legacy Run-key migration, WSL Windows-home resolution, and loopback proxy filtering.
+
+## Engine Transition Fix
+- `myelin restart` now rebuilds the mitmproxy service definition from config before restarting it, so `MYELIN_HEADROOM_PORT` always follows the selected engine on macOS, Linux, and Windows while keeping Copilot-Headroom egress routing intact.
+- Headroom Lite now uses a managed launcher + PID file and refuses to kill an unrelated port owner; restart/obsolete cleanup only stop a Myelin-owned Lite process and surface unmanaged conflicts instead.
+- Added focused restart tests for Lite ownership conflicts and for mitm service regeneration across all three operating systems.

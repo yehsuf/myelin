@@ -1,16 +1,23 @@
 import { execSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, readdirSync, existsSync, writeFileSync, unlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { detectOS } from '../detect/os.mjs';
 import { selectedEngine } from '../config/engine-runtime.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
-import { ensureManagedHeadroomService, managedHeadroomRegistrationStatus } from '../install.mjs';
+import { installMitmService } from '../service/index.mjs';
+import {
+  buildMitmServiceInstallOptions,
+  detectMitmdump,
+  ensureManagedHeadroomService,
+  managedHeadroomRegistrationStatus,
+} from '../install.mjs';
 
 const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+const HEADROOM_LITE_STATE_DIR = ['.myelin', 'state', 'headroom-lite'];
 
 function escapePs(value = '') {
   return String(value ?? '').replace(/'/g, "''");
@@ -38,78 +45,296 @@ export function buildManagedHeadroomEnv(cfg, baseEnv = process.env) {
   return env;
 }
 
+function headroomLiteStateDir(home = homedir()) {
+  return join(home, ...HEADROOM_LITE_STATE_DIR);
+}
+
+export function headroomLitePidPath({ home = homedir() } = {}) {
+  return join(headroomLiteStateDir(home), 'headroom-lite.pid');
+}
+
+export function headroomLiteLauncherPath({ home = homedir(), osKind } = {}) {
+  return join(headroomLiteStateDir(home), osKind === 'windows' ? 'start-headroom-lite.ps1' : 'start-headroom-lite.sh');
+}
+
+function trimShellValue(value = '') {
+  return String(value ?? '').replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').map(v => v.trim()).find(Boolean) ?? '';
+}
+
+function psSingleQuote(value = '') {
+  return `'${escapePs(value)}'`;
+}
+
+function shSingleQuote(value = '') {
+  return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
+}
+
+function resolveHeadroomLiteBinary(osKind, execSyncImpl = execSync) {
+  try {
+    const command = osKind === 'windows'
+      ? `powershell -NoProfile -Command "(Get-Command headroom-lite -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)"`
+      : 'command -v headroom-lite';
+    const options = osKind === 'windows'
+      ? { stdio: ['ignore', 'pipe', 'pipe'] }
+      : { stdio: ['ignore', 'pipe', 'pipe'], shell: '/bin/bash' };
+    return trimShellValue(execSyncImpl(command, options).toString()) || null;
+  } catch {
+    return null;
+  }
+}
+
+function headroomLitePortOwnerPid(port, osKind, execSyncImpl = execSync) {
+  try {
+    const command = osKind === 'windows'
+      ? `powershell -NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)"`
+      : `lsof -nP -tiTCP:${port} -sTCP:LISTEN 2>/dev/null`;
+    const options = osKind === 'windows'
+      ? { stdio: ['ignore', 'pipe', 'pipe'] }
+      : { stdio: ['ignore', 'pipe', 'pipe'], shell: '/bin/bash' };
+    const pid = Number(trimShellValue(execSyncImpl(command, options).toString()));
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
+  try {
+    if (osKind === 'windows') {
+      const script = [
+        `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
+        'if (-not $proc) { return }',
+        '$parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }',
+        '@{',
+        '  command = $proc.CommandLine',
+        '  executablePath = $proc.ExecutablePath',
+        '  parentCommand = if ($parent) { $parent.CommandLine } else { "" }',
+        '} | ConvertTo-Json -Compress',
+      ].join('; ');
+      const out = trimShellValue(execSyncImpl(`powershell -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).toString());
+      return out ? JSON.parse(out) : null;
+    }
+    const command = trimShellValue(execSyncImpl(`ps -p ${pid} -o command=`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: '/bin/bash',
+    }).toString());
+    if (!command) return null;
+    const parentPid = trimShellValue(execSyncImpl(`ps -p ${pid} -o ppid=`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: '/bin/bash',
+    }).toString());
+    const parentCommand = parentPid
+      ? trimShellValue(execSyncImpl(`ps -p ${parentPid} -o command=`, {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          shell: '/bin/bash',
+        }).toString())
+      : '';
+    return { command, executablePath: '', parentCommand };
+  } catch {
+    return null;
+  }
+}
+
+function headroomLiteMatchesManagedLauncher(processInfo, launcherPath) {
+  const needle = String(launcherPath ?? '').toLowerCase();
+  if (!needle) return false;
+  return [processInfo?.command, processInfo?.parentCommand].some((value) =>
+    String(value ?? '').toLowerCase().includes(needle)
+  );
+}
+
+function headroomLiteMatchesManagedPid(processInfo, binaryPath) {
+  const needles = [String(binaryPath ?? ''), 'headroom-lite']
+    .map((value) => value.toLowerCase())
+    .filter(Boolean);
+  return needles.some((needle) =>
+    [processInfo?.command, processInfo?.parentCommand, processInfo?.executablePath].some((value) =>
+      String(value ?? '').toLowerCase().includes(needle)
+    )
+  );
+}
+
+function readManagedHeadroomLitePid(pidPath, { existsSyncImpl = existsSync, readFileSyncImpl = readFileSync } = {}) {
+  try {
+    if (!existsSyncImpl(pidPath)) return null;
+    const pid = Number(String(readFileSyncImpl(pidPath, 'utf8') ?? '').trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultStopPid(pid, osKind, execSyncImpl = execSync) {
+  if (osKind === 'windows') {
+    execSyncImpl(`powershell -NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return;
+  }
+  process.kill(pid, 'SIGTERM');
+}
+
+function buildHeadroomLiteLauncherScript({ binaryPath, port, pidPath, osKind }) {
+  if (osKind === 'windows') {
+    const headroomLiteCmd = windowsPath(binaryPath);
+    const cmdArgs = `/d /s /c ""${headroomLiteCmd}""`;
+    return `
+$ErrorActionPreference = 'Stop'
+${buildServiceEnvUnsetLines({ os: 'windows' })}
+[System.Environment]::SetEnvironmentVariable('HTTPS_PROXY', $null, 'Process')
+[System.Environment]::SetEnvironmentVariable('HTTP_PROXY', $null, 'Process')
+[System.Environment]::SetEnvironmentVariable('NO_PROXY', $null, 'Process')
+[System.Environment]::SetEnvironmentVariable('HEADROOM_LITE_PORT', '${escapePs(String(port))}', 'Process')
+try { Remove-Item -Path ${psSingleQuote(windowsPath(pidPath))} -ErrorAction SilentlyContinue } catch {}
+$proc = Start-Process -FilePath 'cmd.exe' -ArgumentList ${psSingleQuote(cmdArgs)} -WindowStyle Hidden -PassThru
+$trackedPid = $proc.Id
+for ($i = 0; $i -lt 20; $i++) {
+  Start-Sleep -Milliseconds 200
+  $child = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ParentProcessId -eq $proc.Id -and ($_.CommandLine -match 'headroom-lite' -or $_.ExecutablePath -match 'node(?:\\.exe)?$')
+  } | Select-Object -First 1
+  if ($child) { $trackedPid = $child.ProcessId; break }
+}
+Set-Content -Path ${psSingleQuote(windowsPath(pidPath))} -Value $trackedPid -Encoding ASCII
+Wait-Process -Id $proc.Id
+Remove-Item -Path ${psSingleQuote(windowsPath(pidPath))} -ErrorAction SilentlyContinue
+`.trim();
+  }
+  return `#!/bin/sh
+${buildServiceEnvUnsetLines({ os: 'darwin' })}
+unset HTTPS_PROXY HTTP_PROXY NO_PROXY
+export HEADROOM_LITE_PORT=${shSingleQuote(String(port))}
+rm -f ${shSingleQuote(pidPath)}
+${shSingleQuote(binaryPath)} >/dev/null 2>&1 &
+child=$!
+printf '%s\n' "$child" > ${shSingleQuote(pidPath)}
+wait "$child"
+rm -f ${shSingleQuote(pidPath)}
+`;
+}
+
+export async function stopManagedHeadroomLite({
+  port,
+  osKind,
+  home = homedir(),
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  unlinkSyncImpl = unlinkSync,
+  stopPidImpl = (pid) => defaultStopPid(pid, osKind, execSyncImpl),
+  waitImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl),
+} = {}) {
+  const pidPath = headroomLitePidPath({ home });
+  const launcherPath = headroomLiteLauncherPath({ home, osKind });
+  const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl);
+  const managedPid = readManagedHeadroomLitePid(pidPath, { existsSyncImpl, readFileSyncImpl });
+
+  if (!ownerPid) {
+    if (managedPid) {
+      try { unlinkSyncImpl(pidPath); } catch {}
+    }
+    return { stopped: false, conflict: false, running: false };
+  }
+
+  const processInfo = headroomLiteProcessInfo(ownerPid, osKind, execSyncImpl);
+  const matchesLauncher = headroomLiteMatchesManagedLauncher(processInfo, launcherPath);
+  const matchesManagedPid = managedPid === ownerPid && headroomLiteMatchesManagedPid(processInfo, binaryPath);
+
+  if (!matchesManagedPid && !matchesLauncher) {
+    return {
+      stopped: false,
+      conflict: true,
+      running: true,
+      ownerPid,
+      reason: `headroom-lite port ${port} is owned by an unmanaged process (pid ${ownerPid})`,
+    };
+  }
+
+  try {
+    stopPidImpl(ownerPid);
+  } catch (error) {
+    return {
+      stopped: false,
+      conflict: true,
+      running: true,
+      ownerPid,
+      reason: `failed to stop managed headroom-lite pid ${ownerPid}: ${error?.message?.split?.('\n')?.[0] ?? error}`,
+    };
+  }
+
+  await waitImpl(400);
+  try { unlinkSyncImpl(pidPath); } catch {}
+  return { stopped: true, conflict: false, running: true, ownerPid };
+}
+
 /**
  * Start (or restart) headroom-lite on the given port.
  *
- * Cross-platform:
- *   - Uses `shell: true` so we resolve npm-global shims (headroom-lite.cmd on
- *     Windows, /usr/local/bin/headroom-lite on macOS/Linux) without hardcoding.
- *   - Detaches + unref()s so the process outlives the current `myelin restart`
- *     invocation, mirroring how the copilot-headroom Task Scheduler task
- *     already behaves on Windows.
- *   - Passes HEADROOM_LITE_PORT explicitly so port is deterministic even if
- *     the user's shell has a different default set.
- *   - Fails soft when the binary isn't installed (prints a hint) — this is
- *     currently an optional service, not a hard dependency of `myelin restart`.
+ * Uses a managed launcher + pid file so restarts and cleanup only ever stop a
+ * Myelin-owned Lite process. Any unrelated port owner is surfaced as a
+ * conflict and left untouched.
  */
-export async function restartHeadroomLite(port, osKind) {
-  // Best-effort probe: is the binary available? Using shell so npm shims work.
-  const probeCmd = osKind === 'windows'
-    ? `powershell -Command "if (Get-Command headroom-lite -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"`
-    : `command -v headroom-lite >/dev/null 2>&1`;
-  try {
-    execSync(probeCmd, { stdio: 'pipe' });
-  } catch {
-    console.log('  ↷ headroom-lite not installed — run: npm i -g @yehsuf/headroom-lite');
+export async function restartHeadroomLite(port, osKind, _cfg, {
+  home = homedir(),
+  execSyncImpl = execSync,
+  spawnImpl = spawn,
+  mkdirSyncImpl = mkdirSync,
+  writeFileSyncImpl = writeFileSync,
+  chmodSyncImpl = chmodSync,
+  stopManagedHeadroomLiteImpl = stopManagedHeadroomLite,
+  waitForHeadroomLiteImpl = waitForHeadroomLite,
+  log = console.log,
+  warn = console.warn,
+} = {}) {
+  const binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl);
+  if (!binaryPath) {
+    log('  ↷ headroom-lite not installed — run: npm i -g @yehsuf/headroom-lite');
     return false;
   }
 
-  // Kill any existing headroom-lite process on this port so we don't collide.
-  if (osKind === 'windows') {
-    try {
-      execSync(
-        `powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
-        { stdio: 'pipe' }
-      );
-    } catch {}
-  } else {
-    try {
-      execSync(`lsof -ti :${port} | xargs -r kill -9 2>/dev/null`, { stdio: 'pipe', shell: '/bin/bash' });
-    } catch {}
+  const stopResult = await stopManagedHeadroomLiteImpl({
+    port,
+    osKind,
+    home,
+    execSyncImpl,
+    binaryPath,
+  });
+  if (stopResult?.conflict) {
+    warn(`  ⚠ ${stopResult.reason}`);
+    return false;
   }
-  await new Promise(r => setTimeout(r, 400));
 
-  // Detached spawn — survives the current `myelin restart` invocation.
-  // NB: we deliberately do NOT set ANTHROPIC_BASE_URL / HTTPS_PROXY in the child
-  // env. headroom-lite is a server, not a client — see src/service/wrappers.mjs
-  // SERVER_FORBIDDEN_ENV for the full list of vars that must not leak in.
-  const childEnv = { ...process.env, HEADROOM_LITE_PORT: String(port) };
-  delete childEnv.ANTHROPIC_BASE_URL;
-  delete childEnv.HTTPS_PROXY;
-  delete childEnv.HTTP_PROXY;
-  delete childEnv.NO_PROXY;
+  const launcherPath = headroomLiteLauncherPath({ home, osKind });
+  const pidPath = headroomLitePidPath({ home });
+  mkdirSyncImpl(headroomLiteStateDir(home), { recursive: true });
+  writeFileSyncImpl(launcherPath, buildHeadroomLiteLauncherScript({ binaryPath, port, pidPath, osKind }), 'utf8');
+  if (osKind !== 'windows') chmodSyncImpl(launcherPath, 0o755);
 
   try {
-    const child = spawn('headroom-lite', [], {
-      detached: true,
-      stdio: 'ignore',
-      shell: true,
-      env: childEnv,
-    });
+    const child = osKind === 'windows'
+      ? spawnImpl('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcherPath], {
+          detached: true,
+          stdio: 'ignore',
+        })
+      : spawnImpl(launcherPath, [], {
+          detached: true,
+          stdio: 'ignore',
+        });
     child.unref();
-    console.log(`  ✓ headroom-lite started (:${port})`);
+    log(`  ✓ headroom-lite started (:${port})`);
   } catch (e) {
-    console.warn(`  ⚠ headroom-lite start failed: ${e?.message?.split('\n')[0] ?? e}`);
+    warn(`  ⚠ headroom-lite start failed: ${e?.message?.split('\n')[0] ?? e}`);
     return false;
   }
 
-  // Quick health probe — headroom-lite is a small Node.js server, usually up
-  // in <1s. Don't block for long.
-  const healthy = await waitForHeadroomLite(port, 5000);
+  const healthy = await waitForHeadroomLiteImpl(port, 5000);
   if (healthy) {
-    console.log(`  ✓ headroom-lite healthy on :${port}`);
+    log(`  ✓ headroom-lite healthy on :${port}`);
   } else {
-    console.log(`  ↷ headroom-lite still starting — run: myelin verify to confirm`);
+    log(`  ↷ headroom-lite still starting — run: myelin verify to confirm`);
   }
   return healthy;
 }
@@ -190,10 +415,15 @@ function stopProcessByPort(port, osKind, execSyncFn = execSync) {
   } catch {}
 }
 
-async function stopObsoleteEngine({ engine, os, cfg, winManager }) {
+export async function stopObsoleteEngine({ engine, os, cfg, winManager, home = homedir(), warn = console.warn }) {
   if (engine === 'headroom_lite') {
-    stopProcessByPort(cfg?.proxy?.headroom_lite?.port ?? 8790, os);
-    return;
+    const result = await stopManagedHeadroomLite({
+      port: cfg?.proxy?.headroom_lite?.port ?? 8790,
+      osKind: os,
+      home,
+    });
+    if (result?.conflict) warn(`  ⚠ ${result.reason}`);
+    return result;
   }
   if (engine !== 'headroom') return;
   if (os === 'darwin') {
@@ -374,43 +604,30 @@ async function defaultRestartCopilotHeadroom({ os, cfg, winManager, log, warn })
   }
 }
 
-async function defaultRestartMitm({ os, cfg, winManager, log, warn }) {
+export async function defaultRestartMitm({
+  os,
+  cfg,
+  winManager,
+  log,
+  warn,
+  homedirImpl = homedir,
+  detectMitmdumpImpl = detectMitmdump,
+  buildMitmServiceInstallOptionsImpl = buildMitmServiceInstallOptions,
+  installMitmServiceImpl = installMitmService,
+} = {}) {
   try {
-    if (os === 'darwin') {
-      const uid = execSync('id -u').toString().trim();
-      const plist = join(homedir(), 'Library', 'LaunchAgents', 'com.myelin.mitmproxy.plist');
-      try { execSync(`launchctl bootout gui/${uid}/com.myelin.mitmproxy`, { stdio: 'ignore' }); } catch {}
-      execSync('sleep 1');
-      execSync(`launchctl bootstrap gui/${uid} ${plist}`, { stdio: 'pipe' });
-      log('  ✓ mitmproxy restarted (launchd)');
-      return;
-    }
-    if (os === 'linux') {
-      execSync('systemctl --user restart myelin-mitmproxy.service', { stdio: 'pipe' });
-      log('  ✓ mitmproxy restarted (systemd)');
-      return;
-    }
-    if (winManager === 'winsw') {
-      const { MITM_SERVICE_ID, restartWinswService } = await import('../service/windows.mjs');
-      if (!restartWinswService({ id: MITM_SERVICE_ID })) throw new Error('WinSW restart failed');
-      log('  ✓ mitmproxy restarted (WinSW)');
-      return;
-    }
-    stopProcessByPort(cfg?.proxy?.mitm?.port ?? 8888, os);
-    if (cfg?.proxy?.copilot_headroom?.enabled) {
-      stopProcessByPort(cfg?.proxy?.mitm?.egress_port ?? 8889, os);
-    }
-    await new Promise(r => setTimeout(r, 500));
-    const regVal = execSync(
-      `powershell -Command "(Get-ItemProperty '${REG_RUN}' -Name MyelinMitmproxy -ErrorAction SilentlyContinue).MyelinMitmproxy"`,
-      { stdio: 'pipe' },
-    ).toString().trim();
-    if (!regVal) throw new Error('registry entry not found — run: myelin install --yes');
-    const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
-    if (!m) throw new Error('registry entry malformed');
-    const { spawnDetachedService } = await import('../service/windows.mjs');
-    spawnDetachedService('MyelinMitmproxy', m[1], m[2].trim());
-    log('  ✓ mitmproxy restarted (hidden)');
+    const home = homedirImpl();
+    const mitmdumpBin = detectMitmdumpImpl(os);
+    if (!mitmdumpBin) throw new Error('mitmdump not found — run: myelin install --yes');
+    const mitmOpts = buildMitmServiceInstallOptionsImpl({
+      cfg,
+      os,
+      home,
+      mitmdumpBin,
+      winManager,
+    });
+    await installMitmServiceImpl(mitmOpts);
+    log(`  ✓ mitmproxy service refreshed (port ${mitmOpts.port}${mitmOpts.egressPort ? ` + egress ${mitmOpts.egressPort}` : ''})`);
   } catch (e) {
     warn(`  ⚠ mitmproxy restart failed: ${e.message?.split('\n')[0] ?? e}`);
   }
@@ -439,13 +656,14 @@ export async function runRestart({
   const engine = selectedEngine(cfg);
   const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
   const obsolete = engine === 'headroom' ? 'headroom_lite' : 'headroom';
+  const home = homedir();
   log('\n🔄 Restarting Myelin services...');
 
   const startSelected = async () => {
     if (engine === 'headroom_lite') {
       return restartHeadroomLiteImpl(cfg?.proxy?.headroom_lite?.port ?? 8790, os, cfg);
     }
-    await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager });
+    await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager, home, warn });
     await restartManagedHeadroomImpl({ os, cfg, winManager, log, warn });
     return true;
   };
@@ -468,7 +686,7 @@ export async function runRestart({
         log();
         return;
       }
-      await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager });
+      await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager, home, warn });
     }
     await restartCopilotHeadroomImpl({ os, cfg, winManager, log, warn });
   }

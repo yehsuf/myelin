@@ -1,6 +1,14 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildCopilotHeadroomTaskEnv, buildManagedHeadroomEnv, defaultRestartManagedHeadroom, runRestart } from '../src/cli/restart.mjs';
+import {
+  buildCopilotHeadroomTaskEnv,
+  buildManagedHeadroomEnv,
+  defaultRestartManagedHeadroom,
+  defaultRestartMitm,
+  restartHeadroomLite,
+  runRestart,
+  stopManagedHeadroomLite,
+} from '../src/cli/restart.mjs';
 
 describe('buildCopilotHeadroomTaskEnv', () => {
   it('points Copilot-Headroom at the local mitm egress listener', () => {
@@ -140,6 +148,84 @@ describe('runRestart engine selection', () => {
   });
 });
 
+describe('headroom-lite ownership guards', () => {
+  it('surfaces a conflict instead of killing an unmanaged Unix port owner', async () => {
+    const killed = [];
+    const result = await stopManagedHeadroomLite({
+      port: 8790,
+      osKind: 'linux',
+      home: '/Users/alice',
+      execSyncImpl: (command) => {
+        if (command.includes('lsof -nP -tiTCP:8790')) return Buffer.from('4242\n');
+        if (command.includes('ps -p 4242 -o command=')) return Buffer.from('python3 /opt/other-service.js\n');
+        if (command.includes('ps -p 4242 -o ppid=')) return Buffer.from('1\n');
+        if (command.includes('ps -p 1 -o command=')) return Buffer.from('/sbin/init\n');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => false,
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+    });
+
+    assert.equal(result.conflict, true);
+    assert.equal(result.reason, 'headroom-lite port 8790 is owned by an unmanaged process (pid 4242)');
+    assert.deepEqual(killed, []);
+  });
+
+  it('does not spawn headroom-lite when an unmanaged owner already holds the port', async () => {
+    const spawned = [];
+    const warnings = [];
+    const started = await restartHeadroomLite(8790, 'linux', {}, {
+      home: '/Users/alice',
+      execSyncImpl: () => Buffer.from('/usr/local/bin/headroom-lite\n'),
+      stopManagedHeadroomLiteImpl: async () => ({
+        conflict: true,
+        reason: 'headroom-lite port 8790 is owned by an unmanaged process (pid 4242)',
+      }),
+      spawnImpl: (...args) => {
+        spawned.push(args);
+        return { unref() {} };
+      },
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      chmodSyncImpl: () => {},
+      waitForHeadroomLiteImpl: async () => true,
+      log: () => {},
+      warn: (msg) => warnings.push(msg),
+    });
+
+    assert.equal(started, false);
+    assert.deepEqual(spawned, []);
+    assert.deepEqual(warnings, ['  ⚠ headroom-lite port 8790 is owned by an unmanaged process (pid 4242)']);
+  });
+
+  it('stops a managed Unix headroom-lite owner when the pid file matches the listener', async () => {
+    const killed = [];
+    const result = await stopManagedHeadroomLite({
+      port: 8790,
+      osKind: 'linux',
+      home: '/Users/alice',
+      execSyncImpl: (command) => {
+        if (command.includes('lsof -nP -tiTCP:8790')) return Buffer.from('5150\n');
+        if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
+        if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /Users/alice/.myelin/state/headroom-lite/start-headroom-lite.sh\n');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => '5150\n',
+      unlinkSyncImpl: () => {},
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+      binaryPath: '/usr/local/bin/headroom-lite',
+    });
+
+    assert.equal(result.stopped, true);
+    assert.equal(result.conflict, false);
+    assert.deepEqual(killed, [5150]);
+  });
+});
+
 describe('defaultRestartManagedHeadroom', () => {
   it('reinstalls a missing managed registration instead of spawning a transient-only restart', async () => {
     const calls = [];
@@ -175,4 +261,40 @@ describe('defaultRestartManagedHeadroom', () => {
     assert.deepEqual(calls[0].envVars, buildManagedHeadroomEnv(cfg));
     assert.equal(calls[0].interceptToolResults, true);
   });
+});
+
+describe('defaultRestartMitm', () => {
+  for (const os of ['darwin', 'linux', 'windows']) {
+    it(`reinstalls the mitm service definition for ${os} with the selected engine port`, async () => {
+      const installs = [];
+      await defaultRestartMitm({
+        os,
+        cfg: {
+          proxy: {
+            engine: 'headroom_lite',
+            headroom: { port: 8787, corporate_proxy: 'http://corp-proxy:8080' },
+            headroom_lite: { port: 8790 },
+            mitm: { port: 8888, egress_port: 8889, block_bypass: true },
+            copilot_headroom: { enabled: true, port: 8788 },
+            windows_service: { manager: 'registry' },
+          },
+        },
+        winManager: 'registry',
+        homedirImpl: () => '/Users/alice',
+        detectMitmdumpImpl: () => '/usr/local/bin/mitmdump',
+        installMitmServiceImpl: async (opts) => installs.push(opts),
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(installs.length, 1);
+      assert.equal(installs[0].port, 8888);
+      assert.equal(installs[0].egressPort, 8889);
+      assert.equal(installs[0].manager, 'registry');
+      assert.equal(installs[0].mitmdumpBin, '/usr/local/bin/mitmdump');
+      assert.equal(installs[0].envVars.MYELIN_HEADROOM_PORT, '8790');
+      assert.equal(installs[0].envVars.MYELIN_COPILOT_HEADROOM_PORT, '8788');
+      assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
+    });
+  }
 });
