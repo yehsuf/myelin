@@ -392,13 +392,22 @@ export function renderHint(sections) {
  * @param {string} text
  */
 function copyToClipboard(text) {
+  // Ordered by platform likelihood. Each candidate is tried in sequence;
+  // any error (ENOENT, EPERM, non-zero exit, …) is caught and the next
+  // candidate is tried. Returns the name of the tool that succeeded, or
+  // null if none worked.
+  //
+  // PowerShell note: '$input|Set-Clipboard' is unreliable in -Command mode
+  // because $input may not be populated from stdin. Use [Console]::In instead.
   const candidates = [
     // macOS
     { cmd: 'pbcopy', args: [] },
-    // Windows (cmd)
+    // Windows — clip.exe (always present, reads stdin, ASCII-safe)
     { cmd: 'clip', args: [] },
-    // Windows (PowerShell) — tried as fallback
-    { cmd: 'powershell', args: ['-NonInteractive', '-Command', '$input|Set-Clipboard'] },
+    // Windows — PowerShell fallback (reads stdin explicitly via [Console]::In)
+    { cmd: 'powershell',
+      args: ['-NonInteractive', '-NoProfile', '-Command',
+             '$t=[Console]::In.ReadToEnd();Set-Clipboard -Value $t'] },
     // Linux X11
     { cmd: 'xclip', args: ['-selection', 'clipboard'] },
     // Linux Wayland
@@ -406,9 +415,13 @@ function copyToClipboard(text) {
   ];
   for (const { cmd, args } of candidates) {
     try {
-      execFileSync(cmd, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+      execFileSync(cmd, args, {
+        input: text,
+        stdio: ['pipe', 'ignore', 'pipe'],   // capture stderr so it doesn't bleed through
+        timeout: 3000,
+      });
       return cmd;
-    } catch { /* try next */ }
+    } catch { /* not available or failed — try next */ }
   }
   return null;
 }
@@ -546,15 +559,22 @@ function modeClipboard(hintFile) {
     process.exit(1);
   }
 
-  let hint = readFileSync(hintFile, 'utf8').trim();
+  let hint;
+  try {
+    hint = readFileSync(hintFile, 'utf8').trim();
+  } catch (err) {
+    console.error(`compact-prepare clipboard: cannot read file: ${err.message}`);
+    process.exit(1);
+  }
   hint = stripNonAscii(hint);
 
-  // Hard-enforce the 4000-char cap — prevent the "customInstructions exceeds
-  // maximum length" abort that Copilot CLI throws when the hint is too long.
+  // Hard-enforce the 4000-char cap — prevent "customInstructions exceeds
+  // maximum length" abort. Cache original length before any truncation.
+  const originalLength = hint.length;
   if (hint.length > MAX_HINT) {
     const marker = '\n[TRUNCATED — hint exceeded 4000 chars; edit compact-hint.txt to fit]';
     hint = hint.slice(0, MAX_HINT - marker.length) + marker;
-    console.warn(`⚠  Hint was ${readFileSync(hintFile, 'utf8').trim().length} chars — truncated to ${MAX_HINT}.`);
+    console.warn(`⚠  Hint was ${originalLength} chars — truncated to ${MAX_HINT}.`);
     console.warn('   Edit the hint file and re-run, or use a shorter hint.');
   }
 
