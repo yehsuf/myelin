@@ -53,6 +53,16 @@ function windowsPath(value = '') {
   return String(value ?? '').replace(/\//g, '\\');
 }
 
+export function normalizeWindowsFilesystemPath(value = '') {
+  const raw = String(value ?? '');
+  if (!raw) return raw;
+  if (isWindowsAbsolutePath(raw)) return collapseRedundantBackslashes(windowsPath(raw));
+  if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(raw)) {
+    return collapseRedundantBackslashes(windowsPath(wslMountToWindowsPath(raw)));
+  }
+  return collapseRedundantBackslashes(windowsPath(raw));
+}
+
 function taskEnvValue(key, value = '') {
   const raw = String(value ?? '');
   return /(_DIR|_PATH|^HOME$|^USERPROFILE$|^APPDATA$|^LOCALAPPDATA$)/u.test(key)
@@ -169,9 +179,10 @@ function buildCopilotHeadroomArgumentString({ port, mode }) {
 }
 
 function buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, upstreamProxy }) {
+  const normalizedAddonPath = normalizeWindowsFilesystemPath(addonPath);
   const args = egressPort
-    ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', windowsPath(addonPath)]
-    : ['--listen-port', String(port), '-s', windowsPath(addonPath)];
+    ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', normalizedAddonPath]
+    : ['--listen-port', String(port), '-s', normalizedAddonPath];
 
   const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
   if (proxy && !proxy.includes('127.0.0.1') && !proxy.includes('localhost')) {
@@ -180,7 +191,7 @@ function buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars = {}, e
 
   const caBundle = envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE ||
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
-  if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${windowsPath(caBundle)}`);
+  if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${normalizeWindowsFilesystemPath(caBundle)}`);
 
   args.push('--ignore-hosts', MITM_IGNORE_HOSTS);
   return joinArguments(args);
@@ -323,26 +334,30 @@ function isWindowsAbsolutePath(filePath = '') {
   return /^(?:[a-z]:\\|\\\\)/i.test(windowsPath(filePath));
 }
 
-function readWindowsScriptText(scriptPath, {
+function readWindowsFileText(filePath, {
   execSyncImpl = execSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
 } = {}) {
-  if (!scriptPath) return '';
+  if (!filePath) return '';
   try {
-    if (existsSyncImpl(scriptPath)) {
-      return String(readFileSyncImpl(scriptPath, 'utf8') ?? '');
+    if (existsSyncImpl(filePath)) {
+      return String(readFileSyncImpl(filePath, 'utf8') ?? '');
     }
   } catch {}
-  if (!isWindowsAbsolutePath(scriptPath)) return '';
+  if (!isWindowsAbsolutePath(filePath)) return '';
   try {
     return execSyncImpl(
-      `powershell -NoProfile -Command "if (Test-Path '${escapePs(windowsPath(scriptPath))}') { Get-Content -Path '${escapePs(windowsPath(scriptPath))}' -Raw }"`,
+      `powershell -NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`,
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
   } catch {
     return '';
   }
+}
+
+function readWindowsScriptText(scriptPath, opts = {}) {
+  return readWindowsFileText(scriptPath, opts);
 }
 
 function parseLauncherStartProcess(script = '') {
@@ -739,10 +754,20 @@ export function parseManagedMitmLauncherScript(script = '') {
   };
 }
 
-function readManagedMitmIdentity({ home } = {}) {
+function readManagedMitmIdentity({
+  home,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+} = {}) {
   const launcherPath = managedMitmLauncherPath({ home });
-  if (!existsSync(launcherPath)) return null;
-  const parsed = parseManagedMitmLauncherScript(readFileSync(launcherPath, 'utf8'));
+  const launcherScript = readWindowsScriptText(launcherPath, {
+    execSyncImpl,
+    existsSyncImpl,
+    readFileSyncImpl,
+  });
+  if (!launcherScript) return null;
+  const parsed = parseManagedMitmLauncherScript(launcherScript);
   if (!parsed) return null;
   return { ...parsed, launcherPath };
 }
@@ -1119,15 +1144,16 @@ export function collapseRedundantBackslashes(value) {
 }
 
 export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, home } = {}) {
-  const bin = windowsPath(mitmdumpBin);
-  const addon = windowsPath(addonPath);
-  const ca = windowsPath(envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '');
+  const bin = normalizeWindowsFilesystemPath(mitmdumpBin);
+  const addon = normalizeWindowsFilesystemPath(addonPath);
+  const ca = normalizeWindowsFilesystemPath(envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '');
   const caArg = ca ? ` --set ssl_verify_upstream_trusted_ca="${ca}"` : '';
   const proxyArg = (envVars.HTTPS_PROXY && !envVars.HTTPS_PROXY.includes('127.0.0.1') && !envVars.HTTPS_PROXY.includes('localhost')) ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
   const listenArg = egressPort ? `--mode regular@${port} --mode regular@127.0.0.1:${egressPort}` : `--listen-port ${port}`;
   const args = `${listenArg} -s "${addon}"${proxyArg}${caArg}`;
-  const launcherPath = managedMitmLauncherPath({ home });
-  const pidPath = managedMitmPidPath({ home });
+  const normalizedHome = normalizeWindowsFilesystemPath(home);
+  const launcherPath = managedMitmLauncherPath({ home: normalizedHome });
+  const pidPath = managedMitmPidPath({ home: normalizedHome });
   const launcherDir = pathWin32.dirname(launcherPath);
   const launcher = windowsPath(launcherPath);
   const managedEnv = {
@@ -1170,12 +1196,27 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
   });
 }
 
-export function mitmServiceStatus({ manager = 'registry' } = {}) {
+export function mitmServiceStatus({
+  manager = 'registry',
+  home,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+} = {}) {
   if (manager !== 'winsw') {
     try {
-      const identity = readManagedMitmIdentity();
+      const identity = readManagedMitmIdentity({
+        home,
+        execSyncImpl,
+        existsSyncImpl,
+        readFileSyncImpl,
+      });
       const pidText = identity
-        ? trimPowershellOutput(readFileSync(managedMitmPidPath(), 'utf8'))
+        ? trimPowershellOutput(readWindowsFileText(managedMitmPidPath({ home }), {
+            execSyncImpl,
+            existsSyncImpl,
+            readFileSyncImpl,
+          }))
         : '';
       if (!identity || !pidText || !/^[0-9]+$/u.test(pidText)) {
         return { running: false, state: 'Stopped', raw: '' };
@@ -1186,7 +1227,7 @@ export function mitmServiceStatus({ manager = 'registry' } = {}) {
         argStr: identity.argumentList,
         launcherPath: identity.launcherPath,
       }).replace(/"/g, '\\"');
-      const raw = execSync(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' }).toString();
+      const raw = execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' }).toString();
       return parseManagedMitmStatus(raw);
     } catch {
       return { running: false, state: 'Unknown' };

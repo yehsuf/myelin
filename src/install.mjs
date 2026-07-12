@@ -35,7 +35,7 @@ import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headr
 import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
 import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
-import { setUserEnvVars } from './service/windows.mjs';
+import { defaultWindowsHome, normalizeWindowsFilesystemPath, setUserEnvVars } from './service/windows.mjs';
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
@@ -473,7 +473,14 @@ function resolveRepoRoot(home, os) {
   const sep = os === 'windows' ? '\\' : '/';
   const canonical = join(home, '.myelin', 'repo');
   if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
-  return fileURLToPath(new URL('..', import.meta.url));
+  const currentRoot = fileURLToPath(new URL('..', import.meta.url));
+  if (os === 'windows') {
+    const normalizedCurrentRoot = normalizeWindowsFilesystemPath(currentRoot);
+    if (!/^[a-zA-Z]:\\/u.test(normalizedCurrentRoot) && !normalizedCurrentRoot.startsWith('\\\\')) {
+      return canonical + sep;
+    }
+  }
+  return currentRoot;
 }
 
 /**
@@ -619,24 +626,34 @@ export function buildMitmServiceInstallOptions({
   const mitmCfg = cfg?.proxy?.mitm ?? {};
   const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
   const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
+  const normalizedHomeCandidate = os === 'windows' ? normalizeWindowsFilesystemPath(home) : home;
+  const effectiveHome = os === 'windows' && !/^(?:[a-z]:\\|\\\\)/i.test(normalizedHomeCandidate)
+    ? defaultWindowsHome(home)
+    : normalizedHomeCandidate;
+  const envVars = {
+    MYELIN_HEADROOM_PORT: String(headroomPort),
+    MYELIN_COMPRESS,
+    ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
+    ...(mitmCfg.block_bypass ? { MYELIN_BLOCK_BYPASS: '1' } : {}),
+    ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
+    ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
+    ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
+    ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
+    ...sslEnv,
+  };
+  if (os === 'windows') {
+    for (const key of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'HEADROOM_CA_BUNDLE', 'MYELIN_VPN_DOMAINS_FILE']) {
+      if (envVars[key]) envVars[key] = normalizeWindowsFilesystemPath(envVars[key]);
+    }
+  }
   return {
-    mitmdumpBin,
+    mitmdumpBin: os === 'windows' ? normalizeWindowsFilesystemPath(mitmdumpBin) : mitmdumpBin,
     port: mitmCfg.port ?? 8888,
-    addonPath: mitmAddonPath(home, os),
-    envVars: {
-      MYELIN_HEADROOM_PORT: String(headroomPort),
-      MYELIN_COMPRESS,
-      ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
-      ...(mitmCfg.block_bypass ? { MYELIN_BLOCK_BYPASS: '1' } : {}),
-      ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
-      ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
-      ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
-      ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
-      ...sslEnv,
-    },
+    addonPath: os === 'windows' ? normalizeWindowsFilesystemPath(mitmAddonPath(effectiveHome, os)) : mitmAddonPath(effectiveHome, os),
+    envVars,
     upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
-    logPath: join(home, '.myelin', 'mitmproxy.log'),
-    home,
+    logPath: os === 'windows' ? normalizeWindowsFilesystemPath(join(effectiveHome, '.myelin', 'mitmproxy.log')) : join(effectiveHome, '.myelin', 'mitmproxy.log'),
+    home: effectiveHome,
     egressPort,
     manager: winManager,
   };

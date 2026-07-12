@@ -19,6 +19,7 @@ import {
   generateWindowsWatchdogTaskCreateScript,
   generateWinswConfigXml,
   buildManagedMitmStatusScript,
+  mitmServiceStatus,
   parseManagedMitmStatus,
   parseWinswServiceStatus,
   resolveWslWindowsHome,
@@ -645,6 +646,26 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     assert.ok(script.includes("SetEnvironmentVariable('SOME_VAR', 'it''s a path', 'Process')"));
   });
 
+  it('normalizes WSL addon, CA, binary, and home paths to Windows paths without corrupting proxy URLs', () => {
+    const script = generateMitmRunScript({
+      mitmdumpBin: '/mnt/c/Users/alice/.myelin/venv/Scripts/mitmdump.exe',
+      port: 8888,
+      addonPath: '/mnt/c/Users/alice/.myelin/repo/src/mitm/copilot_addon.py',
+      envVars: {
+        REQUESTS_CA_BUNDLE: '/mnt/c/ProgramData/Corp/ca.pem',
+        HTTPS_PROXY: 'http://corp-proxy:8080',
+      },
+      home: '/mnt/c/Users/alice',
+    });
+
+    assert.ok(script.includes(`Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe'`));
+    assert.ok(script.includes(`-s "C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py"`));
+    assert.ok(script.includes(`ssl_verify_upstream_trusted_ca="C:\\ProgramData\\Corp\\ca.pem"`));
+    assert.ok(script.includes(`New-Item -ItemType Directory -Force -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy'`));
+    assert.ok(script.includes('--mode upstream:http://corp-proxy:8080'));
+    assert.ok(!script.includes('http:\\corp-proxy:8080'));
+  });
+
   it('builds registry status checks that only accept the managed PID, launcher, and exact command line', () => {
     const script = buildManagedMitmStatusScript({
       pid: 4321,
@@ -678,6 +699,38 @@ describe('Managed mitm status parser', () => {
       state: 'Unknown',
       raw: '',
     });
+  });
+});
+
+describe('mitmServiceStatus', () => {
+  it('reads the managed launcher and pid through PowerShell when only Windows paths are available', () => {
+    const commands = [];
+    const status = mitmServiceStatus({
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
+          return Buffer.from([
+            '# Managed by myelin. Keeps mitm env scoped to this process tree.',
+            `Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe' -ArgumentList '--listen-port 8888 -s "C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py"' -WindowStyle Hidden -PassThru`,
+          ].join('\n'));
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\mitm.pid'")) {
+          return Buffer.from('4321\n');
+        }
+        return Buffer.from('Running\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('managed mitm status should fall back to PowerShell for Windows paths');
+      },
+    });
+
+    assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1' -Raw")));
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\mitm.pid' -Raw")));
+    assert.ok(commands.some((command) => command.includes('ProcessId = $managedPid')));
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { ensureManagedHeadroomService } from '../src/install.mjs';
+import { buildMitmServiceInstallOptions, ensureManagedHeadroomService } from '../src/install.mjs';
 
 describe('ensureManagedHeadroomService', () => {
   for (const os of ['darwin', 'linux', 'windows']) {
@@ -101,5 +101,40 @@ describe('ensureManagedHeadroomService', () => {
     });
 
     assert.equal(installCalls.length, 1);
+  });
+});
+
+describe('buildMitmServiceInstallOptions', () => {
+  it('normalizes WSL filesystem inputs for Windows registry-managed mitm services without touching URL env vars', () => {
+    const opts = buildMitmServiceInstallOptions({
+      os: 'windows',
+      home: '/mnt/c/Users/alice',
+      mitmdumpBin: '/mnt/c/Users/alice/.myelin/venv/Scripts/mitmdump.exe',
+      winManager: 'registry',
+      sslEnv: {
+        REQUESTS_CA_BUNDLE: '/mnt/c/ProgramData/Corp/ca.pem',
+        HTTPS_PROXY: 'http://corp-proxy:8080',
+      },
+      cfg: {
+        proxy: {
+          headroom: { corporate_proxy: 'http://corp-upstream:8888' },
+          mitm: {
+            vpn_domains_file: '/mnt/c/Users/alice/.myelin/vpn-domains.txt',
+          },
+          windows_service: { manager: 'registry' },
+          copilot_headroom: { enabled: true, port: 8788 },
+        },
+      },
+    });
+
+    assert.equal(opts.home, 'C:\\Users\\alice');
+    assert.equal(opts.mitmdumpBin, 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe');
+    assert.equal(opts.addonPath, 'C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py');
+    assert.equal(opts.logPath, 'C:\\Users\\alice\\.myelin\\mitmproxy.log');
+    assert.equal(opts.envVars.REQUESTS_CA_BUNDLE, 'C:\\ProgramData\\Corp\\ca.pem');
+    assert.equal(opts.envVars.MYELIN_VPN_DOMAINS_FILE, 'C:\\Users\\alice\\.myelin\\vpn-domains.txt');
+    assert.equal(opts.envVars.HTTPS_PROXY, 'http://corp-proxy:8080');
+    assert.equal(opts.upstreamProxy, 'http://corp-upstream:8888');
+    assert.ok(!opts.envVars.HTTPS_PROXY.includes('\\'));
   });
 });

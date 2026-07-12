@@ -61,3 +61,8 @@
 - Main Headroom legacy Run-key cleanup now parses the stored executable and stored `--port` from the existing command, stops only that exact owned legacy process, and clears the legacy Run key during migration/restart cleanup.
 - Registry-mode Copilot-Headroom status now derives managed identity from the persisted launcher/command when available and otherwise falls back to the caller-supplied configured port instead of hard-coding `8788`.
 - Added regressions for old-port legacy Headroom cleanup and custom-port Copilot-Headroom status propagation through `verify`.
+
+## WSL Mitm Fix
+- Windows registry-managed mitmproxy now normalizes WSL filesystem inputs for the managed binary, addon, CA bundle, launcher, PID, log, and home paths before building/installing/restarting the service, while leaving URL-valued env vars like `HTTPS_PROXY` untouched.
+- `mitmServiceStatus()` now recovers the managed launcher script and PID through the existing safe PowerShell/Windows-file fallback path, so WSL `verify` can correctly recognize the owned Windows mitmproxy service.
+- Added focused WSL regressions covering install-option normalization, restart propagation, managed launcher generation, and registry status recovery.
