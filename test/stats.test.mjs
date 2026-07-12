@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   collectWideLocalStatsSections,
   getWideStatsHint,
@@ -8,6 +9,8 @@ import {
   renderLocalStatsRows,
   runStats,
 } from '../src/cli/stats.mjs';
+
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
 function captureConsole() {
   const logs = [];
@@ -84,7 +87,7 @@ describe('renderLocalStatsRows', () => {
 
   it('advertises --wide in myelin stats --help', () => {
     const result = spawnSync(process.execPath, ['bin/myelin', 'stats', '--help'], {
-      cwd: '/Users/ysufrin/tokenstack-wt-feat-stats-wide',
+      cwd: repoRoot,
       encoding: 'utf8',
     });
 
