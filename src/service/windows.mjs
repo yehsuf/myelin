@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
@@ -627,6 +627,52 @@ function buildManagedMitmCommandClauses({ executablePath, argStr, processVar = '
   return clauses;
 }
 
+export function parseManagedMitmLauncherScript(script = '') {
+  const text = String(script ?? '');
+  const match = text.match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])+)' -WindowStyle Hidden -PassThru/m);
+  if (!match) return null;
+  return {
+    executablePath: match[1].replace(/''/g, "'"),
+    argumentList: match[2].replace(/''/g, "'"),
+  };
+}
+
+function readManagedMitmIdentity({ home } = {}) {
+  const launcherPath = managedMitmLauncherPath({ home });
+  if (!existsSync(launcherPath)) return null;
+  const parsed = parseManagedMitmLauncherScript(readFileSync(launcherPath, 'utf8'));
+  if (!parsed) return null;
+  return { ...parsed, launcherPath };
+}
+
+export function buildManagedMitmStatusScript({ pid, executablePath, argStr, launcherPath } = {}) {
+  const exeName = windowsPath(executablePath).split('\\').pop();
+  const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+  return [
+    `$managedPid = ${pid}`,
+    `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
+    `if ($proc -and $proc.Name -ieq '${escapePs(exeName)}' -and $proc.ExecutablePath -eq '${escapePs(windowsPath(executablePath))}' -and $proc.CommandLine -match '${escapePs(escapePsRegex(argStr))}$') {`,
+    `  $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+    `  if ($parent -and $parent.CommandLine -match '${launcherRegex}') {`,
+    `    'Running'`,
+    `    return`,
+    `  }`,
+    `}`,
+    `'Stopped'`,
+  ].join('\n');
+}
+
+export function parseManagedMitmStatus(raw = '') {
+  const text = trimPowershellOutput(raw);
+  if (/^Running$/i.test(text)) {
+    return { running: true, state: 'Running', raw: text };
+  }
+  if (/^Stopped$/i.test(text)) {
+    return { running: false, state: 'Stopped', raw: text };
+  }
+  return { running: false, state: text || 'Unknown', raw: text };
+}
+
 function buildManagedMitmStopScript({ mitmdumpBin, argStr, launcherPath, pidFilePath } = {}) {
   const pidPath = windowsPath(pidFilePath ?? managedMitmPidPath());
   const commandClauses = buildManagedMitmCommandClauses({
@@ -957,8 +1003,21 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
 export function mitmServiceStatus({ manager = 'registry' } = {}) {
   if (manager !== 'winsw') {
     try {
-      const out = execSync(`powershell -Command "Get-Process mitmdump -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
-      return { running: !!out, state: out ? 'Running' : 'Stopped' };
+      const identity = readManagedMitmIdentity();
+      const pidText = identity
+        ? trimPowershellOutput(readFileSync(managedMitmPidPath(), 'utf8'))
+        : '';
+      if (!identity || !pidText || !/^[0-9]+$/u.test(pidText)) {
+        return { running: false, state: 'Stopped', raw: '' };
+      }
+      const script = buildManagedMitmStatusScript({
+        pid: pidText,
+        executablePath: identity.executablePath,
+        argStr: identity.argumentList,
+        launcherPath: identity.launcherPath,
+      }).replace(/"/g, '\\"');
+      const raw = execSync(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' }).toString();
+      return parseManagedMitmStatus(raw);
     } catch {
       return { running: false, state: 'Unknown' };
     }

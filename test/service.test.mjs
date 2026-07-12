@@ -17,6 +17,8 @@ import {
   generateWindowsWatchdogHealthcheckScript,
   generateWindowsWatchdogTaskCreateScript,
   generateWinswConfigXml,
+  buildManagedMitmStatusScript,
+  parseManagedMitmStatus,
   parseWinswServiceStatus,
   resolveWslWindowsHome,
   spawnDetachedService,
@@ -586,6 +588,41 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
   it('still escapes a literal single-quote in the value', () => {
     const script = generateMitmRunScript({ ...MITM_OPTS, envVars: { SOME_VAR: "it's a path" } });
     assert.ok(script.includes("SetEnvironmentVariable('SOME_VAR', 'it''s a path', 'Process')"));
+  });
+
+  it('builds registry status checks that only accept the managed PID, launcher, and exact command line', () => {
+    const script = buildManagedMitmStatusScript({
+      pid: 4321,
+      executablePath: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
+      argStr: '--listen-port 8888 -s "C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\addon.py"',
+      launcherPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1',
+    });
+
+    assert.ok(script.includes('$managedPid = 4321'));
+    assert.ok(script.includes(`ProcessId = $managedPid`));
+    assert.ok(script.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe'`));
+    assert.ok(script.includes(`CommandLine -match '--listen-port\\ 8888\\ -s\\ "C:\\\\Users\\\\alice\\\\.myelin\\\\services\\\\myelin-mitmproxy\\\\addon\\.py"$'`));
+    assert.ok(script.includes(`start-mitmproxy\\.ps1`));
+  });
+});
+
+describe('Managed mitm status parser', () => {
+  it('only reports Running for the managed probe output', () => {
+    assert.deepEqual(parseManagedMitmStatus('Running'), {
+      running: true,
+      state: 'Running',
+      raw: 'Running',
+    });
+    assert.deepEqual(parseManagedMitmStatus('mitmdump.exe'), {
+      running: false,
+      state: 'mitmdump.exe',
+      raw: 'mitmdump.exe',
+    });
+    assert.deepEqual(parseManagedMitmStatus(''), {
+      running: false,
+      state: 'Unknown',
+      raw: '',
+    });
   });
 });
 

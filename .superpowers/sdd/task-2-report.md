@@ -41,3 +41,8 @@
 - Windows registry-managed mitmproxy now persists a dedicated `start-mitmproxy.ps1` launcher that rebuilds the service env in Process scope before launching `mitmdump`, including `MYELIN_HEADROOM_PORT`, `MYELIN_EGRESS_PORT`, and Copilot-Headroom routing vars.
 - The launcher clears stale optional managed env vars when they are no longer configured, preserving existing egress and Copilot-Headroom behavior without leaking prior registry-managed state into the next process tree.
 - Restart/install now stop only the Myelin-managed mitmproxy instance via the persisted launcher/PID plus exact command-line identity, instead of `Stop-Process -Name mitmdump`, so unrelated system `mitmdump` processes are left alone.
+
+## Windows Mitm Status Fix
+- Registry-mode `mitmServiceStatus()` now validates the persisted managed launcher, PID file, executable path, parent launcher path, and exact command line before reporting Running.
+- Added regression coverage for the status-script generator and parser so an unrelated `mitmdump` snapshot cannot satisfy the managed service check.
+- `myelin verify` stays red when only an unrelated `mitmdump` exists.
