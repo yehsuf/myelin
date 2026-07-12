@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
 import { installWinsw } from '../tools/winsw.mjs';
+import { powerShellExecutable } from '../detect/os.mjs';
 import { isWsl } from '../detect/wsl.mjs';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 
@@ -29,13 +30,17 @@ const MITM_IGNORE_HOSTS = [
   String.raw`.*\.github\.com`,
 ].join('|');
 
-function runPs(script, { stdio = 'pipe' } = {}) {
+function withPowerShell(args, powershellExe = powerShellExecutable()) {
+  return `${powershellExe} ${args}`;
+}
+
+function runPs(script, { stdio = 'pipe', powershellExe = powerShellExecutable() } = {}) {
   const stateDir = join(homedir(), '.myelin', 'state');
   mkdirSync(stateDir, { recursive: true });
   const tmp = join(stateDir, `myelin-${process.pid}-${Date.now()}.ps1`);
   writeFileSync(tmp, script, 'utf8');
   try {
-    execSync(`powershell -ExecutionPolicy Bypass -File "${tmp}"`, { stdio });
+    execSync(withPowerShell(`-ExecutionPolicy Bypass -File "${tmp}"`, powershellExe), { stdio });
   } finally {
     try { unlinkSync(tmp); } catch {}
   }
@@ -98,12 +103,13 @@ export function resolveWslWindowsHome({
   execSync = nodeExecSync,
   existsSync = nodeExistsSync,
   readdirSync = nodeReaddirSync,
+  powershellExe = powerShellExecutable({ windowsInterop: true }),
 } = {}) {
   const scopes = ['User', 'Machine'];
   for (const scope of scopes) {
     try {
       const home = trimPowershellOutput(execSync(
-        `powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('USERPROFILE','${scope}')"`
+        withPowerShell(`-NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('USERPROFILE','${scope}')"`, powershellExe)
       ));
       if (home) return home;
     } catch {}
@@ -295,11 +301,12 @@ export function buildManagedHeadroomStopScript({ port, processExeName = 'headroo
     `    } elseif ($proc.Name -ieq '${processExeName}' -and $proc.CommandLine -match 'proxy') {`,
     `      $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
     `      $matchesManagedLauncher = $parent -and $parent.CommandLine -match $launcherRegex`,
-    `      $matchesCurrentPort = $proc.CommandLine -match '(^|\\s)--port\\s+${port}(\\s|$)'`,
-    `      if ($matchesManagedLauncher -or $matchesCurrentPort) {`,
+    `      if ($matchesManagedLauncher) {`,
     `        Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
-    `        Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
     `      }`,
+    `      Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
+    `    } else {`,
+    `      Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
     `    }`,
     `  } else {`,
     `    Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
@@ -338,6 +345,7 @@ function readWindowsFileText(filePath, {
   execSyncImpl = execSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
+  powershellExe = powerShellExecutable(),
 } = {}) {
   if (!filePath) return '';
   try {
@@ -348,7 +356,7 @@ function readWindowsFileText(filePath, {
   if (!isWindowsAbsolutePath(filePath)) return '';
   try {
     return execSyncImpl(
-      `powershell -NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`,
+      withPowerShell(`-NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`, powershellExe),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
   } catch {
@@ -418,8 +426,9 @@ export function stopManagedHeadroomProcess({
   home,
   execSyncImpl = execSync,
   headroomRunKeyStatusImpl = headroomRunKeyStatus,
+  powershellExe = powerShellExecutable(),
 } = {}) {
-  const runKeyStatus = headroomRunKeyStatusImpl();
+  const runKeyStatus = headroomRunKeyStatusImpl({ execSyncImpl, powershellExe });
   let script = buildManagedHeadroomStopScript({
     port,
     processExeName,
@@ -434,7 +443,7 @@ export function stopManagedHeadroomProcess({
     })}\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
   }
   script = script.replace(/"/g, '\\"');
-  execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' });
+  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
 }
 
 export function stopHeadroomProcessByExecutablePath({
@@ -442,12 +451,13 @@ export function stopHeadroomProcessByExecutablePath({
   executablePath,
   processExeName = 'headroom.exe',
   execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
 } = {}) {
   const script = stopByPortScript(processExeName, port, {
     requiredArgs: ['proxy'],
     requiredExecutablePath: windowsPath(executablePath),
   }).replace(/"/g, '\\"');
-  execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' });
+  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
 }
 
 export function winswServiceDir({ id, home } = {}) {
@@ -616,7 +626,7 @@ export async function installWinswService({
   return { id, serviceExePath, configPath, logDir };
 }
 
-export function winswServiceStatus({ id, home } = {}) {
+export function winswServiceStatus({ id, home, execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
   if (!existsSync(serviceExePath) || !existsSync(configPath)) {
@@ -625,7 +635,7 @@ export function winswServiceStatus({ id, home } = {}) {
 
   let raw = '';
   try {
-    raw = execSync(`powershell -Command "& ${psQuote(serviceExePath)} status ${psQuote(configPath)}"`, {
+    raw = execSyncImpl(withPowerShell(`-Command "& ${psQuote(serviceExePath)} status ${psQuote(configPath)}"`, powershellExe), {
       stdio: ['ignore', 'pipe', 'pipe'],
     }).toString().trim();
   } catch (error) {
@@ -759,12 +769,14 @@ function readManagedMitmIdentity({
   execSyncImpl = execSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
+  powershellExe = powerShellExecutable(),
 } = {}) {
   const launcherPath = managedMitmLauncherPath({ home });
   const launcherScript = readWindowsScriptText(launcherPath, {
     execSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
+    powershellExe,
   });
   if (!launcherScript) return null;
   const parsed = parseManagedMitmLauncherScript(launcherScript);
@@ -809,8 +821,9 @@ function readManagedCopilotHeadroomIdentity({
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = copilotHeadroomRunKeyStatus,
+  powershellExe = powerShellExecutable(),
 } = {}) {
-  const runKeyStatus = runKeyStatusImpl({ execSyncImpl });
+  const runKeyStatus = runKeyStatusImpl({ execSyncImpl, powershellExe });
   const parsedRunKey = parseCopilotHeadroomRunKeyValue(runKeyStatus?.raw) ?? {};
   let executablePath = parsedRunKey.executablePath ?? '';
   let argStr = parsedRunKey.argStr ?? '';
@@ -818,6 +831,7 @@ function readManagedCopilotHeadroomIdentity({
     execSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
+    powershellExe,
   });
   if (launcherScript) {
     const parsedLauncher = parseLauncherStartProcess(launcherScript);
@@ -851,8 +865,12 @@ function buildManagedMitmStopScript({ mitmdumpBin, argStr, launcherPath, pidFile
     `  $managedPid = (Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1)`,
     `  if ($managedPid -and $managedPid.ToString().Trim() -match '^[0-9]+$') {`,
     `    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
-    `    if ($proc -and ${commandClauses.join(' -and ')}) {`,
-    `      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `    if ($proc) {`,
+    `      $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+    `      $matchesManagedLauncher = $parent -and $parent.CommandLine -match '${launcherRegex}'`,
+    `      if ($matchesManagedLauncher -and ${commandClauses.join(' -and ')}) {`,
+    `        Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `      }`,
     `    }`,
     `  }`,
     `  Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
@@ -1073,10 +1091,10 @@ export async function installCopilotHeadroomService({ headroomBin, port, envVars
   });
 }
 
-function copilotHeadroomRunKeyStatus({ execSyncImpl = execSync } = {}) {
+function copilotHeadroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
   try {
     const raw = trimPowershellOutput(execSyncImpl(
-      `powershell -NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${COPILOT_HEADROOM_KEY}'"`,
+      withPowerShell(`-NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${COPILOT_HEADROOM_KEY}'"`, powershellExe),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString());
     return { registered: !!raw, raw };
@@ -1092,6 +1110,7 @@ export function copilotHeadroomServiceStatus({
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = copilotHeadroomRunKeyStatus,
+  powershellExe = powerShellExecutable(),
 } = {}) {
   if (manager !== 'winsw') {
     try {
@@ -1100,6 +1119,7 @@ export function copilotHeadroomServiceStatus({
         existsSyncImpl,
         readFileSyncImpl,
         runKeyStatusImpl,
+        powershellExe,
       });
       const configuredPort = Number(port);
       const effectivePort = identity?.port ?? (Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8788);
@@ -1110,7 +1130,7 @@ export function copilotHeadroomServiceStatus({
         port: effectivePort,
       }).replace(/"/g, '\\"');
       const raw = trimPowershellOutput(execSyncImpl(
-        `powershell -NoProfile -Command "& { ${script} }"`,
+        withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
         { stdio: ['ignore', 'pipe', 'pipe'] },
       ).toString());
       return parseManagedHeadroomStatus(raw);
@@ -1202,6 +1222,7 @@ export function mitmServiceStatus({
   execSyncImpl = execSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
+  powershellExe = powerShellExecutable(),
 } = {}) {
   if (manager !== 'winsw') {
     try {
@@ -1210,12 +1231,14 @@ export function mitmServiceStatus({
         execSyncImpl,
         existsSyncImpl,
         readFileSyncImpl,
+        powershellExe,
       });
       const pidText = identity
         ? trimPowershellOutput(readWindowsFileText(managedMitmPidPath({ home }), {
             execSyncImpl,
             existsSyncImpl,
             readFileSyncImpl,
+            powershellExe,
           }))
         : '';
       if (!identity || !pidText || !/^[0-9]+$/u.test(pidText)) {
@@ -1227,7 +1250,7 @@ export function mitmServiceStatus({
         argStr: identity.argumentList,
         launcherPath: identity.launcherPath,
       }).replace(/"/g, '\\"');
-      const raw = execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' }).toString();
+      const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
       return parseManagedMitmStatus(raw);
     } catch {
       return { running: false, state: 'Unknown' };
@@ -1236,10 +1259,10 @@ export function mitmServiceStatus({
   return winswServiceStatus({ id: MITM_SERVICE_ID });
 }
 
-export function serviceStatus({ manager = 'registry' } = {}) {
+export function serviceStatus({ manager = 'registry', execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
   if (manager !== 'winsw') {
     try {
-      const out = execSync(`powershell -Command "Get-Process headroom -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, { stdio: 'pipe' }).toString().trim();
+      const out = execSyncImpl(withPowerShell(`-Command "Get-Process headroom -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, powershellExe), { stdio: 'pipe' }).toString().trim();
       return { running: !!out, state: out ? 'Running' : 'Stopped' };
     } catch {
       return { running: false, state: 'Unknown' };
@@ -1248,10 +1271,10 @@ export function serviceStatus({ manager = 'registry' } = {}) {
   return winswServiceStatus({ id: HEADROOM_SERVICE_ID });
 }
 
-export function headroomRunKeyStatus({ execSyncImpl = execSync } = {}) {
+export function headroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
   try {
     const raw = trimPowershellOutput(execSyncImpl(
-      `powershell -NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${HEADROOM_KEY}'"`,
+      withPowerShell(`-NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${HEADROOM_KEY}'"`, powershellExe),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString());
     return { registered: !!raw, raw };
@@ -1260,12 +1283,12 @@ export function headroomRunKeyStatus({ execSyncImpl = execSync } = {}) {
   }
 }
 
-export function readUserEnvVars(keys = [], { execSyncImpl = execSync } = {}) {
+export function readUserEnvVars(keys = [], { execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
   const env = {};
   for (const key of keys) {
     try {
       const value = trimPowershellOutput(execSyncImpl(
-        `powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('${key}','User')"`,
+        withPowerShell(`-NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('${key}','User')"`, powershellExe),
         { stdio: ['ignore', 'pipe', 'pipe'] },
       ).toString());
       if (value) env[key] = value;

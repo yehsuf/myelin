@@ -165,7 +165,9 @@ describe('windows run-script generator', () => {
     assert.ok(script.includes('ParentProcessId'));
     assert.ok(script.includes('start-headroom\\.ps1'));
     assert.ok(script.includes('proxy'));
-    assert.ok(script.includes(`--port\\s+8787(\\s|$)`));
+    assert.ok(script.includes(`if ($matchesManagedLauncher) {`));
+    assert.ok(script.includes(`Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`));
+    assert.ok(!script.includes('$matchesCurrentPort'));
     assert.ok(!script.includes('Get-NetTCPConnection'));
     assert.ok(!script.includes('OwningProcess'));
   });
@@ -288,6 +290,34 @@ describe('copilotHeadroomServiceStatus', () => {
     assert.ok(commands.some((command) => command.includes('Get-Content -Path \'C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1\' -Raw')));
     assert.ok(commands.some((command) => command.includes('--port 9797')));
     assert.ok(!commands.some((command) => command.includes('--port 8788')));
+  });
+
+  it('uses powershell.exe for registry status probes when simulating WSL fallback reads', () => {
+    const commands = [];
+    copilotHeadroomServiceStatus({
+      manager: 'registry',
+      port: 9797,
+      powershellExe: 'powershell.exe',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-ItemProperty')) {
+          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"\n');
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1'")) {
+          return Buffer.from([
+            '# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.',
+            "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 9797 --mode observe --connect-timeout-seconds 10' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\headroom-copilot-9797' -WindowStyle Hidden",
+          ].join('\n'));
+        }
+        return Buffer.from('Running\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('launcher should be read via PowerShell for Windows paths');
+      },
+    });
+
+    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
   });
 });
 
@@ -609,6 +639,10 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     assert.ok(script.includes('ProcessId = $managedPid'));
     assert.ok(script.includes('ParentProcessId'));
     assert.ok(script.includes('start-mitmproxy\\.ps1'));
+    assert.ok(script.includes('$matchesManagedLauncher'));
+    assert.ok(script.includes('if ($matchesManagedLauncher -and'));
+    assert.ok(script.includes('Remove-Item -Path $pidPath -ErrorAction SilentlyContinue'));
+    assert.ok(!script.includes('if ($proc -and $_.CommandLine'));
     assert.ok(!script.includes('Stop-Process -Name mitmdump'));
   });
 
@@ -731,6 +765,34 @@ describe('mitmServiceStatus', () => {
     assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1' -Raw")));
     assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\mitm.pid' -Raw")));
     assert.ok(commands.some((command) => command.includes('ProcessId = $managedPid')));
+  });
+
+  it('uses powershell.exe for registry status probes when simulating WSL fallback reads', () => {
+    const commands = [];
+    mitmServiceStatus({
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+      powershellExe: 'powershell.exe',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
+          return Buffer.from([
+            '# Managed by myelin. Keeps mitm env scoped to this process tree.',
+            `Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe' -ArgumentList '--listen-port 8888 -s "C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py"' -WindowStyle Hidden -PassThru`,
+          ].join('\n'));
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\mitm.pid'")) {
+          return Buffer.from('4321\n');
+        }
+        return Buffer.from('Running\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('managed mitm status should fall back to PowerShell for Windows paths');
+      },
+    });
+
+    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
   });
 });
 

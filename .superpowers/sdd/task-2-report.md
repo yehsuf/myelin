@@ -66,3 +66,8 @@
 - Windows registry-managed mitmproxy now normalizes WSL filesystem inputs for the managed binary, addon, CA bundle, launcher, PID, log, and home paths before building/installing/restarting the service, while leaving URL-valued env vars like `HTTPS_PROXY` untouched.
 - `mitmServiceStatus()` now recovers the managed launcher script and PID through the existing safe PowerShell/Windows-file fallback path, so WSL `verify` can correctly recognize the owned Windows mitmproxy service.
 - Added focused WSL regressions covering install-option normalization, restart propagation, managed launcher generation, and registry status recovery.
+
+## Windows Ownership Fix
+- Centralized runtime PowerShell executable selection so WSL fallback/status probes invoke `powershell.exe`, while native Windows keeps using the standard executable path for shell-out probes.
+- Managed Headroom and mitm PID-file stops now require a launcher-parent match before `Stop-Process`; PID reuse, matching ports, or matching command lines alone only clear the stale PID file and leave unrelated processes intact.
+- Added WSL status regressions plus managed-PID ownership regressions covering stale/reused PID files without breaking normal managed-stop behavior.

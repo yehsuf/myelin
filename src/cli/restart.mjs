@@ -2,7 +2,7 @@ import { execSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, win32 as pathWin32 } from 'node:path';
 import { chmodSync, mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
-import { detectOS } from '../detect/os.mjs';
+import { detectOS, powerShellExecutable } from '../detect/os.mjs';
 import { selectedEngine } from '../config/engine-runtime.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
@@ -79,10 +79,14 @@ function shSingleQuote(value = '') {
   return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
 }
 
+function withPowerShell(args, powershellExe = powerShellExecutable()) {
+  return `${powershellExe} ${args}`;
+}
+
 function resolveHeadroomLiteBinary(osKind, execSyncImpl = execSync) {
   try {
     const command = osKind === 'windows'
-      ? `powershell -NoProfile -Command "(Get-Command headroom-lite -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)"`
+      ? withPowerShell(`-NoProfile -Command "(Get-Command headroom-lite -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)"`)
       : 'command -v headroom-lite';
     const options = osKind === 'windows'
       ? { stdio: ['ignore', 'pipe', 'pipe'] }
@@ -96,7 +100,7 @@ function resolveHeadroomLiteBinary(osKind, execSyncImpl = execSync) {
 function headroomLitePortOwnerPid(port, osKind, execSyncImpl = execSync) {
   try {
     const command = osKind === 'windows'
-      ? `powershell -NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)"`
+      ? withPowerShell(`-NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)"`)
       : `lsof -nP -tiTCP:${port} -sTCP:LISTEN 2>/dev/null`;
     const options = osKind === 'windows'
       ? { stdio: ['ignore', 'pipe', 'pipe'] }
@@ -121,7 +125,7 @@ function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
         '  parentCommand = if ($parent) { $parent.CommandLine } else { "" }',
         '} | ConvertTo-Json -Compress',
       ].join('; ');
-      const out = trimShellValue(execSyncImpl(`powershell -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      const out = trimShellValue(execSyncImpl(withPowerShell(`-NoProfile -Command "${script.replace(/"/g, '\\"')}"`), {
         stdio: ['ignore', 'pipe', 'pipe'],
       }).toString());
       return out ? JSON.parse(out) : null;
@@ -178,7 +182,7 @@ function readManagedHeadroomLitePid(pidPath, { existsSyncImpl = existsSync, read
 
 function defaultStopPid(pid, osKind, execSyncImpl = execSync) {
   if (osKind === 'windows') {
-    execSyncImpl(`powershell -NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, {
+    execSyncImpl(withPowerShell(`-NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`), {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return;
@@ -444,7 +448,7 @@ function persistCopilotHeadroomLauncher({ headroomBin, argStr, taskEnv, execSync
     `Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_RUN_KEY}' -Value '${escapePs(runValue)}'`,
   ].join('\n');
   execSyncImpl(
-    `powershell -NoProfile -Command "& { ${script.replace(/"/g, '\\"')} }"`,
+    withPowerShell(`-NoProfile -Command "& { ${script.replace(/"/g, '\\"')} }"`),
     { stdio: 'pipe' },
   );
   return { exe: 'powershell.exe', args: `-NoProfile -ExecutionPolicy Bypass -File "${windowsPath(launcherPath)}"` };
@@ -491,7 +495,7 @@ function readLauncherScriptText(launcherPath, {
   if (!isWindowsAbsolutePath(launcherPath)) return '';
   try {
     return execSyncImpl(
-      `powershell -NoProfile -Command "if (Test-Path '${escapePs(windowsPath(launcherPath))}') { Get-Content -Path '${escapePs(windowsPath(launcherPath))}' -Raw }"`,
+      withPowerShell(`-NoProfile -Command "if (Test-Path '${escapePs(windowsPath(launcherPath))}') { Get-Content -Path '${escapePs(windowsPath(launcherPath))}' -Raw }"`),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
   } catch {
@@ -537,7 +541,7 @@ function stopProcessByPort(port, osKind, execSyncFn = execSync) {
   if (osKind === 'windows') {
     try {
       execSyncFn(
-        `powershell -Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        withPowerShell(`-Command "Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`),
         { stdio: 'pipe' },
       );
     } catch {}
@@ -596,7 +600,7 @@ export async function stopObsoleteEngine({ engine, os, cfg, winManager, home = h
   } catch {}
   try {
     execSync(
-      `powershell -NoProfile -Command "Remove-ItemProperty -Path '${REG_RUN}' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`,
+      withPowerShell(`-NoProfile -Command "Remove-ItemProperty -Path '${REG_RUN}' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`),
       { stdio: 'pipe' },
     );
   } catch {}
@@ -727,7 +731,7 @@ export async function defaultRestartCopilotHeadroom({
     }
     const home = defaultWindowsHomeImpl(homedirImpl());
     const regVal = trimShellValue(execSyncImpl(
-      `powershell -Command "(Get-ItemProperty '${REG_RUN}' -Name ${COPILOT_HEADROOM_RUN_KEY} -ErrorAction SilentlyContinue).${COPILOT_HEADROOM_RUN_KEY}"`,
+      withPowerShell(`-Command "(Get-ItemProperty '${REG_RUN}' -Name ${COPILOT_HEADROOM_RUN_KEY} -ErrorAction SilentlyContinue).${COPILOT_HEADROOM_RUN_KEY}"`),
       { stdio: 'pipe' },
     ).toString());
     await stopManagedCopilotHeadroomProcessImpl({
