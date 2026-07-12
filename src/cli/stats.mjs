@@ -29,6 +29,105 @@ function row(label, value) {
   console.log(`  ${label.padEnd(22)}${value}`);
 }
 
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toFiniteNumber(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function formatCount(value) {
+  return value === null ? null : new Intl.NumberFormat('en-US').format(value);
+}
+
+function formatPercent(value) {
+  return `${value.toFixed(1)}%`;
+}
+
+function unavailableStatsRows() {
+  return { available: false, rows: [['Status', 'unavailable']] };
+}
+
+function renderHeadroomLiteStatsRows(payload) {
+  if (!isRecord(payload) || payload.service !== 'headroom-lite') {
+    return unavailableStatsRows();
+  }
+
+  const requestCount = toFiniteNumber(payload.proxy_requests);
+  const compressedRequestCount = toFiniteNumber(payload.compress_requests);
+  const compressionPct = toFiniteNumber(payload.compress_pct);
+  const tokensSaved = toFiniteNumber(payload.compress_tokens_saved);
+
+  if (
+    requestCount === null ||
+    compressedRequestCount === null ||
+    compressionPct === null ||
+    tokensSaved === null
+  ) {
+    return unavailableStatsRows();
+  }
+
+  return {
+    available: true,
+    rows: [
+      ['Status', 'running'],
+      ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+      ['Compression', formatPercent(compressionPct)],
+      ['Tokens', `${formatCount(tokensSaved)} saved`],
+    ],
+  };
+}
+
+function renderCopilotHeadroomStatsRows(payload) {
+  if (!isRecord(payload)) {
+    return unavailableStatsRows();
+  }
+
+  const summary = isRecord(payload.summary) ? payload.summary : null;
+  const compression = isRecord(summary?.compression) ? summary.compression : null;
+  if (!summary || !compression) {
+    return unavailableStatsRows();
+  }
+
+  const requestCount = toFiniteNumber(summary.api_requests);
+  const compressedRequestCount = toFiniteNumber(compression.requests_compressed);
+  const tokensBefore = toFiniteNumber(compression.total_tokens_before_with_cli_filtering);
+  const tokensSaved = toFiniteNumber(compression.total_tokens_saved_with_cli_filtering);
+
+  if (
+    requestCount === null ||
+    compressedRequestCount === null ||
+    tokensBefore === null ||
+    tokensSaved === null ||
+    tokensBefore === 0
+  ) {
+    return unavailableStatsRows();
+  }
+
+  const compressionPct = (tokensSaved / tokensBefore) * 100;
+  if (!Number.isFinite(compressionPct)) {
+    return unavailableStatsRows();
+  }
+
+  return {
+    available: true,
+    rows: [
+      ['Status', 'running'],
+      ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+      ['Compression', formatPercent(compressionPct)],
+      ['Tokens', `${formatCount(tokensSaved)} saved`],
+    ],
+  };
+}
+
+export function renderLocalStatsRows(payload) {
+  const headroomLite = renderHeadroomLiteStatsRows(payload);
+  if (headroomLite.available) return headroomLite;
+
+  return renderCopilotHeadroomStatsRows(payload);
+}
+
 function parseMitmLog(logPath) {
   const lines = readFileSync(logPath, 'utf8').split('\n');
   // Request compressed:  ✓ host BEFORE→AFTERB (PCT%)
@@ -82,7 +181,7 @@ function parseMitmLog(logPath) {
   };
 }
 
-export async function runStats() {
+export async function runStats({ wide = false } = {}) {
   const home = homedir();
   const cfg = await loadConfig();
   const sections = [];

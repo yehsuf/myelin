@@ -34,9 +34,10 @@ program.command('update')
 
 program.command('stats')
   .description('Show compression savings for Copilot and Claude Code')
-  .action(async () => {
+  .option('--wide', 'Show wide stats output')
+  .action(async (opts) => {
     const { runStats } = await import('./stats.mjs');
-    await runStats();
+    await runStats({ wide: opts.wide });
   });
 
 program.command('init')
