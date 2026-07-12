@@ -751,6 +751,74 @@ export function buildMitmServiceInstallOptions({
   };
 }
 
+export function buildCopilotHeadroomServiceInstallOptions({
+  cfg = {},
+  headroomBin,
+  home = homedir(),
+  manager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  sslEnv = buildCorporateSslEnv(),
+} = {}) {
+  const copilotHeadroomCfg = cfg?.proxy?.copilot_headroom ?? {};
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const egressPort = mitmCfg.egress_port ?? 8889;
+  const port = copilotHeadroomCfg.port ?? 8788;
+  const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+  return {
+    headroomBin,
+    port,
+    envVars: {
+      ANTHROPIC_TARGET_API_URL: loopbackTarget,
+      OPENAI_TARGET_API_URL: loopbackTarget,
+      HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
+      NO_PROXY: '127.0.0.1,localhost,::1',
+      ...sslEnv,
+    },
+    home,
+    manager,
+    egressPort,
+  };
+}
+
+export function buildDownstreamProxyServiceInstallOptions({
+  cfg = {},
+  os,
+  home = homedir(),
+  mitmdumpBin,
+  sslEnv = buildCorporateSslEnv(),
+  corpProxy = cfg?.proxy?.headroom?.corporate_proxy ?? '',
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  installPlan = {},
+} = {}) {
+  const resolvedEnginePlan = { ...(installPlan?.enginePlan ?? installPlan ?? buildServiceEnginePlan(cfg)) };
+  const windowsServiceCfg = cfg?.proxy?.windows_service ?? {};
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const { copilotHeadroomPort } = resolveMitmCompression(cfg);
+  const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
+  return {
+    mitmOpts: mitmdumpBin ? buildMitmServiceInstallOptions({
+      cfg,
+      os,
+      home,
+      mitmdumpBin,
+      sslEnv,
+      corpProxy,
+      winManager,
+      headroomPort: resolvedEnginePlan.selectedPort,
+    }) : null,
+    watchdogOpts: {
+      home,
+      enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
+      intervalMinutes: watchdogInterval,
+      headroomPort: resolvedEnginePlan.shouldRunManagedHeadroom ? resolvedEnginePlan.selectedPort : undefined,
+      mitmPort: mitmCfg.port ?? 8888,
+      ...(copilotHeadroomPort && mitmdumpBin ? {
+        copilotHeadroomPort,
+        egressPort: mitmCfg.egress_port ?? 8889,
+      } : {}),
+    },
+  };
+}
+
 /**
  * Install mitmproxy (mitmdump) if not present.
  * Mac: brew. Windows: pip (pipx). Linux: pip via uv.
@@ -1327,7 +1395,6 @@ async function main() {
     }
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     const mitmCfg = cfg.proxy?.mitm ?? {};
-    const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
     const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
     const winManager = windowsServiceCfg.manager ?? 'registry';
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
@@ -1350,21 +1417,22 @@ async function main() {
     persistHeadroomFallback = persistHeadroomFallback || installPlan.persistHeadroomFallback;
     selectedInstallEngine = installPlan.selectedInstallEngine;
     selectedProxyPort = installPlan.selectedProxyPort;
+    const downstreamProxyInstallOpts = buildDownstreamProxyServiceInstallOptions({
+      cfg,
+      os,
+      home,
+      mitmdumpBin,
+      sslEnv,
+      corpProxy,
+      winManager,
+      installPlan,
+    });
+
+    const { copilotHeadroomPort } = resolveMitmCompression(cfg);
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
-    if (mitmdumpBin) {
-      const { copilotHeadroomPort } = resolveMitmCompression(cfg);
-      const mitmOpts = buildMitmServiceInstallOptions({
-        cfg,
-        os,
-        home,
-        mitmdumpBin,
-        sslEnv,
-        corpProxy,
-        winManager,
-        headroomPort: enginePlan.selectedPort,
-      });
-      const egressPort = mitmOpts.egressPort;
+    if (downstreamProxyInstallOpts.mitmOpts) {
+      const mitmOpts = downstreamProxyInstallOpts.mitmOpts;
       try {
         await installMitmService(mitmOpts);
         ok(`mitmproxy service registered (port ${mitmOpts.port}${mitmOpts.egressPort ? ` + egress ${mitmOpts.egressPort}` : ''})`);
@@ -1375,22 +1443,16 @@ async function main() {
         // not a Copilot provider URL; mitmproxy restores the original
         // destination from private loopback headers.
         if (copilotHeadroomPort) {
-          const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+          const copilotHeadroomOpts = buildCopilotHeadroomServiceInstallOptions({
+            cfg,
+            headroomBin: binPath,
+            home,
+            manager: winManager,
+            sslEnv,
+          });
           try {
-            await installCopilotHeadroomService({
-              headroomBin: binPath,
-              port: copilotHeadroomPort,
-              envVars: {
-                ANTHROPIC_TARGET_API_URL: loopbackTarget,
-                OPENAI_TARGET_API_URL: loopbackTarget,
-                HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
-                NO_PROXY: '127.0.0.1,localhost,::1',
-                ...sslEnv,
-              },
-              home,
-              manager: winManager,
-            });
-            ok(`copilot-headroom service registered (port ${copilotHeadroomPort}, egress ${egressPort})`);
+            await installCopilotHeadroomService(copilotHeadroomOpts);
+            ok(`copilot-headroom service registered (port ${copilotHeadroomOpts.port}, egress ${copilotHeadroomOpts.egressPort})`);
           } catch (e) {
             warn(`copilot-headroom service registration failed: ${e.message}`);
           }
@@ -1406,21 +1468,10 @@ async function main() {
     // WinSW service for a registry-based install's watchdog to restart).
     try {
       const { installWatchdog } = await import('./service/index.mjs');
-      const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
-      const installed = await installWatchdog({
-        home,
-        enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
-        intervalMinutes: watchdogInterval,
-        headroomPort: enginePlan.shouldRunManagedHeadroom ? enginePlan.selectedPort : undefined,
-        mitmPort: mitmCfg.port ?? 8888,
-        ...(copilotHeadroomCfg.enabled && mitmdumpBin ? {
-          copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
-          egressPort: mitmCfg.egress_port ?? 8889,
-        } : {}),
-      });
+      const installed = await installWatchdog(downstreamProxyInstallOpts.watchdogOpts);
       if (installed) {
         const cadence = os === 'windows'
-          ? `every ${watchdogInterval} minute${watchdogInterval === 1 ? '' : 's'}`
+          ? `every ${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes} minute${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
           : 'every 90s';
         ok(`watchdog installed — auto-revives dropped services ${cadence}`);
       }

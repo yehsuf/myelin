@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   applyServiceEngineInstallPlan,
+  buildDownstreamProxyServiceInstallOptions,
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
   ensureManagedHeadroomService,
@@ -208,6 +209,57 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(result.persistHeadroomFallback, true);
     assert.equal(result.selectedInstallEngine, 'headroom');
     assert.deepEqual(calls.map(({ type }) => type), ['stop-lite', 'ensure-headroom']);
+  });
+
+  it('wires downstream mitm and watchdog options from the resolved fallback engine plan', async () => {
+    const cfg = {
+      proxy: {
+        headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
+        headroom_lite: { port: 8790 },
+        mitm: { port: 8888 },
+        copilot_headroom: { enabled: true, port: 8788, mode: 'observe' },
+        windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 5 },
+      },
+    };
+
+    const installPlan = await applyServiceEngineInstallPlan({
+      enginePlan: {
+        selectedEngine: 'headroom_lite',
+        selectedPort: 8790,
+        headroomPort: 8787,
+        shouldRunManagedHeadroom: false,
+        shouldRemoveManagedHeadroom: true,
+      },
+      os: 'windows',
+      cfg,
+      winManager: 'winsw',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      port: 8787,
+      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
+      ensureManagedHeadroomServiceImpl: async () => ({ healthy: true }),
+      removeManagedHeadroomRegistrationImpl: async () => {},
+      stopObsoleteEngineImpl: async () => ({ stopped: true, conflict: false }),
+      detectToolImpl: async () => ({ installed: false }),
+      warnFn: () => {},
+      logFn: () => {},
+      okFn: () => {},
+    });
+
+    const downstream = buildDownstreamProxyServiceInstallOptions({
+      cfg,
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
+      sslEnv: {},
+      winManager: 'winsw',
+      installPlan,
+    });
+
+    assert.equal(installPlan.selectedProxyPort, 8787);
+    assert.equal(downstream.mitmOpts.envVars.MYELIN_HEADROOM_PORT, '8787');
+    assert.equal(downstream.watchdogOpts.headroomPort, 8787);
+    assert.equal(downstream.watchdogOpts.intervalMinutes, 5);
   });
 });
 

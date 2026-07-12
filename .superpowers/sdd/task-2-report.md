@@ -100,3 +100,16 @@
    - `131` tests, `131` passed, `0` failed
 3. `npm test`
    - `486` tests, `486` passed, `0` failed
+
+## High Task 2 Integration Findings Fix
+- Installer-side downstream proxy wiring now derives mitm/watchdog options from the resolved `applyServiceEngineInstallPlan()` result, so a Headroom Lite fallback to Python Headroom carries the resolved engine port into `MYELIN_HEADROOM_PORT` and watchdog health targets instead of reusing the stale pre-fallback plan.
+- `myelin restart` now regenerates/reinstalls Copilot-Headroom static service definitions from current config on launchd, systemd, and WinSW via the existing install path, so changed port/mode/egress values update persisted service assets instead of only restarting stale definitions; Windows registry restart keeps its launcher-regeneration flow.
+- Added focused regressions for both integration findings: fallback wiring into downstream install options plus Copilot-Headroom reinstall behavior across macOS, Linux, and Windows WinSW.
+
+## High Task 2 Integration Findings Verification
+1. `node --test test/install.test.mjs test/restart.test.mjs`
+   - `37` tests, `37` passed, `0` failed
+2. `node --test test/install.test.mjs test/restart.test.mjs test/service.test.mjs test/service-isolation.test.mjs`
+   - `139` tests, `139` passed, `0` failed
+3. `npm test`
+   - `490` tests, `490` passed, `0` failed

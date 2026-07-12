@@ -8,8 +8,9 @@ import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
 import { defaultWindowsHome, normalizeWindowsFilesystemPath } from '../service/windows.mjs';
-import { installMitmService } from '../service/index.mjs';
+import { installCopilotHeadroomService, installMitmService } from '../service/index.mjs';
 import {
+  buildCopilotHeadroomServiceInstallOptions,
   buildMitmServiceInstallOptions,
   detectMitmdump,
   ensureManagedHeadroomService,
@@ -840,6 +841,7 @@ export async function defaultRestartCopilotHeadroom({
   homedirImpl = homedir,
   defaultWindowsHomeImpl = defaultWindowsHome,
   headroomBinPathImpl = headroomBinPath,
+  installCopilotHeadroomServiceImpl = installCopilotHeadroomService,
   persistCopilotHeadroomLauncherImpl = persistCopilotHeadroomLauncher,
   stopManagedCopilotHeadroomProcessImpl = defaultStopManagedCopilotHeadroomProcess,
   spawnDetachedServiceImpl,
@@ -848,27 +850,17 @@ export async function defaultRestartCopilotHeadroom({
   if (!cfg?.proxy?.copilot_headroom?.enabled) return;
   const port = cfg?.proxy?.copilot_headroom?.port ?? 8788;
   try {
-    if (os === 'darwin') {
-      const uid = execSync('id -u').toString().trim();
-      const plist = join(homedir(), 'Library', 'LaunchAgents', 'com.myelin.copilot-headroom.plist');
-      try { execSync(`launchctl bootout gui/${uid}/com.myelin.copilot-headroom`, { stdio: 'ignore' }); } catch {}
-      execSync('sleep 1');
-      execSync(`launchctl bootstrap gui/${uid} ${plist}`, { stdio: 'pipe' });
+    const home = os === 'windows' ? defaultWindowsHomeImpl(homedirImpl()) : homedirImpl();
+    if (os !== 'windows' || winManager === 'winsw') {
+      await installCopilotHeadroomServiceImpl(buildCopilotHeadroomServiceInstallOptions({
+        cfg,
+        headroomBin: headroomBinPathImpl(),
+        home,
+        manager: winManager,
+      }));
       log(`  ✓ copilot-headroom restarted (:${port})`);
       return;
     }
-    if (os === 'linux') {
-      execSync('systemctl --user restart myelin-copilot-headroom.service', { stdio: 'pipe' });
-      log(`  ✓ copilot-headroom restarted (:${port})`);
-      return;
-    }
-    if (winManager === 'winsw') {
-      const { COPILOT_HEADROOM_SERVICE_ID, restartWinswService } = await import('../service/windows.mjs');
-      if (!restartWinswService({ id: COPILOT_HEADROOM_SERVICE_ID })) throw new Error('WinSW restart failed');
-      log(`  ✓ copilot-headroom restarted (:${port})`);
-      return;
-    }
-    const home = defaultWindowsHomeImpl(homedirImpl());
     const regVal = trimShellValue(execSyncImpl(
       withPowerShell(`-Command "(Get-ItemProperty '${REG_RUN}' -Name ${COPILOT_HEADROOM_RUN_KEY} -ErrorAction SilentlyContinue).${COPILOT_HEADROOM_RUN_KEY}"`),
       { stdio: 'pipe' },

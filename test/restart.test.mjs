@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { buildCopilotHeadroomServiceInstallOptions } from '../src/install.mjs';
 import {
   buildCopilotHeadroomTaskEnv,
   buildManagedHeadroomEnv,
@@ -30,6 +31,61 @@ describe('buildCopilotHeadroomTaskEnv', () => {
 });
 
 describe('defaultRestartCopilotHeadroom', () => {
+  for (const { os, winManager } of [
+    { os: 'darwin', winManager: 'registry' },
+    { os: 'linux', winManager: 'registry' },
+    { os: 'windows', winManager: 'winsw' },
+  ]) {
+    it(`reinstalls fresh service definitions on ${os}${os === 'windows' ? ' WinSW' : ''} when port, mode, or egress change`, async () => {
+      const installs = [];
+
+      await defaultRestartCopilotHeadroom({
+        os,
+        cfg: {
+          proxy: {
+            mitm: { egress_port: 9898 },
+            copilot_headroom: {
+              enabled: true,
+              port: 9797,
+              mode: 'observe',
+            },
+            windows_service: { manager: winManager },
+          },
+        },
+        winManager,
+        log: () => {},
+        warn: () => {},
+        homedirImpl: () => os === 'windows' ? 'C:\\Users\\alice' : '/Users/alice',
+        headroomBinPathImpl: () => os === 'windows'
+          ? 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'
+          : '/Users/alice/.myelin/bin/headroom',
+        installCopilotHeadroomServiceImpl: async (opts) => {
+          installs.push(opts);
+        },
+      });
+
+      assert.equal(installs.length, 1);
+      assert.deepEqual(installs[0], buildCopilotHeadroomServiceInstallOptions({
+        cfg: {
+          proxy: {
+            mitm: { egress_port: 9898 },
+            copilot_headroom: {
+              enabled: true,
+              port: 9797,
+              mode: 'observe',
+            },
+            windows_service: { manager: winManager },
+          },
+        },
+        headroomBin: os === 'windows'
+          ? 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'
+          : '/Users/alice/.myelin/bin/headroom',
+        home: os === 'windows' ? 'C:\\Users\\alice' : '/Users/alice',
+        manager: winManager,
+      }));
+    });
+  }
+
   it('rebuilds the registry launcher from current config and stops the previous managed instance before spawn', async () => {
     const actions = [];
     const oldRunValue = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1"';
