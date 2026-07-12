@@ -23,6 +23,7 @@ import {
   parseManagedMitmStatus,
   parseWinswServiceStatus,
   resolveWslWindowsHome,
+  serviceStatus,
   spawnDetachedService,
   stopManagedHeadroomProcess,
   winswConfigPath,
@@ -318,6 +319,98 @@ describe('copilotHeadroomServiceStatus', () => {
     });
 
     assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+  });
+});
+
+describe('serviceStatus', () => {
+  it('validates the managed launcher, pid, executable path, and exact command for registry mode', () => {
+    const commands = [];
+    const status = serviceStatus({
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-ItemProperty')) {
+          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1'")) {
+          return Buffer.from([
+            '# Managed by myelin. Keeps Headroom env scoped to this process tree.',
+            "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 8787' -WindowStyle Hidden -PassThru",
+          ].join('\n'));
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid'")) {
+          return Buffer.from('4321\n');
+        }
+        return Buffer.from('Running\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('managed headroom status should fall back to PowerShell for Windows paths');
+      },
+    });
+
+    assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1' -Raw")));
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid' -Raw")));
+    assert.ok(commands.some((command) => command.includes('ProcessId = $managedPid')));
+    assert.ok(commands.some((command) => command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`)));
+    assert.ok(commands.some((command) => command.includes('--port 8787')));
+    assert.ok(!commands.some((command) => command.includes('--port 8788 --mode')));
+  });
+
+  it('keeps legacy Run-key installs detectable via exact executable path and command line', () => {
+    const commands = [];
+    const status = serviceStatus({
+      manager: 'registry',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        return Buffer.from(command.includes('Get-ItemProperty')
+          ? '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787\n'
+          : 'Running\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('legacy status should not require local launcher reads');
+      },
+    });
+
+    assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
+    assert.ok(commands.some((command) => command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`)));
+    assert.ok(commands.some((command) => command.includes('--port 8787')));
+    assert.ok(!commands.some((command) => command.includes('ProcessId = $managedPid')));
+  });
+
+  it('reports stopped when the managed launcher identity does not match a running process', () => {
+    const commands = [];
+    const status = serviceStatus({
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-ItemProperty')) {
+          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1'")) {
+          return Buffer.from([
+            '# Managed by myelin. Keeps Headroom env scoped to this process tree.',
+            "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 8788 --mode cache --connect-timeout-seconds 10' -WindowStyle Hidden -PassThru",
+          ].join('\n'));
+        }
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid'")) {
+          return Buffer.from('4321\n');
+        }
+        return Buffer.from('Stopped\n');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('managed headroom status should fall back to PowerShell for Windows paths');
+      },
+    });
+
+    assert.deepEqual(status, { running: false, state: 'Stopped', raw: 'Stopped' });
+    assert.ok(commands.some((command) => command.includes('--port 8788 --mode cache --connect-timeout-seconds 10')));
+    assert.ok(!commands.some((command) => command.includes('--port 8787(\\s|$)')));
   });
 });
 

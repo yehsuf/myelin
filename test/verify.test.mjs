@@ -166,4 +166,39 @@ describe('buildVerifyResults engine selection', () => {
     assert.equal(mitm?.ok, false);
     assert.equal(results.every(({ ok }) => ok), false);
   });
+
+  it('does not let Copilot-Headroom health make main Headroom verify green', async () => {
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { enabled: true, port: 8787 },
+          headroom_lite: { enabled: false, port: 8790 },
+          mitm: { enabled: false, port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      platform: 'win32',
+      serviceStatusImpl: async () => ({ running: false, state: 'Stopped' }),
+      waitForHeadroomImpl: async (port) => port === 8788,
+      copilotHeadroomServiceStatusImpl: async () => ({ running: true, label: 'copilot' }),
+      detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
+      detectRtkImpl: async () => ({ installed: false, version: null }),
+      detectSembleImpl: async () => ({ installed: false, version: null }),
+      whichImpl: async () => '/usr/bin/mitmdump',
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeCopilotHeadroomCheck: true,
+      includeWatchdogChecks: false,
+    });
+
+    const headroomService = results.find(({ name }) => name === 'Headroom service');
+    const headroomHealth = results.find(({ name }) => name === 'Headroom health (:8787)');
+    const copilotHealth = results.find(({ name }) => name === 'Copilot-Headroom health (:8788)');
+    assert.equal(headroomService?.ok, false);
+    assert.equal(headroomHealth?.ok, false);
+    assert.equal(copilotHealth?.ok, true);
+    assert.equal(results.every(({ ok }) => ok), false);
+  });
 });

@@ -388,7 +388,7 @@ function parseCopilotHeadroomRunKeyValue(runKeyValue = '') {
   return null;
 }
 
-function buildManagedHeadroomStatusScript({ executablePath, argStr, launcherPath, port, processExeName = 'headroom.exe' } = {}) {
+function buildManagedHeadroomStatusScript({ pid, executablePath, argStr, launcherPath, port, processExeName = 'headroom.exe' } = {}) {
   const effectivePort = Number(port);
   const commandClauses = [
     `$_.CommandLine`,
@@ -399,6 +399,21 @@ function buildManagedHeadroomStatusScript({ executablePath, argStr, launcherPath
     ...(executablePath ? [`$_.ExecutablePath -eq '${escapePs(windowsPath(executablePath))}'`] : []),
   ];
   const exeName = escapePs((executablePath ? windowsPath(executablePath) : processExeName).split('\\').pop() ?? processExeName);
+  if (pid && /^[0-9]+$/u.test(String(pid))) {
+    const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+    return [
+      `$managedPid = ${pid}`,
+      `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
+      `if ($proc -and $proc.Name -ieq '${exeName}' -and ${commandClauses.map((clause) => clause.replace(/\$_/g, '$proc')).join(' -and ')}) {`,
+      `  $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+      `  if ($parent -and $parent.CommandLine -match '${launcherRegex}') {`,
+      `    'Running'`,
+      `    return`,
+      `  }`,
+      `}`,
+      `'Stopped'`,
+    ].join('\n');
+  }
   if (launcherPath) {
     const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
     return [
@@ -814,6 +829,47 @@ export function parseManagedMitmStatus(raw = '') {
 
 function parseManagedHeadroomStatus(raw = '') {
   return parseManagedMitmStatus(raw);
+}
+
+function parseManagedHeadroomRunKeyValue(runKeyValue = '') {
+  const value = String(runKeyValue ?? '').trim();
+  const launcherMatch = value.match(/-File\s+"([^"]*start-headroom\.ps1)"/i);
+  if (launcherMatch) return { launcherPath: launcherMatch[1] };
+  return parseLegacyManagedHeadroomRunKeyValue({ runKeyValue: value });
+}
+
+function readManagedHeadroomIdentity({
+  home = defaultWindowsHome(),
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  runKeyStatusImpl = headroomRunKeyStatus,
+  powershellExe = powerShellExecutable(),
+} = {}) {
+  const runKeyStatus = runKeyStatusImpl({ execSyncImpl, powershellExe });
+  const parsedRunKey = parseManagedHeadroomRunKeyValue(runKeyStatus?.raw) ?? {};
+  if (!parsedRunKey.launcherPath && !parsedRunKey.executablePath && !parsedRunKey.argStr) return null;
+  let executablePath = parsedRunKey.executablePath ?? '';
+  let argStr = parsedRunKey.argStr ?? '';
+  const launcherPath = parsedRunKey.launcherPath ?? '';
+  const launcherScript = readWindowsScriptText(launcherPath, {
+    execSyncImpl,
+    existsSyncImpl,
+    readFileSyncImpl,
+    powershellExe,
+  });
+  if (launcherScript) {
+    const parsedLauncher = parseLauncherStartProcess(launcherScript);
+    executablePath = parsedLauncher?.executablePath ?? executablePath;
+    argStr = parsedLauncher?.argStr ?? argStr;
+  }
+  return {
+    launcherPath,
+    executablePath,
+    argStr,
+    pidPath: managedHeadroomPidPath({ home }),
+    port: portFromArgString(argStr),
+  };
 }
 
 function readManagedCopilotHeadroomIdentity({
@@ -1259,13 +1315,65 @@ export function mitmServiceStatus({
   return winswServiceStatus({ id: MITM_SERVICE_ID });
 }
 
-export function serviceStatus({ manager = 'registry', execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
+export function serviceStatus({
+  manager = 'registry',
+  home = defaultWindowsHome(),
+  port = 8787,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  runKeyStatusImpl = headroomRunKeyStatus,
+  powershellExe = powerShellExecutable(),
+} = {}) {
   if (manager !== 'winsw') {
     try {
-      const out = execSyncImpl(withPowerShell(`-Command "Get-Process headroom -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Id"`, powershellExe), { stdio: 'pipe' }).toString().trim();
-      return { running: !!out, state: out ? 'Running' : 'Stopped' };
+      const identity = readManagedHeadroomIdentity({
+        home,
+        execSyncImpl,
+        existsSyncImpl,
+        readFileSyncImpl,
+        runKeyStatusImpl,
+        powershellExe,
+      });
+      const hasLegacyIdentity = !!identity?.executablePath && !!identity?.argStr && !identity?.launcherPath;
+      const hasManagedLauncherIdentity = !!identity?.launcherPath && !!identity?.executablePath && !!identity?.argStr;
+      if (!hasLegacyIdentity && !hasManagedLauncherIdentity) {
+        return { running: false, state: 'Stopped', raw: '' };
+      }
+      const configuredPort = Number(port);
+      const effectivePort = identity.port ?? (Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8787);
+      let script;
+      if (hasManagedLauncherIdentity) {
+        const pidText = trimPowershellOutput(readWindowsFileText(identity.pidPath, {
+          execSyncImpl,
+          existsSyncImpl,
+          readFileSyncImpl,
+          powershellExe,
+        }));
+        if (!pidText || !/^[0-9]+$/u.test(pidText)) {
+          return { running: false, state: 'Stopped', raw: '' };
+        }
+        script = buildManagedHeadroomStatusScript({
+          pid: pidText,
+          executablePath: identity.executablePath,
+          argStr: identity.argStr,
+          launcherPath: identity.launcherPath,
+          port: effectivePort,
+        }).replace(/"/g, '\\"');
+      } else {
+        script = buildManagedHeadroomStatusScript({
+          executablePath: identity.executablePath,
+          argStr: identity.argStr,
+          port: effectivePort,
+        }).replace(/"/g, '\\"');
+      }
+      const raw = trimPowershellOutput(execSyncImpl(
+        withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      ).toString());
+      return parseManagedHeadroomStatus(raw);
     } catch {
-      return { running: false, state: 'Unknown' };
+      return { running: false, state: 'Unknown', raw: '' };
     }
   }
   return winswServiceStatus({ id: HEADROOM_SERVICE_ID });

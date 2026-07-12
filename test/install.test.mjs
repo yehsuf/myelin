@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
+  applyServiceEngineInstallPlan,
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
   ensureManagedHeadroomService,
@@ -107,6 +108,106 @@ describe('ensureManagedHeadroomService', () => {
     });
 
     assert.equal(installCalls.length, 1);
+  });
+});
+
+describe('applyServiceEngineInstallPlan', () => {
+  it('stops a previously managed headroom-lite instance before reinstalling Python headroom', async () => {
+    const calls = [];
+    const enginePlan = {
+      selectedEngine: 'headroom',
+      selectedPort: 8787,
+      headroomPort: 8787,
+      shouldRunManagedHeadroom: true,
+      shouldRemoveManagedHeadroom: false,
+    };
+
+    const result = await applyServiceEngineInstallPlan({
+      enginePlan,
+      os: 'windows',
+      cfg: {
+        proxy: {
+          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
+          headroom_lite: { port: 8790 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      port: 8787,
+      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
+      ensureManagedHeadroomServiceImpl: async (opts) => {
+        calls.push({ type: 'ensure-headroom', opts });
+        return { healthy: true };
+      },
+      removeManagedHeadroomRegistrationImpl: async () => {
+        calls.push({ type: 'remove-headroom' });
+      },
+      stopObsoleteEngineImpl: async (opts) => {
+        calls.push({ type: 'stop-lite', opts });
+        return { stopped: true, conflict: false };
+      },
+      detectToolImpl: async () => ({ installed: true }),
+      restartHeadroomLiteImpl: async () => true,
+      warnFn: () => {},
+      logFn: () => {},
+      okFn: () => {},
+    });
+
+    assert.equal(result.selectedInstallEngine, 'headroom');
+    assert.equal(result.selectedProxyPort, 8787);
+    assert.deepEqual(calls.map(({ type }) => type), ['stop-lite', 'ensure-headroom']);
+    assert.equal(calls[0].opts.engine, 'headroom_lite');
+    assert.equal(calls[0].opts.home, 'C:\\Users\\alice');
+    assert.equal(calls[0].opts.winManager, 'registry');
+    assert.equal(calls[1].opts.headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
+  });
+
+  it('falls back from unavailable headroom-lite to managed Python headroom and still cleans up managed Lite', async () => {
+    const calls = [];
+
+    const result = await applyServiceEngineInstallPlan({
+      enginePlan: {
+        selectedEngine: 'headroom_lite',
+        selectedPort: 8790,
+        headroomPort: 8787,
+        shouldRunManagedHeadroom: false,
+        shouldRemoveManagedHeadroom: true,
+      },
+      os: 'windows',
+      cfg: {
+        proxy: {
+          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
+          headroom_lite: { port: 8790 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      port: 8787,
+      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
+      ensureManagedHeadroomServiceImpl: async (opts) => {
+        calls.push({ type: 'ensure-headroom', opts });
+        return { healthy: true };
+      },
+      removeManagedHeadroomRegistrationImpl: async () => {
+        calls.push({ type: 'remove-headroom' });
+      },
+      stopObsoleteEngineImpl: async (opts) => {
+        calls.push({ type: 'stop-lite', opts });
+        return { stopped: true, conflict: false };
+      },
+      detectToolImpl: async () => ({ installed: false }),
+      warnFn: () => {},
+      logFn: () => {},
+      okFn: () => {},
+    });
+
+    assert.equal(result.persistHeadroomFallback, true);
+    assert.equal(result.selectedInstallEngine, 'headroom');
+    assert.deepEqual(calls.map(({ type }) => type), ['stop-lite', 'ensure-headroom']);
   });
 });
 

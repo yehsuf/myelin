@@ -87,3 +87,16 @@
    - `31` tests, `31` passed, `0` failed
 2. `npm test`
    - `480` tests, `480` passed, `0` failed
+
+## High Task 2 Findings Fix
+- `src/install.mjs` now routes the install-time engine plan through `applyServiceEngineInstallPlan()`, so selecting Python Headroom first stops only the previously managed Headroom Lite instance via the existing ownership-checked restart cleanup path before re-registering managed Headroom.
+- Windows registry-mode main `serviceStatus()` now derives managed main-Headroom identity from the Myelin Run key, launcher, PID file, executable path, and exact command line, while preserving a safe exact-match fallback for older legacy Run-key installs until they are migrated.
+- Added focused regressions for the Lite→Headroom install transition, positive and negative main-Headroom registry identity checks, legacy registry status compatibility, and verify staying red when only Copilot-Headroom is healthy.
+
+## High Task 2 Findings Verification
+1. `node --test test/install.test.mjs test/service.test.mjs test/verify.test.mjs`
+   - `110` tests, `110` passed, `0` failed
+2. `node --test test/install.test.mjs test/service.test.mjs test/verify.test.mjs test/restart.test.mjs`
+   - `131` tests, `131` passed, `0` failed
+3. `npm test`
+   - `486` tests, `486` passed, `0` failed

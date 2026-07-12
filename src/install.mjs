@@ -226,6 +226,86 @@ export async function ensureManagedHeadroomService({
   return { installed: false, alreadyHealthy: true, registeredBefore: true, healthy: true };
 }
 
+export async function applyServiceEngineInstallPlan({
+  enginePlan,
+  os = detectOS(),
+  cfg = {},
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  home,
+  headroomBin,
+  port,
+  envVars = {},
+  interceptToolResults = cfg?.proxy?.headroom?.intercept_tool_results ?? true,
+  warnFn = warn,
+  logFn = console.log,
+  okFn = ok,
+  ensureManagedHeadroomServiceImpl = ensureManagedHeadroomService,
+  removeManagedHeadroomRegistrationImpl = removeManagedHeadroomRegistration,
+  stopObsoleteEngineImpl,
+  detectToolImpl,
+  restartHeadroomLiteImpl,
+} = {}) {
+  const resolvedPlan = { ...(enginePlan ?? buildServiceEnginePlan(cfg)) };
+  let persistHeadroomFallback = false;
+
+  if (resolvedPlan.selectedEngine === 'headroom_lite') {
+    const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+    const headroomLite = await detectTool('headroom-lite', '--version');
+    if (!headroomLite.installed) {
+      warnFn('headroom-lite selected but not installed — keeping managed headroom until `myelin restart` can start headroom-lite');
+      resolvedPlan.selectedEngine = 'headroom';
+      resolvedPlan.selectedPort = port;
+      resolvedPlan.shouldRunManagedHeadroom = true;
+      resolvedPlan.shouldRemoveManagedHeadroom = false;
+      persistHeadroomFallback = true;
+    } else {
+      const restartHeadroomLite = restartHeadroomLiteImpl ?? (await import('./cli/restart.mjs')).restartHeadroomLite;
+      const healthy = await restartHeadroomLite(resolvedPlan.selectedPort, os, cfg);
+      if (!healthy) {
+        warnFn('headroom-lite selected but not healthy after start — keeping managed headroom until a later restart succeeds');
+        resolvedPlan.selectedEngine = 'headroom';
+        resolvedPlan.selectedPort = port;
+        resolvedPlan.shouldRunManagedHeadroom = true;
+        resolvedPlan.shouldRemoveManagedHeadroom = false;
+        persistHeadroomFallback = true;
+      }
+    }
+  }
+
+  if (resolvedPlan.shouldRunManagedHeadroom) {
+    const stopObsoleteEngine = stopObsoleteEngineImpl ?? (await import('./cli/restart.mjs')).stopObsoleteEngine;
+    await stopObsoleteEngine({
+      engine: 'headroom_lite',
+      os,
+      cfg,
+      winManager,
+      home,
+      warn: warnFn,
+    });
+    await ensureManagedHeadroomServiceImpl({
+      os,
+      winManager,
+      home,
+      headroomBin,
+      port,
+      envVars,
+      interceptToolResults,
+      logFn,
+      okFn,
+      warnFn,
+    });
+  } else if (resolvedPlan.shouldRemoveManagedHeadroom) {
+    await removeManagedHeadroomRegistrationImpl({ os, winManager, home, headroomPort: resolvedPlan.headroomPort });
+  }
+
+  return {
+    enginePlan: resolvedPlan,
+    persistHeadroomFallback,
+    selectedInstallEngine: resolvedPlan.selectedEngine,
+    selectedProxyPort: resolvedPlan.selectedPort,
+  };
+}
+
 async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
   if (os === 'windows') {
     try {
@@ -1245,30 +1325,6 @@ async function main() {
       enginePlan.headroomPort = port;
       enginePlan.selectedPort = port;
     }
-    if (enginePlan.selectedEngine === 'headroom_lite') {
-      const { detectTool } = await import('./detect/tools.mjs');
-      const headroomLite = await detectTool('headroom-lite', '--version');
-      if (!headroomLite.installed) {
-        warn('headroom-lite selected but not installed — keeping managed headroom until `myelin restart` can start headroom-lite');
-        enginePlan.selectedEngine = 'headroom';
-        enginePlan.selectedPort = port;
-        enginePlan.shouldRunManagedHeadroom = true;
-        enginePlan.shouldRemoveManagedHeadroom = false;
-        persistHeadroomFallback = true;
-      } else {
-        const { restartHeadroomLite } = await import('./cli/restart.mjs');
-        const healthy = await restartHeadroomLite(enginePlan.selectedPort, os);
-        if (!healthy) {
-          warn('headroom-lite selected but not healthy after start — keeping managed headroom until a later restart succeeds');
-          enginePlan.selectedEngine = 'headroom';
-          enginePlan.selectedPort = port;
-          enginePlan.shouldRunManagedHeadroom = true;
-          enginePlan.shouldRemoveManagedHeadroom = false;
-          persistHeadroomFallback = true;
-        }
-      }
-    }
-    selectedProxyPort = enginePlan.selectedPort;
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     const mitmCfg = cfg.proxy?.mitm ?? {};
     const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
@@ -1277,19 +1333,23 @@ async function main() {
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
-    if (enginePlan.shouldRunManagedHeadroom) {
-      await ensureManagedHeadroomService({
-        os,
-        winManager,
-        home,
-        headroomBin: binPath,
-        port,
-        envVars,
-        interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
-      });
-    } else if (enginePlan.shouldRemoveManagedHeadroom) {
-      await removeManagedHeadroomRegistration({ os, winManager, home, headroomPort: enginePlan.headroomPort });
-    }
+    const installPlan = await applyServiceEngineInstallPlan({
+      enginePlan,
+      os,
+      cfg,
+      winManager,
+      home,
+      headroomBin: binPath,
+      port,
+      envVars,
+      interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
+      warnFn: warn,
+      logFn: console.log,
+      okFn: ok,
+    });
+    persistHeadroomFallback = persistHeadroomFallback || installPlan.persistHeadroomFallback;
+    selectedInstallEngine = installPlan.selectedInstallEngine;
+    selectedProxyPort = installPlan.selectedProxyPort;
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
     if (mitmdumpBin) {
