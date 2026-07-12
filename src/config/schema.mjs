@@ -1,6 +1,7 @@
 export const DEFAULT_CONFIG = {
   version: '1.0',
   proxy: {
+    engine: 'headroom',
     headroom: {
       enabled: true,
       port: 8787,
@@ -29,7 +30,7 @@ export const DEFAULT_CONFIG = {
     // `myelin restart` when `enabled !== false`. Falls back gracefully to a
     // hint if the `headroom-lite` binary isn't installed.
     headroom_lite: {
-      enabled: true,
+      enabled: false,
       port: 8790,
     },
     mitm: {
@@ -177,6 +178,26 @@ export const DEFAULT_CONFIG = {
 
 function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export const COMPRESSION_ENGINES = new Set(['headroom', 'headroom_lite']);
+
+export function normalizeCompressionEngine(userConfig = {}, warn = console.warn) {
+  const explicit = userConfig.proxy?.engine;
+  if (COMPRESSION_ENGINES.has(explicit)) return explicit;
+  if (explicit != null) {
+    warn(`[myelin] invalid proxy.engine "${explicit}"; using headroom`);
+    return 'headroom';
+  }
+
+  const legacyHeadroomEnabled = userConfig.proxy?.headroom?.enabled;
+  const legacyHeadroomLiteEnabled = userConfig.proxy?.headroom_lite?.enabled;
+  if (legacyHeadroomEnabled === true && legacyHeadroomLiteEnabled === true) {
+    warn('[myelin] conflicting legacy proxy.headroom.enabled and proxy.headroom_lite.enabled; using headroom');
+    return 'headroom';
+  }
+
+  return legacyHeadroomLiteEnabled === true ? 'headroom_lite' : 'headroom';
 }
 
 export function mergeDeep(base, override) {
