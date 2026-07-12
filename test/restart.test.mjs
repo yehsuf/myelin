@@ -448,6 +448,47 @@ describe('headroom-lite ownership guards', () => {
     assert.deepEqual(killed, []);
     assert.equal(unlinked, 1);
   });
+
+  it('reads and matches WSL-managed Windows Lite state without emitting mnt paths during cleanup', async () => {
+    const commands = [];
+    const killed = [];
+    const result = await stopManagedHeadroomLite({
+      port: 8790,
+      osKind: 'windows',
+      home: '/mnt/c/Users/alice',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-Command headroom-lite')) return Buffer.from('/mnt/c/Users/alice/.myelin/bin/headroom-lite.exe\n');
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\headroom-lite.pid'")) return Buffer.from('5150\n');
+        if (command.includes('Get-NetTCPConnection -State Listen -LocalPort 8790')) return Buffer.from('5150\n');
+        if (command.includes('ProcessId = 5150')) {
+          return Buffer.from(JSON.stringify({
+            command: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe',
+            executablePath: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe',
+            parentCommand: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\state\\headroom-lite\\start-headroom-lite.ps1"',
+            grandparentCommand: '',
+          }));
+        }
+        if (command.includes('Stop-Process -Id 5150')) return Buffer.from('');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('should read Windows pid state via PowerShell');
+      },
+      unlinkSyncImpl: () => {},
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+    });
+
+    assert.equal(result.stopped, true);
+    assert.equal(result.conflict, false);
+    assert.deepEqual(killed, [5150]);
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\headroom-lite.pid'")));
+    assert.ok(commands.every((command) => !command.includes('/mnt/c/Users/alice')));
+    assert.ok(commands.every((command) => !command.includes('\\mnt\\')));
+  });
 });
 
 describe('defaultRestartManagedHeadroom', () => {
@@ -532,4 +573,54 @@ describe('defaultRestartMitm', () => {
       }
     });
   }
+});
+
+describe('restartHeadroomLite WSL Windows paths', () => {
+  it('emits only Windows launcher, pid, and binary paths when restarting from WSL', async () => {
+    const commands = [];
+    const spawns = [];
+
+    const started = await restartHeadroomLite(8790, 'windows', {}, {
+      home: '/mnt/c/Users/alice',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-Command headroom-lite')) {
+          return Buffer.from('/mnt/c/Users/alice/.myelin/bin/headroom-lite.exe\n');
+        }
+        return Buffer.from('');
+      },
+      stopManagedHeadroomLiteImpl: async () => ({ stopped: false, conflict: false, running: false }),
+      spawnImpl: (exe, args, opts) => {
+        spawns.push({ exe, args, opts });
+        return { unref() {} };
+      },
+      mkdirSyncImpl: () => {
+        throw new Error('Windows launcher persistence should not use local mkdir');
+      },
+      writeFileSyncImpl: () => {
+        throw new Error('Windows launcher persistence should not use local writeFileSync');
+      },
+      chmodSyncImpl: () => {},
+      waitForHeadroomLiteImpl: async () => true,
+      log: () => {},
+      warn: () => {},
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+    });
+
+    const persistCommand = commands.find((command) =>
+      command.includes("Set-Content -Path 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\start-headroom-lite.ps1'")
+    );
+
+    assert.equal(started, true);
+    assert.ok(persistCommand);
+    assert.ok(persistCommand.includes("Remove-Item -Path 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\headroom-lite.pid'"));
+    assert.ok(persistCommand.includes('C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe'));
+    assert.ok(!persistCommand.includes('/mnt/c/Users/alice'));
+    assert.ok(!persistCommand.includes('\\mnt\\'));
+    assert.deepEqual(spawns, [{
+      exe: 'powershell.exe',
+      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\start-headroom-lite.ps1'],
+      opts: { detached: true, stdio: 'ignore' },
+    }]);
+  });
 });

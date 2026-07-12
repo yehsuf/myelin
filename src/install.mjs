@@ -11,7 +11,7 @@ import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
-import { detectOS, detectShell } from './detect/os.mjs';
+import { detectOS, detectShell, powerShellExecutable } from './detect/os.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';

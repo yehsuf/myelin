@@ -146,6 +146,13 @@ describe('buildMitmServiceInstallOptions', () => {
 });
 
 describe('buildManagedHeadroomRunKeyCleanupCommand', () => {
+  it('supports default PowerShell selection when no override is provided', () => {
+    const command = buildManagedHeadroomRunKeyCleanupCommand();
+
+    assert.ok(command.startsWith(`${powerShellExecutable()} `));
+    assert.ok(command.includes("Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom'"));
+  });
+
   it('uses the WSL-aware PowerShell executable for obsolete Run-key cleanup', () => {
     const command = buildManagedHeadroomRunKeyCleanupCommand({
       powershellExe: powerShellExecutable({
@@ -160,6 +167,29 @@ describe('buildManagedHeadroomRunKeyCleanupCommand', () => {
 });
 
 describe('removeManagedHeadroomRegistration', () => {
+  it('uses the default PowerShell selection for cleanup command and stop invocation', async () => {
+    const commands = [];
+    const stops = [];
+
+    await removeManagedHeadroomRegistration({
+      os: 'windows',
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomPort: 8787,
+      execSyncImpl: (command) => {
+        commands.push(command);
+        return Buffer.from('');
+      },
+      stopManagedHeadroomProcessImpl: (opts) => stops.push(opts),
+      warnFn: () => {},
+      okFn: () => {},
+    });
+
+    assert.equal(stops.length, 1);
+    assert.equal(stops[0].powershellExe, powerShellExecutable());
+    assert.ok(commands[0].startsWith(`${powerShellExecutable()} `));
+  });
+
   it('routes obsolete Run-key cleanup through the WSL-aware PowerShell executable', async () => {
     const commands = [];
     const stops = [];

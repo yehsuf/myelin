@@ -76,3 +76,14 @@
 - Obsolete Windows Headroom Run-key cleanup in `install.mjs` now routes both the stop path and registry deletion through the centralized WSL-aware PowerShell executable selection, so WSL cleanup shells out via `powershell.exe`.
 - Headroom Lite stop/cleanup now requires launcher-backed ownership before killing a tracked PID; reused/stale PID files that only match the executable or port are cleared without stopping unrelated processes.
 - Added focused install/restart regressions for WSL Run-key cleanup routing, stale reused Lite PID cleanup, and the preserved true managed Lite stop path.
+
+## High Task 2 Review Fix
+- `src/install.mjs` now imports `powerShellExecutable` and uses it for both the default cleanup-command builder and default obsolete-Headroom cleanup invocation, eliminating the latent `ReferenceError` on non-injected calls.
+- Windows-mode Headroom Lite restart/cleanup now resolves the effective Windows home before binary lookup, launcher/PID path generation, state-file cleanup, and PowerShell `-File` execution, so WSL paths stay on real `C:\...` locations instead of leaking `/mnt/...` or `\mnt\...`.
+- Added regressions covering default-parameter cleanup invocation plus WSL Lite restart/cleanup command generation and owned-PID cleanup, proving no POSIX Windows-launcher paths are emitted while native Windows behavior remains intact.
+
+## High Task 2 Verification
+1. `node --test test/install.test.mjs test/restart.test.mjs`
+   - `31` tests, `31` passed, `0` failed
+2. `npm test`
+   - `480` tests, `480` passed, `0` failed

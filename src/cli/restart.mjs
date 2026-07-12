@@ -7,7 +7,7 @@ import { selectedEngine } from '../config/engine-runtime.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
-import { defaultWindowsHome } from '../service/windows.mjs';
+import { defaultWindowsHome, normalizeWindowsFilesystemPath } from '../service/windows.mjs';
 import { installMitmService } from '../service/index.mjs';
 import {
   buildMitmServiceInstallOptions,
@@ -56,19 +56,75 @@ export function buildManagedHeadroomEnv(cfg, baseEnv = process.env) {
 }
 
 function headroomLiteStateDir(home = homedir()) {
-  return join(home, ...HEADROOM_LITE_STATE_DIR);
+  return joinManagedPath(home, ...HEADROOM_LITE_STATE_DIR);
 }
 
 export function headroomLitePidPath({ home = homedir() } = {}) {
-  return join(headroomLiteStateDir(home), 'headroom-lite.pid');
+  return joinManagedPath(headroomLiteStateDir(home), 'headroom-lite.pid');
 }
 
 export function headroomLiteLauncherPath({ home = homedir(), osKind } = {}) {
-  return join(headroomLiteStateDir(home), osKind === 'windows' ? 'start-headroom-lite.ps1' : 'start-headroom-lite.sh');
+  return joinManagedPath(headroomLiteStateDir(home), osKind === 'windows' ? 'start-headroom-lite.ps1' : 'start-headroom-lite.sh');
 }
 
 function trimShellValue(value = '') {
   return String(value ?? '').replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').map(v => v.trim()).find(Boolean) ?? '';
+}
+
+function windowsInteropPowerShell() {
+  return powerShellExecutable({ windowsInterop: true });
+}
+
+function resolveManagedWindowsHome(home, osKind, defaultWindowsHomeImpl = defaultWindowsHome) {
+  return osKind === 'windows' ? defaultWindowsHomeImpl(home) : home;
+}
+
+function normalizeManagedWindowsPath(value, osKind, normalizeWindowsFilesystemPathImpl = normalizeWindowsFilesystemPath) {
+  return osKind === 'windows' ? normalizeWindowsFilesystemPathImpl(value) : value;
+}
+
+function readManagedStateFile(filePath, {
+  osKind,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  powershellExe = windowsInteropPowerShell(),
+} = {}) {
+  if (!filePath) return '';
+  try {
+    if (existsSyncImpl(filePath)) {
+      return String(readFileSyncImpl(filePath, 'utf8') ?? '');
+    }
+  } catch {}
+  if (osKind !== 'windows' || !isWindowsAbsolutePath(filePath)) return '';
+  try {
+    return execSyncImpl(
+      withPowerShell(`-NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`, powershellExe),
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
+  } catch {
+    return '';
+  }
+}
+
+function removeManagedStateFile(filePath, {
+  osKind,
+  execSyncImpl = execSync,
+  unlinkSyncImpl = unlinkSync,
+  powershellExe = windowsInteropPowerShell(),
+} = {}) {
+  if (!filePath) return;
+  try {
+    unlinkSyncImpl(filePath);
+    return;
+  } catch {}
+  if (osKind !== 'windows' || !isWindowsAbsolutePath(filePath)) return;
+  try {
+    execSyncImpl(
+      withPowerShell(`-NoProfile -Command "Remove-Item -Path '${escapePs(windowsPath(filePath))}' -ErrorAction SilentlyContinue"`, powershellExe),
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+  } catch {}
 }
 
 function psSingleQuote(value = '') {
@@ -83,24 +139,33 @@ function withPowerShell(args, powershellExe = powerShellExecutable()) {
   return `${powershellExe} ${args}`;
 }
 
-function resolveHeadroomLiteBinary(osKind, execSyncImpl = execSync) {
+function resolveHeadroomLiteBinary(
+  osKind,
+  execSyncImpl = execSync,
+  {
+    powershellExe = windowsInteropPowerShell(),
+    normalizeWindowsFilesystemPathImpl = normalizeWindowsFilesystemPath,
+  } = {},
+) {
   try {
     const command = osKind === 'windows'
-      ? withPowerShell(`-NoProfile -Command "(Get-Command headroom-lite -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)"`)
+      ? withPowerShell(`-NoProfile -Command "(Get-Command headroom-lite -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)"`, powershellExe)
       : 'command -v headroom-lite';
     const options = osKind === 'windows'
       ? { stdio: ['ignore', 'pipe', 'pipe'] }
       : { stdio: ['ignore', 'pipe', 'pipe'], shell: '/bin/bash' };
-    return trimShellValue(execSyncImpl(command, options).toString()) || null;
+    const resolved = trimShellValue(execSyncImpl(command, options).toString());
+    if (!resolved) return null;
+    return osKind === 'windows' ? normalizeWindowsFilesystemPathImpl(resolved) : resolved;
   } catch {
     return null;
   }
 }
 
-function headroomLitePortOwnerPid(port, osKind, execSyncImpl = execSync) {
+function headroomLitePortOwnerPid(port, osKind, execSyncImpl = execSync, { powershellExe = windowsInteropPowerShell() } = {}) {
   try {
     const command = osKind === 'windows'
-      ? withPowerShell(`-NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)"`)
+      ? withPowerShell(`-NoProfile -Command "(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess)"`, powershellExe)
       : `lsof -nP -tiTCP:${port} -sTCP:LISTEN 2>/dev/null`;
     const options = osKind === 'windows'
       ? { stdio: ['ignore', 'pipe', 'pipe'] }
@@ -112,7 +177,7 @@ function headroomLitePortOwnerPid(port, osKind, execSyncImpl = execSync) {
   }
 }
 
-function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
+function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync, { powershellExe = windowsInteropPowerShell() } = {}) {
   try {
     if (osKind === 'windows') {
       const script = [
@@ -127,7 +192,7 @@ function headroomLiteProcessInfo(pid, osKind, execSyncImpl = execSync) {
         '  grandparentCommand = if ($grandparent) { $grandparent.CommandLine } else { "" }',
         '} | ConvertTo-Json -Compress',
       ].join('; ');
-      const out = trimShellValue(execSyncImpl(withPowerShell(`-NoProfile -Command "${script.replace(/"/g, '\\"')}"`), {
+      const out = trimShellValue(execSyncImpl(withPowerShell(`-NoProfile -Command "${script.replace(/"/g, '\\"')}"`, powershellExe), {
         stdio: ['ignore', 'pipe', 'pipe'],
       }).toString());
       return out ? JSON.parse(out) : null;
@@ -184,19 +249,30 @@ function headroomLiteMatchesManagedPid(processInfo, binaryPath) {
   );
 }
 
-function readManagedHeadroomLitePid(pidPath, { existsSyncImpl = existsSync, readFileSyncImpl = readFileSync } = {}) {
+function readManagedHeadroomLitePid(pidPath, {
+  osKind,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  powershellExe = windowsInteropPowerShell(),
+} = {}) {
   try {
-    if (!existsSyncImpl(pidPath)) return null;
-    const pid = Number(String(readFileSyncImpl(pidPath, 'utf8') ?? '').trim());
+    const pid = Number(trimShellValue(readManagedStateFile(pidPath, {
+      osKind,
+      execSyncImpl,
+      existsSyncImpl,
+      readFileSyncImpl,
+      powershellExe,
+    })));
     return Number.isInteger(pid) && pid > 0 ? pid : null;
   } catch {
     return null;
   }
 }
 
-function defaultStopPid(pid, osKind, execSyncImpl = execSync) {
+function defaultStopPid(pid, osKind, execSyncImpl = execSync, { powershellExe = windowsInteropPowerShell() } = {}) {
   if (osKind === 'windows') {
-    execSyncImpl(withPowerShell(`-NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`), {
+    execSyncImpl(withPowerShell(`-NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, powershellExe), {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     return;
@@ -243,6 +319,26 @@ rm -f ${shSingleQuote(pidPath)}
 `;
 }
 
+function persistWindowsHeadroomLiteLauncher({
+  launcherPath,
+  launcherScript,
+  execSyncImpl = execSync,
+  powershellExe = windowsInteropPowerShell(),
+} = {}) {
+  const managedLauncherPath = windowsPath(launcherPath);
+  const launcherDir = pathWin32.dirname(managedLauncherPath);
+  const script = [
+    `New-Item -ItemType Directory -Force -Path '${escapePs(launcherDir)}' | Out-Null`,
+    `Set-Content -Path '${escapePs(managedLauncherPath)}' -Value @'`,
+    launcherScript,
+    `@' -Encoding UTF8`,
+  ].join('\n');
+  execSyncImpl(
+    withPowerShell(`-NoProfile -Command "& { ${script.replace(/"/g, '\\"')} }"`, powershellExe),
+    { stdio: 'pipe' },
+  );
+}
+
 export async function stopManagedHeadroomLite({
   port,
   osKind,
@@ -251,23 +347,37 @@ export async function stopManagedHeadroomLite({
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   unlinkSyncImpl = unlinkSync,
-  stopPidImpl = (pid) => defaultStopPid(pid, osKind, execSyncImpl),
+  powershellExe = windowsInteropPowerShell(),
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  normalizeWindowsFilesystemPathImpl = normalizeWindowsFilesystemPath,
+  stopPidImpl = (pid) => defaultStopPid(pid, osKind, execSyncImpl, { powershellExe }),
   waitImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl),
+  binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl, {
+    powershellExe,
+    normalizeWindowsFilesystemPathImpl,
+  }),
 } = {}) {
-  const pidPath = headroomLitePidPath({ home });
-  const launcherPath = headroomLiteLauncherPath({ home, osKind });
-  const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl);
-  const managedPid = readManagedHeadroomLitePid(pidPath, { existsSyncImpl, readFileSyncImpl });
-  const managedProcessInfo = managedPid ? headroomLiteProcessInfo(managedPid, osKind, execSyncImpl) : null;
+  const managedHome = resolveManagedWindowsHome(home, osKind, defaultWindowsHomeImpl);
+  const pidPath = headroomLitePidPath({ home: managedHome });
+  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind });
+  const managedBinaryPath = normalizeManagedWindowsPath(binaryPath, osKind, normalizeWindowsFilesystemPathImpl);
+  const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl, { powershellExe });
+  const managedPid = readManagedHeadroomLitePid(pidPath, {
+    osKind,
+    execSyncImpl,
+    existsSyncImpl,
+    readFileSyncImpl,
+    powershellExe,
+  });
+  const managedProcessInfo = managedPid ? headroomLiteProcessInfo(managedPid, osKind, execSyncImpl, { powershellExe }) : null;
   const trackedPidOwned = !!managedPid
-    && headroomLiteMatchesManagedPid(managedProcessInfo, binaryPath)
+    && headroomLiteMatchesManagedPid(managedProcessInfo, managedBinaryPath)
     && headroomLiteMatchesManagedLauncher(managedProcessInfo, launcherPath);
 
   if (!ownerPid) {
     if (managedPid && managedProcessInfo) {
       if (!trackedPidOwned) {
-        try { unlinkSyncImpl(pidPath); } catch {}
+        removeManagedStateFile(pidPath, { osKind, execSyncImpl, unlinkSyncImpl, powershellExe });
         return { stopped: false, conflict: false, running: false };
       }
       try {
@@ -282,22 +392,22 @@ export async function stopManagedHeadroomLite({
         };
       }
       await waitImpl(400);
-      try { unlinkSyncImpl(pidPath); } catch {}
+      removeManagedStateFile(pidPath, { osKind, execSyncImpl, unlinkSyncImpl, powershellExe });
       return { stopped: true, conflict: false, running: true, ownerPid: managedPid };
     }
     if (managedPid) {
-      try { unlinkSyncImpl(pidPath); } catch {}
+      removeManagedStateFile(pidPath, { osKind, execSyncImpl, unlinkSyncImpl, powershellExe });
     }
     return { stopped: false, conflict: false, running: false };
   }
 
-  const processInfo = headroomLiteProcessInfo(ownerPid, osKind, execSyncImpl);
+  const processInfo = headroomLiteProcessInfo(ownerPid, osKind, execSyncImpl, { powershellExe });
   const matchesLauncher = headroomLiteMatchesManagedLauncher(processInfo, launcherPath);
-  const matchesManagedPid = headroomLiteMatchesManagedPid(processInfo, binaryPath);
+  const matchesManagedPid = headroomLiteMatchesManagedPid(processInfo, managedBinaryPath);
 
   if (!matchesManagedPid || !matchesLauncher) {
     if (managedPid && managedPid === ownerPid) {
-      try { unlinkSyncImpl(pidPath); } catch {}
+      removeManagedStateFile(pidPath, { osKind, execSyncImpl, unlinkSyncImpl, powershellExe });
     }
     return {
       stopped: false,
@@ -321,7 +431,7 @@ export async function stopManagedHeadroomLite({
   }
 
   await waitImpl(400);
-  try { unlinkSyncImpl(pidPath); } catch {}
+  removeManagedStateFile(pidPath, { osKind, execSyncImpl, unlinkSyncImpl, powershellExe });
   return { stopped: true, conflict: false, running: true, ownerPid };
 }
 
@@ -341,10 +451,17 @@ export async function restartHeadroomLite(port, osKind, _cfg, {
   chmodSyncImpl = chmodSync,
   stopManagedHeadroomLiteImpl = stopManagedHeadroomLite,
   waitForHeadroomLiteImpl = waitForHeadroomLite,
+  powershellExe = windowsInteropPowerShell(),
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  normalizeWindowsFilesystemPathImpl = normalizeWindowsFilesystemPath,
   log = console.log,
   warn = console.warn,
 } = {}) {
-  const binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl);
+  const managedHome = resolveManagedWindowsHome(home, osKind, defaultWindowsHomeImpl);
+  const binaryPath = resolveHeadroomLiteBinary(osKind, execSyncImpl, {
+    powershellExe,
+    normalizeWindowsFilesystemPathImpl,
+  });
   if (!binaryPath) {
     log('  ↷ headroom-lite not installed — run: npm i -g @yehsuf/headroom-lite');
     return false;
@@ -353,24 +470,35 @@ export async function restartHeadroomLite(port, osKind, _cfg, {
   const stopResult = await stopManagedHeadroomLiteImpl({
     port,
     osKind,
-    home,
+    home: managedHome,
     execSyncImpl,
     binaryPath,
+    powershellExe,
   });
   if (stopResult?.conflict) {
     warn(`  ⚠ ${stopResult.reason}`);
     return false;
   }
 
-  const launcherPath = headroomLiteLauncherPath({ home, osKind });
-  const pidPath = headroomLitePidPath({ home });
-  mkdirSyncImpl(headroomLiteStateDir(home), { recursive: true });
-  writeFileSyncImpl(launcherPath, buildHeadroomLiteLauncherScript({ binaryPath, port, pidPath, osKind }), 'utf8');
-  if (osKind !== 'windows') chmodSyncImpl(launcherPath, 0o755);
+  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind });
+  const pidPath = headroomLitePidPath({ home: managedHome });
+  const launcherScript = buildHeadroomLiteLauncherScript({ binaryPath, port, pidPath, osKind });
+  if (osKind === 'windows') {
+    persistWindowsHeadroomLiteLauncher({
+      launcherPath,
+      launcherScript,
+      execSyncImpl,
+      powershellExe,
+    });
+  } else {
+    mkdirSyncImpl(headroomLiteStateDir(managedHome), { recursive: true });
+    writeFileSyncImpl(launcherPath, launcherScript, 'utf8');
+    chmodSyncImpl(launcherPath, 0o755);
+  }
 
   try {
     const child = osKind === 'windows'
-      ? spawnImpl('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcherPath], {
+      ? spawnImpl(powershellExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcherPath], {
           detached: true,
           stdio: 'ignore',
         })
