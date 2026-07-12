@@ -843,10 +843,22 @@ async function main() {
   } else { skip(`ast-grep (${tools.astgrep.version})`); }
 
   if (copilotHudEnabled && copilot) {
-    const jqPath = await which('jq');
-    if (!jqPath) {
-      warn('copilot-hud requested but jq not found — skipping');
-    } else {
+    // jq is only needed by copilot-hud's POSIX shell hooks — not on Windows.
+    // On Windows, skip the check entirely. On Mac/Linux, try to auto-install.
+    let jqOk = os === 'windows';
+    if (!jqOk) {
+      jqOk = Boolean(await which('jq'));
+      if (!jqOk) {
+        if (os === 'darwin') {
+          console.log('  Installing jq (required by copilot-hud)...');
+          try { execSync('brew install jq', { stdio: 'inherit' }); jqOk = true; ok('jq'); }
+          catch { warn('jq install failed — install manually: brew install jq'); }
+        } else {
+          warn('copilot-hud requires jq — install it (e.g. sudo apt-get install jq) then re-run');
+        }
+      }
+    }
+    if (jqOk) {
       const copilotPath = await which('copilot');
       if (!copilotPath) {
         warn('copilot-hud requested but Copilot CLI not found — skipping');
