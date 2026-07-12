@@ -848,20 +848,21 @@ export function installWindowsWatchdogTask({
 export function installWatchdog({
   home,
   enabled = false,
-  headroomPort = 8787,
+  headroomPort,
   copilotHeadroomPort,
   intervalMinutes = 2,
 } = {}) {
   if (!enabled) return null;
-  const tasks = [
-    installWindowsWatchdogTask({
+  const tasks = [];
+  if (headroomPort != null) {
+    tasks.push(installWindowsWatchdogTask({
       id: HEADROOM_SERVICE_ID,
       serviceName: 'Myelin Headroom',
       healthUrl: headroomHealthUrl(headroomPort),
       intervalMinutes,
       home,
-    }),
-  ];
+    }));
+  }
   if (copilotHeadroomPort) {
     tasks.push(installWindowsWatchdogTask({
       id: COPILOT_HEADROOM_SERVICE_ID,

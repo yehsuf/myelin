@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
+import { selectedEngine } from '../config/engine-runtime.mjs';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
 
 const SEP = '─'.repeat(60);
@@ -138,8 +139,16 @@ export function renderLocalStatsRows(payload) {
 
 const LOCAL_STATS_SERVICE_DESCRIPTORS = [
   {
+    label: 'headroom',
+    isEnabled: (config) => selectedEngine(config) === 'headroom',
+    port: (config) => config?.proxy?.headroom?.port ?? 8787,
+    healthUrl: (config) => headroomHealthUrl(config?.proxy?.headroom?.port ?? 8787),
+    statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom?.port ?? 8787}/stats`,
+    formatter: renderLocalStatsRows,
+  },
+  {
     label: 'headroom-lite',
-    isEnabled: (config) => config?.proxy?.headroom_lite?.enabled !== false,
+    isEnabled: (config) => selectedEngine(config) === 'headroom_lite',
     port: (config) => config?.proxy?.headroom_lite?.port ?? 8790,
     healthUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/health`,
     statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/stats`,

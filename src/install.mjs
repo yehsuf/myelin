@@ -20,6 +20,7 @@ import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
+import { buildServiceEnginePlan } from './config/engine-runtime.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import {
   installTokenOptimizerForCopilot,
@@ -82,6 +83,63 @@ function isVersionAtLeast(version, minimum) {
     if (left < right) return false;
   }
   return true;
+}
+
+async function removeManagedHeadroomRegistration({ os, winManager, headroomPort = 8787, warnFn = warn, okFn = ok }) {
+  if (os === 'darwin') {
+    try {
+      const { plistPath } = await import('./service/launchd.mjs');
+      const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
+      try { execSync(`launchctl bootout gui/${uid}/com.myelin.headroom`, { stdio: 'ignore' }); } catch {}
+      const path = plistPath();
+      if (existsSync(path)) unlinkSync(path);
+      okFn('obsolete headroom launchd service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (os === 'linux') {
+    try {
+      const { unitPath } = await import('./service/systemd.mjs');
+      try { execSync('systemctl --user disable --now myelin-headroom.service', { stdio: 'pipe' }); } catch {}
+      const path = unitPath();
+      if (existsSync(path)) unlinkSync(path);
+      try { execSync('systemctl --user daemon-reload', { stdio: 'pipe' }); } catch {}
+      okFn('obsolete headroom systemd service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (winManager === 'winsw') {
+    try {
+      const { HEADROOM_SERVICE_ID, uninstallWinswService } = await import('./service/windows.mjs');
+      uninstallWinswService({ id: HEADROOM_SERVICE_ID });
+      okFn('obsolete headroom WinSW service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  try {
+    try {
+      execSync(
+        `powershell -Command "Get-NetTCPConnection -LocalPort ${headroomPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
+        { stdio: 'pipe' }
+      );
+    } catch {}
+    execSync(
+      String.raw`powershell -NoProfile -Command "Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`,
+      { stdio: 'pipe' }
+    );
+    okFn('obsolete headroom Run key removed');
+  } catch (e) {
+    warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+  }
 }
 
 async function detectHeadroomFork() {
@@ -711,6 +769,10 @@ async function main() {
   // never deletes keys — only overlays what's present in the update object).
   let codegraphReady = codegraphEnabled && tools.codegraph.installed;
   let port = existingCfg.proxy.headroom.port;
+  let persistHeadroomFallback = false;
+  let selectedProxyPort = existingCfg.proxy?.engine === 'headroom_lite'
+    ? (existingCfg.proxy?.headroom_lite?.port ?? 8790)
+    : port;
   if (!(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {
@@ -721,6 +783,7 @@ async function main() {
       ok(`Using port ${port}`);
     }
   }
+  if (existingCfg.proxy?.engine !== 'headroom_lite') selectedProxyPort = port;
 
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
@@ -1022,6 +1085,35 @@ async function main() {
     step('[4/7] Background service...');
     const binPath = headroomBinPath();
     const cfg = await loadConfig(DEFAULT_CONFIG_PATH);
+    const enginePlan = buildServiceEnginePlan(cfg);
+    if (enginePlan.selectedEngine === 'headroom') {
+      enginePlan.headroomPort = port;
+      enginePlan.selectedPort = port;
+    }
+    if (enginePlan.selectedEngine === 'headroom_lite') {
+      const { detectTool } = await import('./detect/tools.mjs');
+      const headroomLite = await detectTool('headroom-lite', '--version');
+      if (!headroomLite.installed) {
+        warn('headroom-lite selected but not installed — keeping managed headroom until `myelin restart` can start headroom-lite');
+        enginePlan.selectedEngine = 'headroom';
+        enginePlan.selectedPort = port;
+        enginePlan.shouldRunManagedHeadroom = true;
+        enginePlan.shouldRemoveManagedHeadroom = false;
+        persistHeadroomFallback = true;
+      } else {
+        const { restartHeadroomLite } = await import('./cli/restart.mjs');
+        const healthy = await restartHeadroomLite(enginePlan.selectedPort, os);
+        if (!healthy) {
+          warn('headroom-lite selected but not healthy after start — keeping managed headroom until a later restart succeeds');
+          enginePlan.selectedEngine = 'headroom';
+          enginePlan.selectedPort = port;
+          enginePlan.shouldRunManagedHeadroom = true;
+          enginePlan.shouldRemoveManagedHeadroom = false;
+          persistHeadroomFallback = true;
+        }
+      }
+    }
+    selectedProxyPort = enginePlan.selectedPort;
     const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
     const mitmCfg = cfg.proxy?.mitm ?? {};
     const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
@@ -1030,19 +1122,22 @@ async function main() {
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
-    // Skip re-registration if already healthy (avoids false "no response" on re-run)
-    const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
-    if (!alreadyHealthy) {
-      await installService({ headroomBin: binPath, port, envVars,
-        interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
-        logPath: join(home, '.myelin', 'headroom.log'), manager: winManager });
-      ok(`service registered (port ${port})`);
-      console.log('  Waiting for proxy...');
-      const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
-      healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
-    } else {
-      ok(`service registered (port ${port})`);
-      ok(`proxy healthy on :${port}`);
+    if (enginePlan.shouldRunManagedHeadroom) {
+      const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
+      if (!alreadyHealthy) {
+        await installService({ headroomBin: binPath, port, envVars,
+          interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
+          logPath: join(home, '.myelin', 'headroom.log'), manager: winManager });
+        ok(`service registered (port ${port})`);
+        console.log('  Waiting for proxy...');
+        const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
+        healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
+      } else {
+        ok(`service registered (port ${port})`);
+        ok(`proxy healthy on :${port}`);
+      }
+    } else if (enginePlan.shouldRemoveManagedHeadroom) {
+      await removeManagedHeadroomRegistration({ os, winManager, headroomPort: enginePlan.headroomPort });
     }
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
@@ -1054,7 +1149,7 @@ async function main() {
       // value survives a config change.
       const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
       const mitmEnv = {
-        MYELIN_HEADROOM_PORT: String(port),
+        MYELIN_HEADROOM_PORT: String(enginePlan.selectedPort),
         MYELIN_COMPRESS,
         // When copilot_headroom is enabled (and compression not disabled), tell
         // the addon to redirect Copilot traffic to the dedicated headroom
@@ -1131,7 +1226,7 @@ async function main() {
         home,
         enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
         intervalMinutes: watchdogInterval,
-        headroomPort: port,
+        headroomPort: enginePlan.shouldRunManagedHeadroom ? enginePlan.selectedPort : undefined,
         mitmPort: mitmCfg.port ?? 8888,
         ...(copilotHeadroomCfg.enabled && mitmdumpBin ? {
           copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
@@ -1161,6 +1256,15 @@ async function main() {
       index_tier: flags['index-tier'],
     }), DEFAULT_CONFIG_PATH);
     ok(`config.yaml created`);
+  } else if (persistHeadroomFallback) {
+    await writeConfig(mergeDeep(await loadConfig(DEFAULT_CONFIG_PATH), {
+      proxy: {
+        engine: 'headroom',
+        headroom: { enabled: true, port },
+        headroom_lite: { enabled: false },
+      },
+    }), DEFAULT_CONFIG_PATH);
+    ok('config.yaml updated to headroom fallback');
   } else { skip('config.yaml already exists'); }
 
   // Claude Code settings.json
@@ -1219,11 +1323,11 @@ async function main() {
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
-        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${selectedProxyPort}`,
         ENABLE_PROMPT_CACHING_1H: '1',
         CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50',
         CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-4-6',
-        HEADROOM_PORT: String(port),
+        HEADROOM_PORT: String(selectedProxyPort),
         ...sslEnv,
       },
       mcpServers: claudeMcpServers,
@@ -1249,7 +1353,7 @@ async function main() {
       provider: 'claude',
       model: installCfg.copilot?.model,
       cfg: installCfg,
-      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${port}.`],
+      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${selectedProxyPort}.`],
     });
     writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
@@ -1372,7 +1476,7 @@ ${initSkillBody}`);
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
-    const claudeAlias = buildClaudeWrapper({ os, headroomPort: port });
+    const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
     const repoRoot = resolveRepoRoot(home, os);
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
@@ -1403,7 +1507,7 @@ ${initSkillBody}`);
       // NOTE: provider-specific env vars (ANTHROPIC_BASE_URL, HTTPS_PROXY) are
       // deliberately NOT set in $PROFILE — they live only inside the _copilot
       // and _claude wrappers so they can't cross-contaminate each other.
-      const psEnv = `$env:HEADROOM_PORT = "${port}"`;
+      const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
       const psPaths = [
         `$env:USERPROFILE\\.local\\bin`,
@@ -1415,7 +1519,7 @@ ${initSkillBody}`);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
@@ -1482,7 +1586,7 @@ ${initSkillBody}`);
     const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
-      HEADROOM_PORT: String(port),
+      HEADROOM_PORT: String(selectedProxyPort),
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
