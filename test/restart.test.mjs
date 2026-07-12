@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   buildCopilotHeadroomTaskEnv,
   buildManagedHeadroomEnv,
+  defaultRestartCopilotHeadroom,
   defaultRestartManagedHeadroom,
   defaultRestartMitm,
   restartHeadroomLite,
@@ -24,6 +25,67 @@ describe('buildCopilotHeadroomTaskEnv', () => {
     assert.equal(env.HEADROOM_MODE, 'cache');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost,::1');
     assert.match(env.HEADROOM_WORKSPACE_DIR, /[\\/]Users[\\/]alice[\\/]\.myelin[\\/]headroom-copilot-8788$/);
+  });
+});
+
+describe('defaultRestartCopilotHeadroom', () => {
+  it('rebuilds the registry launcher from current config and stops the previous managed instance before spawn', async () => {
+    const actions = [];
+    const oldRunValue = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1"';
+
+    await defaultRestartCopilotHeadroom({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          mitm: { egress_port: 9898 },
+          copilot_headroom: {
+            enabled: true,
+            port: 9797,
+            mode: 'observe',
+          },
+        },
+      },
+      winManager: 'registry',
+      log: () => {},
+      warn: () => {},
+      execSyncImpl: () => Buffer.from(`${oldRunValue}\n`),
+      homedirImpl: () => 'C:\\Users\\alice',
+      headroomBinPathImpl: () => 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      stopManagedCopilotHeadroomProcessImpl: (opts) => actions.push({ type: 'stop', opts }),
+      waitImpl: async () => {},
+      persistCopilotHeadroomLauncherImpl: (opts) => {
+        actions.push({ type: 'persist', opts });
+        return {
+          exe: 'powershell.exe',
+          args: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
+        };
+      },
+      spawnDetachedServiceImpl: (taskName, exe, args) => actions.push({ type: 'spawn', taskName, exe, args }),
+    });
+
+    assert.equal(actions.length, 3);
+    assert.equal(actions[0].type, 'stop');
+    assert.equal(actions[0].opts.runKeyValue, oldRunValue);
+    assert.equal(typeof actions[0].opts.execSyncImpl, 'function');
+    assert.deepEqual(actions[1], {
+      type: 'persist',
+      opts: {
+        headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+        argStr: 'proxy --port 9797 --mode observe --connect-timeout-seconds 10',
+        taskEnv: buildCopilotHeadroomTaskEnv({
+          home: 'C:\\Users\\alice',
+          copilotPort: 9797,
+          egressPort: 9898,
+          mode: 'observe',
+        }),
+      },
+    });
+    assert.deepEqual(actions[2], {
+      type: 'spawn',
+      taskName: 'MyelinCopilotHeadroom',
+      exe: 'powershell.exe',
+      args: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
+    });
   });
 });
 
@@ -223,6 +285,34 @@ describe('headroom-lite ownership guards', () => {
     assert.equal(result.stopped, true);
     assert.equal(result.conflict, false);
     assert.deepEqual(killed, [5150]);
+  });
+
+  it('stops the recorded managed pid before replacing state when the configured Lite port changes', async () => {
+    const killed = [];
+    let unlinked = 0;
+    const result = await stopManagedHeadroomLite({
+      port: 8791,
+      osKind: 'linux',
+      home: '/Users/alice',
+      execSyncImpl: (command) => {
+        if (command.includes('lsof -nP -tiTCP:8791')) return Buffer.from('');
+        if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
+        if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /Users/alice/.myelin/state/headroom-lite/start-headroom-lite.sh\n');
+        return Buffer.from('');
+      },
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => '5150\n',
+      unlinkSyncImpl: () => { unlinked += 1; },
+      stopPidImpl: (pid) => killed.push(pid),
+      waitImpl: async () => {},
+      binaryPath: '/usr/local/bin/headroom-lite',
+    });
+
+    assert.equal(result.stopped, true);
+    assert.equal(result.conflict, false);
+    assert.deepEqual(killed, [5150]);
+    assert.equal(unlinked, 1);
   });
 });
 

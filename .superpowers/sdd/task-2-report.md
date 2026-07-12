@@ -46,3 +46,8 @@
 - Registry-mode `mitmServiceStatus()` now validates the persisted managed launcher, PID file, executable path, parent launcher path, and exact command line before reporting Running.
 - Added regression coverage for the status-script generator and parser so an unrelated `mitmdump` snapshot cannot satisfy the managed service check.
 - `myelin verify` stays red when only an unrelated `mitmdump` exists.
+
+## Transition Edge Fix
+- Windows registry-mode `myelin restart` now always rebuilds/persists the Copilot-Headroom launcher from current config before spawning it, while stopping the previously managed instance from the recorded Run-key identity so port changes do not leave the old owned process behind.
+- Headroom Lite restart now verifies the recorded managed PID before unlinking or replacing state; if the tracked owned Lite process is still alive on the old port, restart stops it first instead of forgetting ownership and starting a second managed Lite instance.
+- Added restart regressions for both edges: Copilot-Headroom launcher regeneration on Windows registry restarts and Lite managed-PID cleanup during port transitions.

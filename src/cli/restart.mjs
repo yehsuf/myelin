@@ -231,8 +231,38 @@ export async function stopManagedHeadroomLite({
   const launcherPath = headroomLiteLauncherPath({ home, osKind });
   const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl);
   const managedPid = readManagedHeadroomLitePid(pidPath, { existsSyncImpl, readFileSyncImpl });
+  const managedProcessInfo = managedPid ? headroomLiteProcessInfo(managedPid, osKind, execSyncImpl) : null;
+  const trackedPidOwned = !!managedPid && (
+    headroomLiteMatchesManagedPid(managedProcessInfo, binaryPath)
+    || headroomLiteMatchesManagedLauncher(managedProcessInfo, launcherPath)
+  );
 
   if (!ownerPid) {
+    if (managedPid && managedProcessInfo) {
+      if (!trackedPidOwned) {
+        return {
+          stopped: false,
+          conflict: true,
+          running: true,
+          ownerPid: managedPid,
+          reason: `tracked headroom-lite pid ${managedPid} is no longer Myelin-managed`,
+        };
+      }
+      try {
+        stopPidImpl(managedPid);
+      } catch (error) {
+        return {
+          stopped: false,
+          conflict: true,
+          running: true,
+          ownerPid: managedPid,
+          reason: `failed to stop managed headroom-lite pid ${managedPid}: ${error?.message?.split?.('\n')?.[0] ?? error}`,
+        };
+      }
+      await waitImpl(400);
+      try { unlinkSyncImpl(pidPath); } catch {}
+      return { stopped: true, conflict: false, running: true, ownerPid: managedPid };
+    }
     if (managedPid) {
       try { unlinkSyncImpl(pidPath); } catch {}
     }
@@ -382,10 +412,14 @@ Start-Process -FilePath '${escapePs(windowsPath(headroomBin))}' -ArgumentList '$
 `.trim();
 }
 
+function buildCopilotHeadroomArgString({ port, mode }) {
+return `proxy --port ${port} --mode ${mode ?? 'cache'} --connect-timeout-seconds 10`;
+}
+
 function persistCopilotHeadroomLauncher({ headroomBin, argStr, taskEnv }) {
-  const workingDirectory = taskEnv.HEADROOM_WORKSPACE_DIR;
-  mkdirSync(workingDirectory, { recursive: true });
-  const launcherPath = join(workingDirectory, 'start-copilot-headroom.ps1');
+const workingDirectory = taskEnv.HEADROOM_WORKSPACE_DIR;
+mkdirSync(workingDirectory, { recursive: true });
+const launcherPath = join(workingDirectory, 'start-copilot-headroom.ps1');
   writeFileSync(launcherPath, copilotHeadroomLauncherScript({
     headroomBin,
     argStr,
@@ -398,6 +432,62 @@ function persistCopilotHeadroomLauncher({ headroomBin, argStr, taskEnv }) {
     { stdio: 'pipe' },
   );
   return { exe: 'powershell.exe', args: `-NoProfile -ExecutionPolicy Bypass -File "${windowsPath(launcherPath)}"` };
+}
+
+function parseCopilotHeadroomRunKeyValue(runKeyValue = '') {
+  const value = String(runKeyValue ?? '').trim();
+  const launcherMatch = value.match(/-File\s+"([^"]*start-copilot-headroom\.ps1)"/i);
+  if (launcherMatch) return { launcherPath: launcherMatch[1] };
+  const quoted = value.match(/^"([^"]+headroom(?:\.exe)?)"\s+([\s\S]*)$/i);
+  if (quoted) return { executablePath: quoted[1], argStr: quoted[2].trim() };
+  const bare = value.match(/^(\S+headroom(?:\.exe)?)\s+([\s\S]*)$/i);
+  if (bare) return { executablePath: bare[1], argStr: bare[2].trim() };
+  return {};
+}
+
+function parseLauncherStartProcess(script = '') {
+  const match = String(script ?? '').match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])+)'/m);
+  if (!match) return null;
+  return {
+    executablePath: match[1].replace(/''/g, "'"),
+    argStr: match[2].replace(/''/g, "'"),
+  };
+}
+
+function portFromArgString(argStr = '') {
+  const match = String(argStr ?? '').match(/(?:^|\s)--port\s+(\d+)(?:\s|$)/);
+  if (!match) return null;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+async function defaultStopManagedCopilotHeadroomProcess({
+  runKeyValue,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  stopHeadroomProcessByExecutablePathImpl,
+} = {}) {
+  if (!runKeyValue) return false;
+  const parsedRunKey = parseCopilotHeadroomRunKeyValue(runKeyValue);
+  let executablePath = parsedRunKey.executablePath ?? '';
+  let argStr = parsedRunKey.argStr ?? '';
+  if (parsedRunKey.launcherPath && existsSyncImpl(parsedRunKey.launcherPath)) {
+    const parsedLauncher = parseLauncherStartProcess(readFileSyncImpl(parsedRunKey.launcherPath, 'utf8'));
+    executablePath = parsedLauncher?.executablePath ?? executablePath;
+    argStr = parsedLauncher?.argStr ?? argStr;
+  }
+  const port = portFromArgString(argStr);
+  if (!port || !executablePath) return false;
+  const { stopHeadroomProcessByExecutablePath } = stopHeadroomProcessByExecutablePathImpl
+    ? { stopHeadroomProcessByExecutablePath: stopHeadroomProcessByExecutablePathImpl }
+    : await import('../service/windows.mjs');
+  stopHeadroomProcessByExecutablePath({
+    port,
+    executablePath,
+    execSyncImpl,
+  });
+  return true;
 }
 
 function stopProcessByPort(port, osKind, execSyncFn = execSync) {
@@ -554,7 +644,20 @@ export async function defaultRestartManagedHeadroom({
   }
 }
 
-async function defaultRestartCopilotHeadroom({ os, cfg, winManager, log, warn }) {
+export async function defaultRestartCopilotHeadroom({
+  os,
+  cfg,
+  winManager,
+  log,
+  warn,
+  execSyncImpl = execSync,
+  homedirImpl = homedir,
+  headroomBinPathImpl = headroomBinPath,
+  persistCopilotHeadroomLauncherImpl = persistCopilotHeadroomLauncher,
+  stopManagedCopilotHeadroomProcessImpl = defaultStopManagedCopilotHeadroomProcess,
+  spawnDetachedServiceImpl,
+  waitImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
   if (!cfg?.proxy?.copilot_headroom?.enabled) return;
   const port = cfg?.proxy?.copilot_headroom?.port ?? 8788;
   try {
@@ -578,25 +681,34 @@ async function defaultRestartCopilotHeadroom({ os, cfg, winManager, log, warn })
       log(`  ✓ copilot-headroom restarted (:${port})`);
       return;
     }
-    stopProcessByPort(port, os);
-    await new Promise(r => setTimeout(r, 500));
-    const regVal = execSync(
+    const home = homedirImpl();
+    const regVal = trimShellValue(execSyncImpl(
       `powershell -Command "(Get-ItemProperty '${REG_RUN}' -Name ${COPILOT_HEADROOM_RUN_KEY} -ErrorAction SilentlyContinue).${COPILOT_HEADROOM_RUN_KEY}"`,
       { stdio: 'pipe' },
-    ).toString().trim();
-    if (!regVal) throw new Error('registry entry not found — run: myelin install --yes');
-    const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
-    if (!m) throw new Error('registry entry malformed');
+    ).toString());
+    await stopManagedCopilotHeadroomProcessImpl({
+      runKeyValue: regVal,
+      execSyncImpl,
+    });
+    await waitImpl(500);
     const egressPort = cfg?.proxy?.mitm?.egress_port ?? 8889;
     const taskEnv = buildCopilotHeadroomTaskEnv({
+      home,
       copilotPort: port,
       egressPort,
       mode: cfg?.proxy?.copilot_headroom?.mode ?? 'cache',
     });
-    const { spawnDetachedService } = await import('../service/windows.mjs');
-    const launch = /start-copilot-headroom\.ps1/i.test(regVal)
-      ? { exe: m[1], args: m[2].trim() }
-      : persistCopilotHeadroomLauncher({ headroomBin: m[1], argStr: m[2].trim(), taskEnv });
+    const launch = persistCopilotHeadroomLauncherImpl({
+      headroomBin: headroomBinPathImpl(),
+      argStr: buildCopilotHeadroomArgString({
+        port,
+        mode: cfg?.proxy?.copilot_headroom?.mode ?? 'cache',
+      }),
+      taskEnv,
+    });
+    const { spawnDetachedService } = spawnDetachedServiceImpl
+      ? { spawnDetachedService: spawnDetachedServiceImpl }
+      : await import('../service/windows.mjs');
     spawnDetachedService('MyelinCopilotHeadroom', launch.exe, launch.args);
     log(`  ✓ copilot-headroom restarted (:${port})`);
   } catch (e) {

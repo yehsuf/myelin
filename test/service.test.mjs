@@ -601,7 +601,7 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     assert.ok(script.includes('$managedPid = 4321'));
     assert.ok(script.includes(`ProcessId = $managedPid`));
     assert.ok(script.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe'`));
-    assert.ok(script.includes(`CommandLine -match '--listen-port\\ 8888\\ -s\\ "C:\\\\Users\\\\alice\\\\.myelin\\\\services\\\\myelin-mitmproxy\\\\addon\\.py"$'`));
+    assert.ok(script.includes(`CommandLine -match '--listen-port 8888 -s "C:\\\\Users\\\\alice\\\\\\.myelin\\\\services\\\\myelin-mitmproxy\\\\addon\\.py"$'`));
     assert.ok(script.includes(`start-mitmproxy\\.ps1`));
   });
 });
