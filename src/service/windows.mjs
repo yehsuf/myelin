@@ -245,6 +245,13 @@ function stopByPortScript(processExeName, port, { requiredArgs = [], requiredExe
   return `Get-CimInstance Win32_Process -Filter "Name = '${processExeName}'" | Where-Object { ${clauses.join(' -and ')} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
 }
 
+function portFromArgString(argStr = '') {
+  const match = String(argStr ?? '').match(/(?:^|\s)--port\s+(\d+)(?:\s|$)/);
+  if (!match) return null;
+  const port = Number(match[1]);
+  return Number.isInteger(port) && port > 0 ? port : null;
+}
+
 export function managedHeadroomLauncherPath({ home } = {}) {
   return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
 }
@@ -290,22 +297,104 @@ export function buildManagedHeadroomStopScript({ port, processExeName = 'headroo
   ].join('\n');
 }
 
-export function isLegacyManagedHeadroomRunKeyValue({ port, runKeyValue = '' } = {}) {
+function parseLegacyManagedHeadroomRunKeyValue({ runKeyValue = '' } = {}) {
   const value = String(runKeyValue ?? '');
-  return !/start-headroom\.ps1/i.test(value)
-    && /headroom(?:\.exe)?/i.test(value)
-    && /proxy/i.test(value)
-    && new RegExp(`--port\\s+${port}(?:\\D|$)`, 'i').test(value);
+  if (/start-headroom\.ps1/i.test(value) || !/headroom(?:\.exe)?/i.test(value) || !/proxy/i.test(value)) return null;
+  const trimmed = String(runKeyValue ?? '').trim();
+  const quoted = trimmed.match(/^"([^"]+headroom(?:\.exe)?)"\s+([\s\S]*)$/i);
+  const bare = trimmed.match(/^([^"\s]+headroom(?:\.exe)?)\s+([\s\S]*)$/i);
+  const match = quoted ?? bare;
+  if (!match) return null;
+  const argStr = match[2].trim();
+  if (!/^proxy\b/i.test(argStr)) return null;
+  const port = portFromArgString(argStr);
+  if (!port) return null;
+  return { executablePath: match[1], argStr, port };
 }
 
-function parseLegacyManagedHeadroomRunKeyValue({ port, runKeyValue = '' } = {}) {
-  if (!isLegacyManagedHeadroomRunKeyValue({ port, runKeyValue })) return null;
-  const trimmed = String(runKeyValue ?? '').trim();
-  const quoted = trimmed.match(/^"([^"]+headroom(?:\.exe)?)"\s+proxy\b/i);
-  if (quoted) return { executablePath: quoted[1] };
-  const bare = trimmed.match(/^([^"\s]+headroom(?:\.exe)?)\s+proxy\b/i);
-  if (bare) return { executablePath: bare[1] };
+export function isLegacyManagedHeadroomRunKeyValue({ port, runKeyValue = '' } = {}) {
+  const parsed = parseLegacyManagedHeadroomRunKeyValue({ runKeyValue });
+  if (!parsed) return false;
+  const requestedPort = Number(port);
+  return Number.isInteger(requestedPort) ? parsed.port === requestedPort : true;
+}
+
+function isWindowsAbsolutePath(filePath = '') {
+  return /^(?:[a-z]:\\|\\\\)/i.test(windowsPath(filePath));
+}
+
+function readWindowsScriptText(scriptPath, {
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+} = {}) {
+  if (!scriptPath) return '';
+  try {
+    if (existsSyncImpl(scriptPath)) {
+      return String(readFileSyncImpl(scriptPath, 'utf8') ?? '');
+    }
+  } catch {}
+  if (!isWindowsAbsolutePath(scriptPath)) return '';
+  try {
+    return execSyncImpl(
+      `powershell -NoProfile -Command "if (Test-Path '${escapePs(windowsPath(scriptPath))}') { Get-Content -Path '${escapePs(windowsPath(scriptPath))}' -Raw }"`,
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
+  } catch {
+    return '';
+  }
+}
+
+function parseLauncherStartProcess(script = '') {
+  const match = String(script ?? '').match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])+)'/m);
+  if (!match) return null;
+  return {
+    executablePath: match[1].replace(/''/g, "'"),
+    argStr: match[2].replace(/''/g, "'"),
+  };
+}
+
+function parseCopilotHeadroomRunKeyValue(runKeyValue = '') {
+  const value = String(runKeyValue ?? '').trim();
+  const launcherMatch = value.match(/-File\s+"([^"]*start-copilot-headroom\.ps1)"/i);
+  if (launcherMatch) return { launcherPath: launcherMatch[1] };
+  const quoted = value.match(/^"([^"]+headroom(?:\.exe)?)"\s+([\s\S]*)$/i);
+  if (quoted) return { executablePath: quoted[1], argStr: quoted[2].trim() };
+  const bare = value.match(/^(\S+headroom(?:\.exe)?)\s+([\s\S]*)$/i);
+  if (bare) return { executablePath: bare[1], argStr: bare[2].trim() };
   return null;
+}
+
+function buildManagedHeadroomStatusScript({ executablePath, argStr, launcherPath, port, processExeName = 'headroom.exe' } = {}) {
+  const effectivePort = Number(port);
+  const commandClauses = [
+    `$_.CommandLine`,
+    `$_.CommandLine -match 'proxy'`,
+    argStr
+      ? `$_.CommandLine -match '${escapePs(escapePsRegex(argStr))}$'`
+      : `$_.CommandLine -match '(^|\\\\s)--port\\\\s+${effectivePort}(\\\\s|$)'`,
+    ...(executablePath ? [`$_.ExecutablePath -eq '${escapePs(windowsPath(executablePath))}'`] : []),
+  ];
+  const exeName = escapePs((executablePath ? windowsPath(executablePath) : processExeName).split('\\').pop() ?? processExeName);
+  if (launcherPath) {
+    const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+    return [
+      `Get-CimInstance Win32_Process -Filter "Name = '${exeName}'" | ForEach-Object {`,
+      `  if (${commandClauses.join(' -and ')}) {`,
+      `    $parent = if ($_.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }`,
+      `    if ($parent -and $parent.CommandLine -match '${launcherRegex}') {`,
+      `      'Running'`,
+      `      return`,
+      `    }`,
+      `  }`,
+      `}`,
+      `'Stopped'`,
+    ].join('\n');
+  }
+  return [
+    `$proc = Get-CimInstance Win32_Process -Filter "Name = '${exeName}'" | Where-Object { ${commandClauses.join(' -and ')} } | Select-Object -First 1`,
+    `if ($proc) { 'Running' } else { 'Stopped' }`,
+  ].join('\n');
 }
 
 export function stopManagedHeadroomProcess({
@@ -322,12 +411,12 @@ export function stopManagedHeadroomProcess({
     pidFilePath: managedHeadroomPidPath({ home }),
     launcherPath: managedHeadroomLauncherPath({ home }),
   });
-  const legacyRunKey = parseLegacyManagedHeadroomRunKeyValue({ port, runKeyValue: runKeyStatus?.raw });
-  if (legacyRunKey?.executablePath) {
-    script += `\n${stopByPortScript(processExeName, port, {
+  const legacyRunKey = parseLegacyManagedHeadroomRunKeyValue({ runKeyValue: runKeyStatus?.raw });
+  if (legacyRunKey?.executablePath && legacyRunKey?.port) {
+    script += `\n${stopByPortScript(processExeName, legacyRunKey.port, {
       requiredArgs: ['proxy'],
       requiredExecutablePath: windowsPath(legacyRunKey.executablePath),
-    })}`;
+    })}\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
   }
   script = script.replace(/"/g, '\\"');
   execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' });
@@ -686,6 +775,38 @@ export function parseManagedMitmStatus(raw = '') {
   return { running: false, state: text || 'Unknown', raw: text };
 }
 
+function parseManagedHeadroomStatus(raw = '') {
+  return parseManagedMitmStatus(raw);
+}
+
+function readManagedCopilotHeadroomIdentity({
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  runKeyStatusImpl = copilotHeadroomRunKeyStatus,
+} = {}) {
+  const runKeyStatus = runKeyStatusImpl({ execSyncImpl });
+  const parsedRunKey = parseCopilotHeadroomRunKeyValue(runKeyStatus?.raw) ?? {};
+  let executablePath = parsedRunKey.executablePath ?? '';
+  let argStr = parsedRunKey.argStr ?? '';
+  const launcherScript = readWindowsScriptText(parsedRunKey.launcherPath, {
+    execSyncImpl,
+    existsSyncImpl,
+    readFileSyncImpl,
+  });
+  if (launcherScript) {
+    const parsedLauncher = parseLauncherStartProcess(launcherScript);
+    executablePath = parsedLauncher?.executablePath ?? executablePath;
+    argStr = parsedLauncher?.argStr ?? argStr;
+  }
+  return {
+    launcherPath: parsedRunKey.launcherPath ?? '',
+    executablePath,
+    argStr,
+    port: portFromArgString(argStr),
+  };
+}
+
 function buildManagedMitmStopScript({ mitmdumpBin, argStr, launcherPath, pidFilePath } = {}) {
   const pidPath = windowsPath(pidFilePath ?? managedMitmPidPath());
   const commandClauses = buildManagedMitmCommandClauses({
@@ -927,13 +1048,49 @@ export async function installCopilotHeadroomService({ headroomBin, port, envVars
   });
 }
 
-export function copilotHeadroomServiceStatus({ manager = 'registry' } = {}) {
+function copilotHeadroomRunKeyStatus({ execSyncImpl = execSync } = {}) {
+  try {
+    const raw = trimPowershellOutput(execSyncImpl(
+      `powershell -NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${COPILOT_HEADROOM_KEY}'"`,
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString());
+    return { registered: !!raw, raw };
+  } catch {
+    return { registered: false, raw: '' };
+  }
+}
+
+export function copilotHeadroomServiceStatus({
+  manager = 'registry',
+  port = 8788,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  runKeyStatusImpl = copilotHeadroomRunKeyStatus,
+} = {}) {
   if (manager !== 'winsw') {
     try {
-      const out = execSync(`powershell -Command "Get-CimInstance Win32_Process -Filter \\"Name = 'headroom.exe'\\" | Where-Object { $_.CommandLine -like '*copilot-headroom*' -or $_.CommandLine -like '*--port 8788*' } | Select-Object -First 1 -ExpandProperty ProcessId"`, { stdio: 'pipe' }).toString().trim();
-      return { running: !!out, state: out ? 'Running' : 'Stopped' };
+      const identity = readManagedCopilotHeadroomIdentity({
+        execSyncImpl,
+        existsSyncImpl,
+        readFileSyncImpl,
+        runKeyStatusImpl,
+      });
+      const configuredPort = Number(port);
+      const effectivePort = identity?.port ?? (Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8788);
+      const script = buildManagedHeadroomStatusScript({
+        executablePath: identity?.executablePath,
+        argStr: identity?.argStr,
+        launcherPath: identity?.launcherPath,
+        port: effectivePort,
+      }).replace(/"/g, '\\"');
+      const raw = trimPowershellOutput(execSyncImpl(
+        `powershell -NoProfile -Command "& { ${script} }"`,
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      ).toString());
+      return parseManagedHeadroomStatus(raw);
     } catch {
-      return { running: false, state: 'Unknown' };
+      return { running: false, state: 'Unknown', raw: '' };
     }
   }
   return winswServiceStatus({ id: COPILOT_HEADROOM_SERVICE_ID });

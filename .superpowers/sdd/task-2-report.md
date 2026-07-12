@@ -56,3 +56,8 @@
 - Windows registry-mode Copilot-Headroom restart now resolves the effective Windows home before rebuilding launcher state, persists the launcher through PowerShell at the real Windows path, and can recover launcher-backed process identity even when WSL cannot read `C:\...` paths through the local POSIX filesystem.
 - Windows managed Python Headroom stop/reinstall now keeps the tracked PID tied to the managed launcher path, so a port migration still stops the owned instance before deleting the PID file or replacing registration state.
 - Added focused regressions for WSL launcher recovery/path resolution and for managed Headroom launcher/PID stop-script ownership checks during port migrations.
+
+## Windows Legacy Fix
+- Main Headroom legacy Run-key cleanup now parses the stored executable and stored `--port` from the existing command, stops only that exact owned legacy process, and clears the legacy Run key during migration/restart cleanup.
+- Registry-mode Copilot-Headroom status now derives managed identity from the persisted launcher/command when available and otherwise falls back to the caller-supplied configured port instead of hard-coding `8788`.
+- Added regressions for old-port legacy Headroom cleanup and custom-port Copilot-Headroom status propagation through `verify`.

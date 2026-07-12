@@ -111,7 +111,7 @@ export async function buildVerifyResults({
 
   if (includeCopilotHeadroomCheck && cfg.proxy?.copilot_headroom?.enabled) {
     const copilotHeadroomPort = cfg.proxy.copilot_headroom.port ?? 8788;
-    const chSvc = await copilotHeadroomServiceStatusImpl({ manager: winManager });
+    const chSvc = await copilotHeadroomServiceStatusImpl({ manager: winManager, port: copilotHeadroomPort });
     results.push({
       name: 'Copilot-Headroom service',
       ok: chSvc.running,

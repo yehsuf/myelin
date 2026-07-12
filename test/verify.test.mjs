@@ -105,6 +105,38 @@ describe('buildVerifyResults engine selection', () => {
     assert.equal(results.some(({ name }) => name === 'Myelin Copilot Headroom Watchdog'), true);
   });
 
+  it('passes the configured Copilot-Headroom port into the registry status probe', async () => {
+    const calls = [];
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          headroom: { enabled: false, port: 8787 },
+          headroom_lite: { enabled: false, port: 8790 },
+          mitm: { enabled: false, port: 8888 },
+          copilot_headroom: { enabled: true, port: 9797 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      platform: 'win32',
+      waitForHeadroomImpl: async () => true,
+      copilotHeadroomServiceStatusImpl: async (opts) => {
+        calls.push(opts);
+        return { running: true, label: 'copilot' };
+      },
+      detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
+      detectRtkImpl: async () => ({ installed: false, version: null }),
+      detectSembleImpl: async () => ({ installed: false, version: null }),
+      whichImpl: async () => '/usr/bin/mitmdump',
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeCopilotHeadroomCheck: true,
+      includeWatchdogChecks: false,
+    });
+
+    assert.deepEqual(calls, [{ manager: 'registry', port: 9797 }]);
+    assert.equal(results.some(({ name }) => name === 'Copilot-Headroom health (:9797)'), true);
+  });
+
   it('does not let an unrelated mitmdump probe make verify green', async () => {
     const probe = parseManagedMitmStatus('mitmdump.exe');
     const results = await buildVerifyResults({

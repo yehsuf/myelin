@@ -9,6 +9,7 @@ import {
   buildManagedHeadroomStopScript,
   HEADROOM_SERVICE_ID,
   collapseRedundantBackslashes,
+  copilotHeadroomServiceStatus,
   defaultWindowsHome,
   generateCopilotHeadroomRunScript,
   generateHeadroomRunScript,
@@ -234,6 +235,58 @@ describe('windows run-script generator', () => {
     assert.ok(command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
     assert.ok(command.includes(`Name = 'headroom.exe'`));
     assert.ok(command.includes(`--port\\s+8787(\\s|$)`));
+  });
+
+  it('stops the exact legacy run-key process even when the configured port has already changed', () => {
+    let command = '';
+    stopManagedHeadroomProcess({
+      port: 9797,
+      execSyncImpl: (value) => {
+        command = value;
+        return Buffer.from('');
+      },
+      headroomRunKeyStatusImpl: () => ({
+        registered: true,
+        raw: '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787',
+      }),
+    });
+    assert.ok(command.includes('ProcessId = $managedPid'));
+    assert.ok(command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
+    assert.ok(command.includes(`--port\\s+8787(\\s|$)`));
+    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue`));
+    assert.ok(!command.includes(`--port\\s+9797(\\s|$)' -and $_.ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
+  });
+});
+
+describe('copilotHeadroomServiceStatus', () => {
+  it('uses the configured custom port when checking registry-managed status', () => {
+    const commands = [];
+    const status = copilotHeadroomServiceStatus({
+      manager: 'registry',
+      port: 9797,
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-Content -Path')) {
+          return Buffer.from([
+            "# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.",
+            "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 9797 --mode observe --connect-timeout-seconds 10' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\headroom-copilot-9797' -WindowStyle Hidden",
+          ].join('\n'));
+        }
+        return Buffer.from('Running\n');
+      },
+      runKeyStatusImpl: () => ({
+        registered: true,
+        raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
+      }),
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('launcher should be read via PowerShell for Windows paths');
+      },
+    });
+    assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
+    assert.ok(commands.some((command) => command.includes('Get-Content -Path \'C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1\' -Raw')));
+    assert.ok(commands.some((command) => command.includes('--port 9797')));
+    assert.ok(!commands.some((command) => command.includes('--port 8788')));
   });
 });
 
