@@ -228,7 +228,7 @@ describe('buildHintSections / renderHint', () => {
     const sections = { header: 'HDR', pinned: 'PINNED: ' + huge };
     const hint = renderHint(sections);
     assert.ok(hint.length <= MAX_HINT);
-    assert.ok(hint.endsWith('[TRUNCATED]'), 'expected [TRUNCATED] marker');
+    assert.ok(hint.endsWith('[TRUNCATED — see session files for full state]'), 'expected [TRUNCATED] marker');
   });
 
   it('strips non-ASCII characters', () => {
@@ -259,12 +259,12 @@ describe('CLI modes', () => {
     assert.match(r.stdout, /COMPACT_STATE_V1/);
     assert.match(r.stdout, /IN-PROGRESS:/);
     assert.match(r.stdout, /NEXT:\s*\nfinish X/);
-    // Prepare mode must instruct the agent to compose the hint, not paste it.
-    assert.match(r.stdout, /YOU \(the agent\)|agent, use this|Compose the actual|compose the actual/i);
+    // Prepare mode must instruct the agent to compose the hint and enforce cap.
+    assert.match(r.stdout, /agent, use this|Compose the actual|compose the actual/i);
     assert.match(r.stdout, /4000/);
-    assert.match(r.stdout, />>> COMPACT HINT >>>/);
-    assert.match(r.stdout, /<<< END COMPACT HINT <<</);
-    // The old sentinel names must be gone.
+    // New: instructs agent to call clipboard mode (not old sentinels)
+    assert.match(r.stdout, /compact-prepare\.mjs clipboard/);
+    assert.doesNotMatch(r.stdout, />>> COMPACT HINT >>>/);
     assert.doesNotMatch(r.stdout, /<<<COMPACT_HINT>>>/);
   });
 
@@ -401,5 +401,80 @@ describe('CLI modes', () => {
     const r = runScript(sid, home, gitRoot, 'emit');
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
     assert.match(r.stdout, /no-timestamp-todo/, 'todos.json without generatedAt should be served');
+  });
+});
+
+// ─── clipboard mode ────────────────────────────────────────────
+describe('clipboard mode', () => {
+  it('exit 1 when no file argument provided', () => {
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard'], {
+      env: { ...process.env }, encoding: 'utf8',
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /missing file path/);
+  });
+
+  it('exit 1 when file does not exist', () => {
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', '/tmp/nonexistent-compact-hint-abc.txt'], {
+      env: { ...process.env }, encoding: 'utf8',
+    });
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /not found/);
+  });
+
+  it('prints /compact <hint> in output', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip1', {});
+    const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
+    writeFileSync(hintFile, 'SESSION SUMMARY: test\nNEXT: do stuff');
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      cwd: gitRoot, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, /\/compact SESSION SUMMARY: test/);
+    assert.match(r.stdout, /NEXT: do stuff/);
+  });
+
+  it('reports hint character count', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip2', {});
+    const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
+    const body = 'SUMMARY: x\nNEXT: y';
+    writeFileSync(hintFile, body);
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      cwd: gitRoot, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.match(r.stdout, new RegExp(`${body.length}/4000 chars`));
+  });
+
+  it('truncates hint > 4000 chars and warns', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip3', {});
+    const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
+    writeFileSync(hintFile, 'A'.repeat(4500));
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      cwd: gitRoot, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    // warn printed to stderr
+    assert.match(r.stderr, /truncated/i);
+    // full command must not exceed /compact  + 4000 chars
+    const cmdLine = r.stdout.split('\n').find(l => l.startsWith('/compact '));
+    assert.ok(cmdLine, 'no /compact line in output');
+    assert.ok(cmdLine.length <= '/compact '.length + 4000,
+      `command line too long: ${cmdLine.length}`);
+  });
+
+  it('hint exactly at 4000 chars is not truncated', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip4', {});
+    const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
+    writeFileSync(hintFile, 'B'.repeat(4000));
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      cwd: gitRoot, encoding: 'utf8',
+    });
+    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /truncated/i, 'should not truncate at exactly 4000');
   });
 });

@@ -380,10 +380,37 @@ export function renderHint(sections) {
   let out = parts.join('\n\n');
   out = stripNonAscii(out);
   if (out.length > MAX_HINT) {
-    const marker = '\n[TRUNCATED]';
+    const marker = '\n[TRUNCATED — see session files for full state]';
     out = out.slice(0, MAX_HINT - marker.length) + marker;
   }
   return out;
+}
+
+/**
+ * Copy text to clipboard using the first available platform tool.
+ * Returns the tool name used, or null if none available.
+ * @param {string} text
+ */
+function copyToClipboard(text) {
+  const candidates = [
+    // macOS
+    { cmd: 'pbcopy', args: [] },
+    // Windows (cmd)
+    { cmd: 'clip', args: [] },
+    // Windows (PowerShell) — tried as fallback
+    { cmd: 'powershell', args: ['-NonInteractive', '-Command', '$input|Set-Clipboard'] },
+    // Linux X11
+    { cmd: 'xclip', args: ['-selection', 'clipboard'] },
+    // Linux Wayland
+    { cmd: 'wl-copy', args: [] },
+  ];
+  for (const { cmd, args } of candidates) {
+    try {
+      execFileSync(cmd, args, { input: text, stdio: ['pipe', 'ignore', 'ignore'] });
+      return cmd;
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
 // ─── collect all data ─────────────────────────────────────────
@@ -480,7 +507,7 @@ function modePrepare(data) {
   dashboard(data, hint.length);
   console.log('-'.repeat(64));
   console.log('  SESSION STATE BRIEF — agent, use this + your session memory');
-  console.log('  to compose the actual compact hint (max 4000 chars).');
+  console.log('  to compose the actual compact hint (HARD CAP: 4000 chars).');
   console.log('-'.repeat(64));
   console.log('');
   console.log('<<<SESSION_STATE_BRIEF>>>');
@@ -489,18 +516,69 @@ function modePrepare(data) {
   console.log('');
   console.log('-'.repeat(64));
   console.log('  Agent instructions:');
-  console.log('  1. Read the SESSION STATE BRIEF above (source of truth for facts).');
-  console.log('  2. Compose the actual /compact hint yourself using your memory of');
-  console.log('     this session — accomplishments, decisions, next-priority work,');
-  console.log('     unresolved blockers. Do NOT just paste the brief.');
-  console.log('  3. Keep the hint under 4000 characters (Copilot CLI hard cap).');
-  console.log('  4. Print it between:  >>> COMPACT HINT >>>  and  <<< END COMPACT HINT <<<');
-  console.log('  5. Tell the user to copy that hint (WITHOUT sentinel lines)');
-  console.log('     after `/compact ` in their next message.');
+  console.log('  1. Read the SESSION STATE BRIEF above (facts).');
+  console.log('  2. Compose the actual /compact hint using your session memory.');
+  console.log(`  3. HARD LIMIT: hint body must be ≤${MAX_HINT} chars.`);
+  console.log('     Copilot CLI enforces this — exceeding it aborts /compact');
+  console.log('     with: "customInstructions exceeds maximum length of 4000"');
+  console.log(`  4. Write the hint to: ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt`);
+  console.log('     Then run:');
+  console.log('       node ~/.copilot/skills/compact/compact-prepare.mjs clipboard \\');
+  console.log('         ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt');
+  console.log('     This enforces the cap, copies /compact <hint> to clipboard,');
+  console.log('     and prints the full ready-to-run command.');
+  console.log('='.repeat(64));
+}
+
+/**
+ * clipboard mode: reads a hint from a file path (argv[3]),
+ * enforces the 4000-char hard cap, prepends "/compact ",
+ * tries to copy to clipboard, and prints the full ready-to-run command.
+ */
+function modeClipboard(hintFile) {
+  if (!hintFile) {
+    console.error('compact-prepare clipboard: missing file path argument');
+    console.error('Usage: compact-prepare.mjs clipboard <path-to-hint-file>');
+    process.exit(1);
+  }
+  if (!existsSync(hintFile)) {
+    console.error(`compact-prepare clipboard: file not found: ${hintFile}`);
+    process.exit(1);
+  }
+
+  let hint = readFileSync(hintFile, 'utf8').trim();
+  hint = stripNonAscii(hint);
+
+  // Hard-enforce the 4000-char cap — prevent the "customInstructions exceeds
+  // maximum length" abort that Copilot CLI throws when the hint is too long.
+  if (hint.length > MAX_HINT) {
+    const marker = '\n[TRUNCATED — hint exceeded 4000 chars; edit compact-hint.txt to fit]';
+    hint = hint.slice(0, MAX_HINT - marker.length) + marker;
+    console.warn(`⚠  Hint was ${readFileSync(hintFile, 'utf8').trim().length} chars — truncated to ${MAX_HINT}.`);
+    console.warn('   Edit the hint file and re-run, or use a shorter hint.');
+  }
+
+  const fullCommand = `/compact ${hint}`;
+
+  // Try to copy to clipboard
+  const tool = copyToClipboard(fullCommand);
+  if (tool) {
+    console.log(`✓ Copied to clipboard (${tool})`);
+  } else {
+    console.log('⚠  Clipboard unavailable — copy the command below manually.');
+  }
+
+  console.log('─'.repeat(64));
+  console.log(`  Hint: ${hint.length}/${MAX_HINT} chars`);
+  console.log('  Paste this as your next message:');
+  console.log('─'.repeat(64));
   console.log('');
+  console.log(fullCommand);
+  console.log('');
+  console.log('─'.repeat(64));
   console.log('  After /compact completes, run:');
   console.log('    node ~/.copilot/skills/compact/compact-prepare.mjs resume');
-  console.log('='.repeat(64));
+  console.log('─'.repeat(64));
 }
 
 function modeEmit(data) {
@@ -535,9 +613,14 @@ function modeResume(data) {
 // ─── main ─────────────────────────────────────────────────────
 function main() {
   const mode = process.argv[2] || 'prepare';
-  if (!['prepare', 'emit', 'resume'].includes(mode)) {
-    console.error(`compact-prepare: unknown mode "${mode}" (expected prepare|emit|resume)`);
+  if (!['prepare', 'emit', 'resume', 'clipboard'].includes(mode)) {
+    console.error(`compact-prepare: unknown mode "${mode}" (expected prepare|emit|resume|clipboard)`);
     process.exit(1);
+  }
+
+  if (mode === 'clipboard') {
+    modeClipboard(process.argv[3]);
+    return;
   }
 
   const sid = resolveSessionId();
