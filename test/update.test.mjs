@@ -46,7 +46,7 @@ function makeSelfUpdateExecSyncStub({ current = '83c7d35', latest = 'c6e333d', u
       if (command === 'git log origin/main..HEAD --oneline') return Buffer.from(unpushed ? `${unpushed}\n` : '');
       if (command === 'git merge --ff-only origin/main') return Buffer.from('');
       if (command === 'npm install --registry https://registry.npmjs.org') return Buffer.from('');
-      if (command.includes('src/install.mjs') && command.endsWith('" --yes')) return Buffer.from('');
+      if (command.replace(/\\/g, '/').includes('src/install.mjs') && command.endsWith('" --yes')) return Buffer.from('');
       throw new Error(`Unexpected execSync command: ${command}`);
     },
   };

@@ -916,16 +916,14 @@ async function main() {
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
-      // Reuse proxy.copilot_headroom.anthropic_target_url — it's the same
-      // "which Copilot API host does your account tier use" question. Empty
-      // is deliberate: caller (litellm) will fail loudly at startup, which
-      // is the correct signal to run:
-      //   myelin config set proxy.copilot_headroom.anthropic_target_url <url>
-      const apiBase = existingCfg.proxy?.copilot_headroom?.anthropic_target_url?.trim() || '';
+      // LiteLLM talks to an upstream provider directly, so it needs its own
+      // explicit API base. Copilot-Headroom does not expose provider URL config:
+      // it loops back through mitmproxy and restores the original destination.
+      const apiBase = existingCfg.budget_routing?.api_base?.trim() || '';
       if (!apiBase) {
         warn(
-          'litellm enabled but proxy.copilot_headroom.anthropic_target_url is empty. ' +
-          'Set it via `myelin config set proxy.copilot_headroom.anthropic_target_url https://api.githubcopilot.com` ' +
+          'litellm enabled but budget_routing.api_base is empty. ' +
+          'Set it via `myelin config set budget_routing.api_base https://api.githubcopilot.com` ' +
           '(or https://api.business.githubcopilot.com for Business/Enterprise) and re-run — writing config anyway; litellm will fail to start until this is set.'
         );
       }
@@ -1075,46 +1073,28 @@ async function main() {
 
         // Copilot-Headroom: a SEPARATE, dedicated instance that gives Copilot
         // CLI traffic the same full pipeline treatment Claude Code already
-        // gets (cache-mode, content_router, TOIN, stats) instead of the
-        // stateless /v1/compress-only sidecar call. Opt-in — disabled by
-        // default until validated on your own install (see schema.mjs).
+        // gets. Its upstream target is the local mitmproxy egress listener,
+        // not a Copilot provider URL; mitmproxy restores the original
+        // destination from private loopback headers.
         if (copilotHeadroomCfg.enabled) {
-          // copilotHeadroomPort already defined above (used in mitmEnv)
-          //
-          // Require explicit target URLs. Defaults are empty (see schema.mjs)
-          // because Copilot's API host depends on the user's account tier
-          // (Individual → api.githubcopilot.com; Business/Enterprise →
-          // api.business.githubcopilot.com). Silently defaulting to either
-          // one misroutes traffic and previously leaked the maintainer's own
-          // account tier into every fresh install.
-          const anthropicTarget = copilotHeadroomCfg.anthropic_target_url?.trim() || '';
-          const openaiTarget    = copilotHeadroomCfg.openai_target_url?.trim() || '';
-          if (!anthropicTarget || !openaiTarget) {
-            warn(
-              'copilot-headroom is enabled but proxy.copilot_headroom.anthropic_target_url / openai_target_url are empty. ' +
-              'Set them via `myelin config set proxy.copilot_headroom.anthropic_target_url https://api.githubcopilot.com` ' +
-              '(or https://api.business.githubcopilot.com for Business/Enterprise) and re-run `myelin install`. Skipping service registration.'
-            );
-          } else {
-            try {
-              await installCopilotHeadroomService({
-                headroomBin: binPath,
-                port: copilotHeadroomPort,
-                envVars: {
-                  ANTHROPIC_TARGET_API_URL: anthropicTarget,
-                  OPENAI_TARGET_API_URL: openaiTarget,
-                  HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
-                  HTTPS_PROXY: `http://127.0.0.1:${egressPort}`,
-                  NO_PROXY: '127.0.0.1,localhost,::1',
-                  ...sslEnv,
-                },
-                home,
-                manager: winManager,
-              });
-              ok(`copilot-headroom service registered (port ${copilotHeadroomPort})`);
-            } catch (e) {
-              warn(`copilot-headroom service registration failed: ${e.message}`);
-            }
+          const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+          try {
+            await installCopilotHeadroomService({
+              headroomBin: binPath,
+              port: copilotHeadroomPort,
+              envVars: {
+                ANTHROPIC_TARGET_API_URL: loopbackTarget,
+                OPENAI_TARGET_API_URL: loopbackTarget,
+                HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
+                NO_PROXY: '127.0.0.1,localhost,::1',
+                ...sslEnv,
+              },
+              home,
+              manager: winManager,
+            });
+            ok(`copilot-headroom service registered (port ${copilotHeadroomPort}, egress ${egressPort})`);
+          } catch (e) {
+            warn(`copilot-headroom service registration failed: ${e.message}`);
           }
         }
       } catch (e) {
@@ -1463,7 +1443,6 @@ ${initSkillBody}`);
     const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
       HEADROOM_PORT: String(port),
-      OPENAI_TARGET_API_URL: _winCfg.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
@@ -1480,6 +1459,15 @@ ${initSkillBody}`);
     try {
       execSync(
         String.raw`powershell -Command "$v = [Environment]::GetEnvironmentVariable('OPENAI_TARGET_URL','User'); if ($v -and $v -like '*127.0.0.1*') { [Environment]::SetEnvironmentVariable('OPENAI_TARGET_URL', $null, 'User'); Write-Host '[myelin] removed stale OPENAI_TARGET_URL' }"`,
+        { stdio: 'inherit' }
+      );
+    } catch {}
+    // Clean up stale OPENAI_TARGET_API_URL from prior installs. Provider target
+    // URLs belong only to the specific service process that needs them, never
+    // in the global User environment where Copilot CLI could inherit them.
+    try {
+      execSync(
+        String.raw`powershell -Command "$v = [Environment]::GetEnvironmentVariable('OPENAI_TARGET_API_URL','User'); if ($v) { [Environment]::SetEnvironmentVariable('OPENAI_TARGET_API_URL', $null, 'User'); Write-Host '[myelin] removed stale OPENAI_TARGET_API_URL User env' }"`,
         { stdio: 'inherit' }
       );
     } catch {}

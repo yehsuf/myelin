@@ -1,5 +1,5 @@
 import { detectAll } from '../detect/tools.mjs';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { detectOS } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -54,7 +54,16 @@ export function _stopForUpgrade(name, execSyncFn = execSync) {
 }
 
 export function isRepoDirty(repoDir) {
-  return execSync('git status --porcelain -- . ":(exclude).serena"', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
+  const status = execFileSync('git', ['status', '--porcelain'], { cwd: repoDir, stdio: 'pipe' }).toString();
+  return status
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .filter(line => {
+      const path = line.slice(3).replace(/^"|"$/g, '').replace(/\\/g, '/');
+      return path !== '.serena' && !path.startsWith('.serena/');
+    })
+    .join('\n')
+    .trim();
 }
 
 function repoDirFromMetaUrl(metaUrl = import.meta.url) {

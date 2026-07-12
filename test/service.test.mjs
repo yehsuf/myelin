@@ -70,7 +70,7 @@ describe('generateGenericPlist (mitmproxy / copilot-headroom launchd)', () => {
     label: 'com.myelin.copilot-headroom',
     command: '/home/user/.venv/bin/headroom',
     args: ['proxy', '--port', '8788'],
-    envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.business.githubcopilot.com' },
+    envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
     logPath: '/tmp/copilot-headroom.log',
   };
   it('omits WorkingDirectory key when not provided (backward compatible)', () => {
@@ -124,7 +124,7 @@ describe('systemd copilot-headroom unit generator', () => {
     port: 8788,
     mode: 'cache',
     workingDirectory: '/home/user/.myelin/copilot-headroom',
-    envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.business.githubcopilot.com' },
+    envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
   };
   it('contains WorkingDirectory pointing at the isolated state dir', () => {
     const unit = generateCopilotHeadroomUnit(CH_OPTS);
@@ -142,11 +142,11 @@ describe('systemd copilot-headroom unit generator', () => {
 });
 
 describe('systemd mitm unit generator — egress dual-listener', () => {
-  it('supports two --mode regular@PORT args for ingress + egress', () => {
-    const args = ['--mode', 'regular@8888', '--mode', 'regular@8889', '-s', '/path/addon.py'];
+  it('supports ingress plus loopback-bound egress listener args', () => {
+    const args = ['--mode', 'regular@8888', '--mode', 'regular@127.0.0.1:8889', '-s', '/path/addon.py'];
     const unit = generateMitmUnit({ mitmdumpBin: '/usr/bin/mitmdump', args });
     assert.ok(unit.includes('regular@8888'));
-    assert.ok(unit.includes('regular@8889'));
+    assert.ok(unit.includes('regular@127.0.0.1:8889'));
   });
 });
 
@@ -407,7 +407,7 @@ describe('windows copilot-headroom run-script generator', () => {
     port: 8788,
     mode: 'cache',
     workingDirectory: 'C:\\Users\\yehsuf\\.myelin\\copilot-headroom',
-    envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.business.githubcopilot.com' },
+    envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
   };
   it('contains a distinct registry run key name from the Claude-Headroom instance', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);
@@ -427,6 +427,20 @@ describe('windows copilot-headroom run-script generator', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);
     assert.ok(script.includes('Win32_Process'));
   });
+  it('persists a Run-key launcher that preserves scoped target env vars after login', () => {
+    const script = generateCopilotHeadroomRunScript({
+      ...CH_OPTS,
+      envVars: {
+        ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889',
+        OPENAI_TARGET_API_URL: 'http://127.0.0.1:8889',
+      },
+    });
+    assert.ok(script.includes('start-copilot-headroom.ps1'));
+    assert.ok(script.includes('Set-ItemProperty'));
+    assert.ok(script.includes('powershell.exe -NoProfile -ExecutionPolicy Bypass -File'));
+    assert.ok(script.includes("[System.Environment]::SetEnvironmentVariable('ANTHROPIC_TARGET_API_URL', 'http://127.0.0.1:8889', 'Process')"));
+    assert.ok(script.includes("[System.Environment]::SetEnvironmentVariable('OPENAI_TARGET_API_URL', 'http://127.0.0.1:8889', 'Process')"));
+  });
 });
 
 describe('windows mitm run-script generator — egress dual-listener', () => {
@@ -441,10 +455,10 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     assert.ok(script.includes('--listen-port 8888'));
     assert.ok(!script.includes('regular@'));
   });
-  it('uses two --mode regular@PORT args when egressPort is given', () => {
+  it('uses ingress plus loopback-bound egress --mode args when egressPort is given', () => {
     const script = generateMitmRunScript({ ...MITM_OPTS, egressPort: 8889 });
     assert.ok(script.includes('--mode regular@8888'));
-    assert.ok(script.includes('--mode regular@8889'));
+    assert.ok(script.includes('--mode regular@127.0.0.1:8889'));
     assert.ok(!script.includes('--listen-port'));
   });
   it('sets MYELIN_EGRESS_PORT when egressPort is given', () => {
@@ -556,7 +570,7 @@ describe('npm global bin dir resolver', () => {
 });
 
 describe('linkGlobalBin', () => {
-  it('gracefully reports failure (not throwing) for a non-writable prefix', () => {
+  it('gracefully reports failure (not throwing) for a non-writable prefix', { skip: process.platform === 'win32' }, () => {
     const roDir = mkdtempSync(join(tmpdir(), 'myelin-ro-'));
     const binDir = join(roDir, 'bin');
     mkdirSync(binDir);
@@ -604,5 +618,19 @@ describe('spawnDetachedService', () => {
     spawnDetachedService('T', 'exe.exe', 'args', { runPsFn: (s) => scripts.push(s) });
     assert.ok(scripts[0].includes('Start-Process'), 'fallback present');
     assert.ok(scripts[0].includes('SSL_CERT_FILE'), 'loads SSL env vars in fallback');
+  });
+
+  it('does not path-normalize URL-valued task env vars', () => {
+    const scripts = [];
+    spawnDetachedService('T', 'exe.exe', 'args', {
+      runPsFn: (s) => scripts.push(s),
+      taskEnv: {
+        HEADROOM_WORKSPACE_DIR: 'C:/Users/alice/.myelin/copilot',
+        ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889',
+      },
+    });
+    assert.ok(scripts[0].includes('set "HEADROOM_WORKSPACE_DIR=C:\\Users\\alice\\.myelin\\copilot"'));
+    assert.ok(scripts[0].includes('set "ANTHROPIC_TARGET_API_URL=http://127.0.0.1:8889"'));
+    assert.ok(!scripts[0].includes('http:\\\\127.0.0.1:8889'));
   });
 });

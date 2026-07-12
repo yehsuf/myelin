@@ -64,15 +64,12 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.copilot_headroom.port = 8788', () => {
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.port, 8788);
   });
-  it('DEFAULT_CONFIG has proxy.copilot_headroom target URLs empty (must be set explicitly to avoid leaking maintainer account tier)', () => {
-    // Copilot's API host depends on the user's account tier (individual vs.
-    // Business/Enterprise). Defaulting to either one silently misroutes
-    // traffic for the other tier and previously leaked the maintainer's
-    // own tier (api.business.githubcopilot.com) into every fresh install.
-    // install.mjs now warns and skips service registration when these are
-    // empty AND copilot_headroom.enabled === true.
-    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.anthropic_target_url, '');
-    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.openai_target_url, '');
+  it('DEFAULT_CONFIG has no proxy.copilot_headroom provider target URLs', () => {
+    // Copilot destination belongs to mitmproxy. Copilot-Headroom only loops
+    // back to mitmproxy's local egress listener, so account-tier provider URLs
+    // never belong in user config.
+    assert.equal('anthropic_target_url' in DEFAULT_CONFIG.proxy.copilot_headroom, false);
+    assert.equal('openai_target_url' in DEFAULT_CONFIG.proxy.copilot_headroom, false);
   });
   it('DEFAULT_CONFIG has proxy.windows_service.manager = registry (safe default, unchanged behavior)', () => {
     assert.equal(DEFAULT_CONFIG.proxy.windows_service.manager, 'registry');
@@ -95,6 +92,7 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has budget_routing defaults (opt-in)', () => {
     assert.equal(DEFAULT_CONFIG.budget_routing.litellm, false);
     assert.equal(DEFAULT_CONFIG.budget_routing.litellm_port, 4000);
+    assert.equal(DEFAULT_CONFIG.budget_routing.api_base, '');
     assert.equal(DEFAULT_CONFIG.budget_routing.cheap_model, 'claude-haiku-4-5');
     assert.equal(DEFAULT_CONFIG.budget_routing.complex_model, 'claude-sonnet-4-6');
     assert.equal(DEFAULT_CONFIG.budget_routing.cheap_threshold, 0.3);
@@ -128,6 +126,28 @@ describe('config schema', () => {
       proxy: { headroom: { port: 9999 } },
     });
     assert.deepEqual(result, { proxy: { headroom: { port: 9999 } } });
+  });
+  it('pruneUnknownKeys removes stale copilot_headroom provider target URLs', () => {
+    const result = pruneUnknownKeys({
+      proxy: {
+        copilot_headroom: {
+          enabled: true,
+          port: 8788,
+          mode: 'cache',
+          anthropic_target_url: 'https://api.business.githubcopilot.com',
+          openai_target_url: 'https://api.business.githubcopilot.com',
+        },
+      },
+    });
+    assert.deepEqual(result, {
+      proxy: {
+        copilot_headroom: {
+          enabled: true,
+          port: 8788,
+          mode: 'cache',
+        },
+      },
+    });
   });
   it('pruneUnknownKeys preserves real user values unchanged', () => {
     const result = pruneUnknownKeys({

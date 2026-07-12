@@ -145,7 +145,7 @@ ${envEntries}
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort }) {
   const p = mitmPlistPath();
   const args = egressPort
-    ? ['--mode', `regular@${port}`, '--mode', `regular@${egressPort}`, '-s', addonPath]
+    ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
 
   // Chain through corporate/upstream proxy if set

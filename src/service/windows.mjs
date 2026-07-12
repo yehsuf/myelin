@@ -53,6 +53,13 @@ function windowsPath(value = '') {
   return String(value ?? '').replace(/\//g, '\\');
 }
 
+function taskEnvValue(key, value = '') {
+  const raw = String(value ?? '');
+  return /(_DIR|_PATH|^HOME$|^USERPROFILE$|^APPDATA$|^LOCALAPPDATA$)/u.test(key)
+    ? windowsPath(raw)
+    : raw;
+}
+
 function trimPowershellOutput(value = '') {
   return String(value ?? '')
     .replace(/^\uFEFF/, '')
@@ -156,7 +163,7 @@ function buildCopilotHeadroomArgumentString({ port, mode }) {
 
 function buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, upstreamProxy }) {
   const args = egressPort
-    ? ['--mode', `regular@${port}`, '--mode', `regular@${egressPort}`, '-s', windowsPath(addonPath)]
+    ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', windowsPath(addonPath)]
     : ['--listen-port', String(port), '-s', windowsPath(addonPath)];
 
   const proxy = upstreamProxy || envVars.HTTPS_PROXY || envVars.https_proxy || '';
@@ -524,7 +531,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, t
   if (hasTaskEnv) {
     const batLines = [
       '@echo off',
-      ...Object.entries(taskEnv).map(([k, v]) => `set "${k}=${windowsPath(String(v))}"`),
+      ...Object.entries(taskEnv).map(([k, v]) => `set "${k}=${taskEnvValue(k, v)}"`),
       `"${windowsPath(exe)}" ${argStr}`,
     ];
     preLaunchLines = [
@@ -538,7 +545,7 @@ ${batLines.join('\r\n')}
     actLine = `$act = New-ScheduledTaskAction -Execute $exe -Argument $argStr`;
   }
   const fallbackEnvLines = hasTaskEnv
-    ? Object.entries(taskEnv).map(([k, v]) => `Set-Item -Path 'Env:${k}' -Value '${escapePs(windowsPath(String(v)))}'`).join('\n')
+    ? Object.entries(taskEnv).map(([k, v]) => `Set-Item -Path 'Env:${k}' -Value '${escapePs(taskEnvValue(k, v))}'`).join('\n')
     : '';
 
   runPsFn([
@@ -603,6 +610,14 @@ export function generateCopilotHeadroomRunScript({ headroomBin, port, mode, work
     .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'Process')`)
     .join('\n');
   const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
+  const launcherPath = pathWin32.join(workDir, 'start-copilot-headroom.ps1');
+  const launcher = windowsPath(launcherPath);
+  const launcherContent = `
+# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.
+${unsetBlock}
+${envLines}
+Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WorkingDirectory '${workDir}' -WindowStyle Hidden
+`.trim();
   return `
 # Clear client-side provider env vars from Process scope before starting the
 # dedicated copilot-headroom instance — its own routing target is set below
@@ -610,10 +625,13 @@ export function generateCopilotHeadroomRunScript({ headroomBin, port, mode, work
 ${unsetBlock}
 ${envLines}
 New-Item -ItemType Directory -Force -Path '${workDir}' | Out-Null
+Set-Content -Path '${launcher}' -Value @'
+${launcherContent}
+'@ -Encoding UTF8
 ${stopByPortScript(exeName, port)}
 Start-Sleep -Milliseconds 500
-Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WorkingDirectory '${workDir}' -WindowStyle Hidden
-Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -Value '"${bin}" ${args}'
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${launcher}'
+Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${launcher}"'
 Write-Host "[myelin] copilot-headroom started (hidden)"
 `;
 }
@@ -676,7 +694,7 @@ export function generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars = 
   const ca = windowsPath(envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE || envVars.NODE_EXTRA_CA_CERTS || '');
   const caArg = ca ? ` --set ssl_verify_upstream_trusted_ca="${ca}"` : '';
   const proxyArg = (envVars.HTTPS_PROXY && !envVars.HTTPS_PROXY.includes('127.0.0.1') && !envVars.HTTPS_PROXY.includes('localhost')) ? ` --mode upstream:${envVars.HTTPS_PROXY}` : '';
-  const listenArg = egressPort ? `--mode regular@${port} --mode regular@${egressPort}` : `--listen-port ${port}`;
+  const listenArg = egressPort ? `--mode regular@${port} --mode regular@127.0.0.1:${egressPort}` : `--listen-port ${port}`;
   const args = `${listenArg} -s "${addon}"${proxyArg}${caArg}`;
   const envLines = Object.entries({
     ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),

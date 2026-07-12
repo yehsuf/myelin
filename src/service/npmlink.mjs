@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix as pathPosix } from 'node:path';
 
 /**
  * Resolve where npm puts global bin shims for a given prefix.
@@ -9,7 +9,7 @@ import { join } from 'node:path';
  * directly in <prefix> itself (no bin/ subfolder).
  */
 export function resolveGlobalBinDir(prefix, os) {
-  return os === 'windows' ? prefix : join(prefix, 'bin');
+  return os === 'windows' ? prefix : pathPosix.join(prefix, 'bin');
 }
 
 /**

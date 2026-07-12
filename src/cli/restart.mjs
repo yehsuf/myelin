@@ -1,10 +1,22 @@
 import { execSync, spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { readdirSync, existsSync } from 'node:fs';
+import { mkdirSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { detectOS } from '../detect/os.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
+import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
+
+const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
+const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
+
+function escapePs(value = '') {
+  return String(value ?? '').replace(/'/g, "''");
+}
+
+function windowsPath(value = '') {
+  return String(value ?? '').replace(/\//g, '\\');
+}
 
 /**
  * Start (or restart) headroom-lite on the given port.
@@ -95,6 +107,53 @@ async function waitForHeadroomLite(port, timeoutMs = 5000) {
   return false;
 }
 
+export function buildCopilotHeadroomTaskEnv({
+  home = homedir(),
+  copilotPort = 8788,
+  egressPort = 8889,
+  mode = 'cache',
+} = {}) {
+  const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+  return {
+    HEADROOM_WORKSPACE_DIR: join(home, '.myelin', `headroom-copilot-${copilotPort}`),
+    ANTHROPIC_TARGET_API_URL: loopbackTarget,
+    OPENAI_TARGET_API_URL: loopbackTarget,
+    HEADROOM_MODE: mode,
+    NO_PROXY: '127.0.0.1,localhost,::1',
+  };
+}
+
+function copilotHeadroomLauncherScript({ headroomBin, argStr, workingDirectory, envVars }) {
+  const envLines = Object.entries(envVars)
+    .filter(([, value]) => value != null && String(value).length > 0)
+    .map(([key, value]) => `[System.Environment]::SetEnvironmentVariable('${key}', '${escapePs(String(value))}', 'Process')`)
+    .join('\n');
+  return `
+# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.
+${buildServiceEnvUnsetLines({ os: 'windows' })}
+${envLines}
+Start-Process -FilePath '${escapePs(windowsPath(headroomBin))}' -ArgumentList '${escapePs(argStr)}' -WorkingDirectory '${escapePs(windowsPath(workingDirectory))}' -WindowStyle Hidden
+`.trim();
+}
+
+function persistCopilotHeadroomLauncher({ headroomBin, argStr, taskEnv }) {
+  const workingDirectory = taskEnv.HEADROOM_WORKSPACE_DIR;
+  mkdirSync(workingDirectory, { recursive: true });
+  const launcherPath = join(workingDirectory, 'start-copilot-headroom.ps1');
+  writeFileSync(launcherPath, copilotHeadroomLauncherScript({
+    headroomBin,
+    argStr,
+    workingDirectory,
+    envVars: taskEnv,
+  }), 'utf8');
+  const runValue = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${windowsPath(launcherPath)}"`;
+  execSync(
+    `powershell -NoProfile -Command "Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_RUN_KEY}' -Value '${escapePs(runValue)}'"`,
+    { stdio: 'pipe' },
+  );
+  return { exe: 'powershell.exe', args: `-NoProfile -ExecutionPolicy Bypass -File "${windowsPath(launcherPath)}"` };
+}
+
 export async function runRestart() {
   const os = detectOS();
   const cfg = await loadConfig();
@@ -122,20 +181,25 @@ export async function runRestart() {
 
     // 1. copilot-headroom:8788 FIRST
     const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
+    const egressPort = cfg?.proxy?.mitm?.egress_port ?? 8889;
+    const copilotTaskEnv = buildCopilotHeadroomTaskEnv({
+      copilotPort,
+      egressPort,
+      mode: cfg?.proxy?.copilot_headroom?.mode ?? 'cache',
+    });
     try {
-      const regKey = 'MyelinCopilotHeadroom';
       const regVal = execSync(
-        `powershell -Command "(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name ${regKey} -ErrorAction SilentlyContinue).${regKey}"`,
+        `powershell -Command "(Get-ItemProperty '${REG_RUN}' -Name ${COPILOT_HEADROOM_RUN_KEY} -ErrorAction SilentlyContinue).${COPILOT_HEADROOM_RUN_KEY}"`,
         { stdio: 'pipe' }
       ).toString().trim();
       if (regVal) {
         const m = regVal.match(/^"([^"]+)"\s*([\s\S]*)$/) ?? regVal.match(/^(\S+)\s*([\s\S]*)$/);
         if (m) {
           const { spawnDetachedService } = await import('../service/windows.mjs');
-          const copilotWorkspace = join(homedir(), '.myelin', `headroom-copilot-${copilotPort}`);
-          spawnDetachedService('MyelinCopilotHeadroom', m[1], m[2].trim(), {
-            taskEnv: { HEADROOM_WORKSPACE_DIR: copilotWorkspace },
-          });
+          const launch = /start-copilot-headroom\.ps1/i.test(regVal)
+            ? { exe: m[1], args: m[2].trim() }
+            : persistCopilotHeadroomLauncher({ headroomBin: m[1], argStr: m[2].trim(), taskEnv: copilotTaskEnv });
+          spawnDetachedService('MyelinCopilotHeadroom', launch.exe, launch.args);
           console.log('  ✓ copilot-headroom started (:8788)');
         }
       }

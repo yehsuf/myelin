@@ -124,20 +124,23 @@ _VPN_FILE_RAW = os.environ.get('MYELIN_VPN_DOMAINS_FILE', '')
 VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else None
 
 # ---------------------------------------------------------------------------
-# Copilot-Headroom redirect (full-pipeline routing)
+# Copilot-Headroom loopback (full-pipeline routing)
 #
 # Instead of the stateless /v1/compress sidecar call, Copilot completion
-# traffic can be redirected to a dedicated Headroom instance (its own
-# ANTHROPIC_TARGET_API_URL/OPENAI_TARGET_API_URL point at the real Copilot
-# API) so it gets Headroom's full pipeline (cache-mode, content_router,
-# TOIN, stats) — the same treatment Claude Code already gets.
+# traffic can be redirected to a dedicated Headroom instance so it gets
+# Headroom's full pipeline (cache-mode, content_router, TOIN, stats) — the
+# same treatment Claude Code already gets.
+#
+# The dedicated instance must not know Copilot's real provider URL. Its target
+# is mitmproxy's local egress listener. The ingress leg carries the original
+# destination in private headers; the egress leg restores host/port/scheme/path
+# before forwarding to the real provider.
 #
 # MYELIN_COPILOT_HEADROOM_PORT: local port of the dedicated instance.
 #   Unset/0 = feature disabled, falls back to the existing /v1/compress path.
 # MYELIN_EGRESS_PORT: the arrival port that identifies a flow as the
-#   *egress* leg (e.g. a dedicated Headroom instance's own outbound call
-#   tunneling back through this same mitmdump process). Flows arriving on
-#   this port are never redirected — they must reach the real internet.
+#   *egress* leg (Copilot-Headroom's loopback call back into mitmproxy).
+#   Flows arriving on this port are never compressed or redirected.
 # ---------------------------------------------------------------------------
 
 COPILOT_HEADROOM_PORT = int(os.environ.get('MYELIN_COPILOT_HEADROOM_PORT', '0')) or None
@@ -187,9 +190,77 @@ def _cache_put(key: str, body: bytes, meta: dict) -> None:
 
 _COPILOT_HOST_PATTERN = re.compile(r'(^|\.)githubcopilot\.com$')
 
+_ORIGINAL_SCHEME_HEADER = 'x-myelin-original-scheme'
+_ORIGINAL_HOST_HEADER   = 'x-myelin-original-host'
+_ORIGINAL_PORT_HEADER   = 'x-myelin-original-port'
+_ORIGINAL_PATH_HEADER   = 'x-myelin-original-path'
+_ORIGINAL_DESTINATION_HEADERS = (
+    _ORIGINAL_SCHEME_HEADER,
+    _ORIGINAL_HOST_HEADER,
+    _ORIGINAL_PORT_HEADER,
+    _ORIGINAL_PATH_HEADER,
+)
+
 
 def _is_copilot_host(host: str) -> bool:
     return bool(_COPILOT_HOST_PATTERN.search(host))
+
+
+def _set_original_destination_headers(flow: http.HTTPFlow, host: str, path: str) -> None:
+    """Carry the real provider destination across the local Headroom loop."""
+    scheme = flow.request.scheme or 'https'
+    default_port = 443 if scheme == 'https' else 80
+    port = flow.request.port or default_port
+    flow.request.headers[_ORIGINAL_SCHEME_HEADER] = scheme
+    flow.request.headers[_ORIGINAL_HOST_HEADER] = host
+    flow.request.headers[_ORIGINAL_PORT_HEADER] = str(port)
+    flow.request.headers[_ORIGINAL_PATH_HEADER] = path
+
+
+def _host_header(host: str, scheme: str, port: int) -> str:
+    default_port = 443 if scheme == 'https' else 80
+    return host if port == default_port else f'{host}:{port}'
+
+
+def _restore_original_destination(flow: http.HTTPFlow) -> bool:
+    """Restore provider destination for Copilot-Headroom traffic on egress."""
+    values = {
+        header: flow.request.headers.get(header, '').strip()
+        for header in _ORIGINAL_DESTINATION_HEADERS
+    }
+    if not all(values.values()):
+        return False
+
+    host = values[_ORIGINAL_HOST_HEADER]
+    if not host or not _is_copilot_host(host):
+        return False
+
+    scheme = values[_ORIGINAL_SCHEME_HEADER].lower()
+    if scheme not in ('http', 'https'):
+        return False
+
+    path = values[_ORIGINAL_PATH_HEADER]
+    if not path.startswith('/'):
+        return False
+
+    try:
+        port = int(values[_ORIGINAL_PORT_HEADER])
+    except ValueError:
+        return False
+    if port < 1 or port > 65535:
+        return False
+
+    flow.request.scheme = scheme
+    flow.request.host = host
+    flow.request.port = port
+    flow.request.headers['host'] = _host_header(host, scheme, port)
+    if path:
+        flow.request.path = path
+
+    for header in _ORIGINAL_DESTINATION_HEADERS:
+        flow.request.headers.pop(header, None)
+    flow.metadata['myelin_egress_restored'] = True
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +599,25 @@ class MyelinAddon:
         host = flow.request.pretty_host
         path = flow.request.path
 
+        if flow.metadata.get('myelin_egress_restored'):
+            return
+
+        # Egress is the return leg from Copilot-Headroom back to mitmproxy.
+        # It restores the original provider destination (when present) and
+        # then exits so the request is never cached, compressed, or redirected
+        # a second time.
+        arrival_port = flow.client_conn.sockname[1] if flow.client_conn.sockname else None
+        is_egress_leg = EGRESS_PORT is not None and arrival_port == EGRESS_PORT
+        if is_egress_leg:
+            restored = _restore_original_destination(flow)
+            if not restored:
+                flow.response = http.Response.make(
+                    502,
+                    b'myelin egress missing original destination',
+                    {'content-type': 'text/plain'},
+                )
+            return
+
         if flow.request.method != 'POST':
             return
 
@@ -548,15 +638,6 @@ class MyelinAddon:
                 if LOG_SAVINGS:
                     ctx.log.info(f'[myelin] cache-hit {host}{path} ({len(cached_body)}B saved)')
                 return
-
-        # Arrival-port gating: this same addon may run on both an ingress
-        # listener (tool-filter/compress/redirect) and a dedicated egress-only
-        # listener (pure tunnel + block-bypass) within one mitmdump process.
-        # A flow arriving on the egress port is itself outbound traffic
-        # (e.g. a dedicated Headroom instance's own upstream call tunneling
-        # back through here) and must never be redirected again.
-        arrival_port = flow.client_conn.sockname[1] if flow.client_conn.sockname else None
-        is_egress_leg = EGRESS_PORT is not None and arrival_port == EGRESS_PORT
 
         # Auto-detect provider from host pattern + path — no hardcoded subdomains
         provider = _detect_provider(host, path)
@@ -659,11 +740,11 @@ class MyelinAddon:
                 flow.request.path = '/v1' + path
 
             flow.metadata['myelin_redirected'] = True
+            _set_original_destination_headers(flow, host, path)
             flow.request.scheme = 'http'
             flow.request.host = '127.0.0.1'
             flow.request.port = COPILOT_HEADROOM_PORT
-            if LOG_SAVINGS:
-                ctx.log.info(f'[myelin] → redirected {host}{path} to Copilot-Headroom :{COPILOT_HEADROOM_PORT}')
+            flow.request.headers['host'] = _host_header('127.0.0.1', 'http', COPILOT_HEADROOM_PORT)
             return
 
         # 3. Compress messages (all roles including tool results)

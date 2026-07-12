@@ -37,25 +37,32 @@ Copilot CLI
 mitmproxy :8888  (ingress — sole real-network-egress owner)
    │  arrival-port gating: is this a /v1/messages or /chat/completions
    │  request destined for a Copilot API host?
+   │  add private x-myelin-original-* destination headers
    ▼
 Copilot-Headroom :8788  (isolated instance, own cache/stats state)
    │  full pipeline: cache-mode freeze, content_router, TOIN, BM25 tool
    │  filtering, stats accounting — everything the primary instance does
+   │  upstream target is only http://127.0.0.1:8889
    ▼
 mitmproxy egress leg :8889  (same mitmproxy process, second listener)
-   │  Copilot-Headroom's own outbound call tunnels back out through here,
-   │  so mitmproxy remains the sole owner of real network egress
+   │  restore original host/port/scheme/path from private headers,
+   │  then forward to the original Copilot destination
+   │  reject requests missing those private headers
    │  (block-bypass / corp CA / VPN routing all still apply)
    ▼
 api.githubcopilot.com / api.business.githubcopilot.com
 ```
 
 Two invariants this design preserves:
-1. **mitmproxy never stops being the sole network-egress owner.** Even
-   though Copilot-Headroom makes its own outbound HTTP call, that call is
-   itself routed back through mitmproxy's second listener (`egress_port`),
-   not directly to the internet. This means block-bypass, corporate CA
-   trust, and VPN domain routing all keep working unchanged.
+1. **mitmproxy never stops being the sole network-egress owner.** Copilot-
+   Headroom never stores or selects Copilot provider URLs. Its outbound call
+   loops back to mitmproxy's second listener (`egress_port`), where the
+   original destination from the ingress flow is restored before real network
+   egress. This means block-bypass, corporate CA trust, and VPN domain routing
+   all keep working unchanged.
+   The egress listener is loopback-only for Copilot-Headroom: requests that
+   arrive without the private `x-myelin-original-*` headers are rejected
+   instead of being proxied back to itself.
 2. **Cache state never crosses instances.** Claude Code's `:8787` instance
    and Copilot's `:8788` instance never share a cache/stats namespace.
 
@@ -66,12 +73,11 @@ Two invariants this design preserves:
 | `proxy.copilot_headroom.enabled` | `false` | Opt-in switch for this feature |
 | `proxy.copilot_headroom.port` | `8788` | Copilot-Headroom's own loopback port |
 | `proxy.copilot_headroom.mode` | `cache` | Same cache-vs-token mode choice as the primary instance |
-| `proxy.copilot_headroom.anthropic_target_url` | `api.business.githubcopilot.com` | Real upstream host for Anthropic-format Copilot traffic |
-| `proxy.copilot_headroom.openai_target_url` | `api.business.githubcopilot.com` | Real upstream host for OpenAI-format Copilot traffic |
 | `proxy.mitm.egress_port` | `8889` | The second mitmproxy listener Copilot-Headroom's outbound calls tunnel through |
 
-Use `api.githubcopilot.com` for both target URLs instead if you're on an
-individual (non-Business/Enterprise) Copilot account.
+No Copilot provider URL is configured here. The installer points both
+Copilot-Headroom target env vars at `http://127.0.0.1:${proxy.mitm.egress_port}`
+and the mitm addon restores the original Copilot destination per request.
 
 ## Enabling it
 
@@ -88,18 +94,18 @@ Implemented and validated in six stages:
 - **Stage 0 — Snapshot**: backed up existing launchd plists/config, confirmed
   `myelin verify` was green and the plain-Copilot (no-proxy) escape hatch
   worked, before touching anything.
-- **Stage 1 — Isolated instance**: stood up Copilot-Headroom on `:8788` in
+- **Stage 1 — Isolated instance**: stand up Copilot-Headroom on `:8788` in
   full isolation (separate data dir, `ANTHROPIC_TARGET_API_URL`/
-  `OPENAI_TARGET_API_URL` pointed at `api.githubcopilot.com`), health-checked
-  standalone before wiring anything else to it.
-- **Stage 2 — Egress listener**: stood up mitmproxy's second, egress-only
-  listener on `:8889` as a separate/staging process, confirmed block-bypass +
-  CA + corporate-upstream chaining via direct `curl` before touching the
-  live `:8888` config.
-- **Stage 3 — Wire egress**: pointed Copilot-Headroom's outbound calls
-  (`HTTPS_PROXY=127.0.0.1:8889`) at the Stage 2 listener, sent synthetic
-  requests for both wire formats (Anthropic + OpenAI), confirmed
-  compression + 200s + block-bypass-on-forced-418 all worked together.
+  `OPENAI_TARGET_API_URL` pointed at the local mitm egress listener),
+  health-check standalone before wiring anything else to it.
+- **Stage 2 — Egress listener**: stand up mitmproxy's second, loopback-only
+  listener on `:8889` as a separate/staging process, confirm it restores
+  private `x-myelin-original-*` headers and rejects unmarked requests before
+  touching the live `:8888` config.
+- **Stage 3 — Wire egress**: point Copilot-Headroom's outbound calls
+  (`ANTHROPIC_TARGET_API_URL` and `OPENAI_TARGET_API_URL`) at the Stage 2
+  listener, send synthetic requests for both wire formats (Anthropic + OpenAI),
+  and confirm compression + 200s + block-bypass-on-forced-418 all work together.
 - **Stage 4 — Staging redirect**: added the arrival-port gating + redirect +
   path-rewrite logic to `copilot_addon.py`, deployed on a non-live staging
   port (`:18888`, not `:8888`), ran a full loop test with real Copilot CLI

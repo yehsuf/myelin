@@ -24,7 +24,8 @@ export function platformConfigBanner(
 }
 
 function displayConfigPath(configPath = DEFAULT_CONFIG_PATH, homeDir = homedir()) {
-  return configPath.startsWith(homeDir) ? `~${configPath.slice(homeDir.length)}` : configPath;
+  const shownPath = configPath.startsWith(homeDir) ? `~${configPath.slice(homeDir.length)}` : configPath;
+  return shownPath.replace(/\\/g, '/');
 }
 
 export async function pruneConfig({

@@ -45,13 +45,13 @@ describe('launchd (macOS) — server-side env isolation', () => {
       label: 'com.myelin.copilot-headroom',
       command: '/usr/local/bin/headroom',
       args: ['proxy', '--port', '8788'],
-      envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.githubcopilot.com' },
+      envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
     });
     assert.match(plist, /<string>\/bin\/sh<\/string>/);
     assert.match(plist, /unset\s+ANTHROPIC_BASE_URL/);
-    // Still passes the relevant target URL through EnvironmentVariables
+    // Still passes the relevant local loopback target through EnvironmentVariables
     assert.ok(plist.includes('ANTHROPIC_TARGET_API_URL'));
-    assert.ok(plist.includes('https://api.githubcopilot.com'));
+    assert.ok(plist.includes('http://127.0.0.1:8889'));
   });
 });
 
@@ -76,11 +76,11 @@ describe('systemd (Linux) — server-side env isolation', () => {
       port: 8788,
       mode: 'cache',
       workingDirectory: '/home/user/.myelin/copilot-headroom',
-      envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.githubcopilot.com' },
+      envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
     });
     assert.ok(unit.includes('UnsetEnvironment=ANTHROPIC_BASE_URL'));
     assert.ok(unit.includes('UnsetEnvironment=ENABLE_PROMPT_CACHING_1H'));
-    assert.ok(unit.includes('Environment=ANTHROPIC_TARGET_API_URL=https://api.githubcopilot.com'));
+    assert.ok(unit.includes('Environment=ANTHROPIC_TARGET_API_URL=http://127.0.0.1:8889'));
   });
 
   it('generateMitmUnit emits UnsetEnvironment= directives', () => {
@@ -118,13 +118,13 @@ describe('Windows registry service scripts — server-side env isolation', () =>
       port: 8788,
       mode: 'cache',
       workingDirectory: 'C:\\Users\\test\\.myelin\\copilot-headroom',
-      envVars: { ANTHROPIC_TARGET_API_URL: 'https://api.githubcopilot.com' },
+      envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
     });
     assert.ok(script.includes(`SetEnvironmentVariable('ANTHROPIC_BASE_URL', $null, 'Process')`));
     assert.ok(script.includes(`SetEnvironmentVariable('ENABLE_PROMPT_CACHING_1H', $null, 'Process')`));
-    // Target URL for headroom's own routing is still passed through
+    // Loopback target for headroom's own routing is still passed through
     assert.ok(script.includes('ANTHROPIC_TARGET_API_URL'));
-    assert.ok(script.includes('api.githubcopilot.com'));
+    assert.ok(script.includes('127.0.0.1:8889'));
   });
 
   it('generateMitmRunScript clears forbidden env before Start-Process', () => {

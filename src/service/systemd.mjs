@@ -119,7 +119,7 @@ export function copilotHeadroomServiceStatus() {
 
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
   const args = egressPort
-    ? ['--mode', `regular@${port}`, '--mode', `regular@${egressPort}`, '-s', addonPath]
+    ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
   const proxy = envVars.HTTPS_PROXY || envVars.https_proxy || '';
   if (proxy && !proxy.includes('127.0.0.1') && !proxy.includes('localhost')) args.push('--mode', `upstream:${proxy}`);

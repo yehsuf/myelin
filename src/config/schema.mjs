@@ -65,20 +65,15 @@ export const DEFAULT_CONFIG = {
     // TOIN, stats) instead of the stateless /v1/compress-only sidecar call.
     // Disabled by default — opt-in until validated on your own install.
     //
-    // If you enable this, you MUST set anthropic_target_url + openai_target_url
-    // to Copilot's real API host for YOUR account tier:
-    //   Individual:          https://api.githubcopilot.com
-    //   Business/Enterprise: https://api.business.githubcopilot.com
-    // Empty defaults on purpose — we won't pretend to know which tier you're
-    // on, and shipping a wrong URL silently misroutes traffic.
+    // Copilot's real destination stays owned by mitmproxy. The dedicated
+    // Headroom instance loops back to mitmproxy's local egress listener; the
+    // addon carries/restores the original provider host per request.
     //
     // See docs/copilot-headroom-architecture.md for the full design.
     copilot_headroom: {
       enabled: false,
       port: 8788,
       mode: 'cache',
-      anthropic_target_url: '',
-      openai_target_url: '',
     },
     // windows_service: controls HOW Windows services are managed.
     // - manager: 'registry' (default, current shipped behavior — unchanged,
@@ -173,6 +168,7 @@ export const DEFAULT_CONFIG = {
   budget_routing: {
     litellm: false,
     litellm_port: 4000,
+    api_base: '',
     cheap_model: 'claude-haiku-4-5',
     complex_model: 'claude-sonnet-4-6',
     cheap_threshold: 0.3,
