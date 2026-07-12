@@ -26,3 +26,8 @@
 
 ## Concerns
 - `src/cli/diagnose.mjs` still assumes Python headroom; this task stayed within the briefed installer/restart/verify/stats surface.
+
+## Review Fix
+- Restored symmetric managed-headroom recovery so installer/restart re-register durable launchd/systemd/Windows services when `proxy.engine` returns from `headroom_lite` to Python headroom, even if a transient process is already healthy.
+- Tightened Windows obsolete-headroom cleanup to stop only Myelin-owned headroom processes via managed launcher/PID or exact legacy Run-key executable matching, preserving Copilot-Headroom behavior.
+- Added lifecycle/restart/Windows ownership regressions covering missing-registration recovery, legacy Run-key migration, WSL Windows-home resolution, and loopback proxy filtering.

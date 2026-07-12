@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { generatePlist, generateGenericPlist } from '../src/service/launchd.mjs';
 import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } from '../src/service/systemd.mjs';
 import {
+  buildManagedHeadroomStopScript,
   HEADROOM_SERVICE_ID,
   collapseRedundantBackslashes,
   defaultWindowsHome,
@@ -19,6 +20,7 @@ import {
   parseWinswServiceStatus,
   resolveWslWindowsHome,
   spawnDetachedService,
+  stopManagedHeadroomProcess,
   winswConfigPath,
   winswExecutablePath,
 } from '../src/service/windows.mjs';
@@ -151,6 +153,17 @@ describe('systemd mitm unit generator — egress dual-listener', () => {
 });
 
 describe('windows run-script generator', () => {
+  it('buildManagedHeadroomStopScript only targets Myelin-managed headroom proxy processes', () => {
+    const script = buildManagedHeadroomStopScript({ port: 8787 });
+    assert.ok(script.includes(`$pidPath =`));
+    assert.ok(script.includes(`Get-Content -Path $pidPath`));
+    assert.ok(script.includes(`ProcessId = $managedPid`));
+    assert.ok(script.includes('proxy'));
+    assert.ok(script.includes(`--port\\s+8787(\\s|$)`));
+    assert.ok(!script.includes('Get-NetTCPConnection'));
+    assert.ok(!script.includes('OwningProcess'));
+  });
+
   it('contains registry run key name', () => {
     const script = generateHeadroomRunScript(OPTS);
     assert.ok(script.includes('MyelinHeadroom'));
@@ -198,6 +211,25 @@ describe('windows run-script generator', () => {
   it('escapes single quotes in envVar values', () => {
     const script = generateHeadroomRunScript({ ...OPTS, envVars: { MY_VAR: "it's here" } });
     assert.ok(script.includes("$env:MY_VAR = 'it''s here'"), 'single quote escaped');
+  });
+
+  it('falls back to the legacy Myelin run-key command when the managed pid file is absent', () => {
+    let command = '';
+    stopManagedHeadroomProcess({
+      port: 8787,
+      execSyncImpl: (value) => {
+        command = value;
+        return Buffer.from('');
+      },
+      headroomRunKeyStatusImpl: () => ({
+        registered: true,
+        raw: '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787',
+      }),
+    });
+    assert.ok(command.includes('ProcessId = $managedPid'));
+    assert.ok(command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
+    assert.ok(command.includes(`Name = 'headroom.exe'`));
+    assert.ok(command.includes(`--port\\s+8787(\\s|$)`));
   });
 });
 
@@ -347,6 +379,21 @@ describe('defaultWindowsHome', () => {
       assert.equal(defaultWindowsHome(undefined, {
         isWslImpl: () => true,
         resolveWslWindowsHomeImpl: () => '/mnt/c/Users/alice',
+        homedirImpl: () => '/home/alice',
+      }), 'C:\\Users\\alice');
+    } finally {
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = savedUserProfile;
+    }
+  });
+
+  it('prefers the resolved Windows home over an explicit POSIX WSL home path', () => {
+    const savedUserProfile = process.env.USERPROFILE;
+    delete process.env.USERPROFILE;
+    try {
+      assert.equal(defaultWindowsHome('/home/alice', {
+        isWslImpl: () => true,
+        resolveWslWindowsHomeImpl: () => 'C:/Users/alice',
         homedirImpl: () => '/home/alice',
       }), 'C:\\Users\\alice');
     } finally {

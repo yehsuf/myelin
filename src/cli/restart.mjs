@@ -7,6 +7,7 @@ import { selectedEngine } from '../config/engine-runtime.mjs';
 import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
+import { ensureManagedHeadroomService, managedHeadroomRegistrationStatus } from '../install.mjs';
 
 const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
@@ -17,6 +18,24 @@ function escapePs(value = '') {
 
 function windowsPath(value = '') {
   return String(value ?? '').replace(/\//g, '\\');
+}
+
+export function buildManagedHeadroomEnv(cfg, baseEnv = process.env) {
+  const env = {
+    HEADROOM_PORT: String(cfg?.proxy?.headroom?.port ?? 8787),
+    OPENAI_TARGET_API_URL: cfg?.proxy?.headroom?.openai_target_url ?? 'https://api.githubcopilot.com',
+    HEADROOM_MODE: cfg?.proxy?.headroom?.mode ?? 'cache',
+  };
+  const configuredCorporateProxy = cfg?.proxy?.headroom?.corporate_proxy?.trim?.() ?? '';
+  if (configuredCorporateProxy) env.HTTPS_PROXY = configuredCorporateProxy;
+  const loopbackProxyPattern = /^https?:\/\/(?:127(?:\.\d{1,3}){3}|localhost|\[::1\])(?::\d+)?\/?$/i;
+  for (const key of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'HEADROOM_CA_BUNDLE', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY']) {
+    if ((key === 'HTTPS_PROXY' || key === 'HTTP_PROXY') && loopbackProxyPattern.test(String(baseEnv[key] ?? ''))) {
+      continue;
+    }
+    if (baseEnv[key] && !env[key]) env[key] = baseEnv[key];
+  }
+  return env;
 }
 
 /**
@@ -208,7 +227,10 @@ async function stopObsoleteEngine({ engine, os, cfg, winManager }) {
     } catch {}
     return;
   }
-  stopProcessByPort(cfg?.proxy?.headroom?.port ?? 8787, os);
+  try {
+    const { stopManagedHeadroomProcess } = await import('../service/windows.mjs');
+    stopManagedHeadroomProcess({ port: cfg?.proxy?.headroom?.port ?? 8787 });
+  } catch {}
   try {
     execSync(
       `powershell -NoProfile -Command "Remove-ItemProperty -Path '${REG_RUN}' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`,
@@ -217,11 +239,42 @@ async function stopObsoleteEngine({ engine, os, cfg, winManager }) {
   } catch {}
 }
 
-async function defaultRestartManagedHeadroom({ os, cfg, winManager, log, warn }) {
+export async function defaultRestartManagedHeadroom({
+  os,
+  cfg,
+  winManager,
+  log,
+  warn,
+  managedHeadroomRegistrationStatusImpl = managedHeadroomRegistrationStatus,
+  ensureManagedHeadroomServiceImpl = ensureManagedHeadroomService,
+  homedirImpl = homedir,
+  headroomBinPathImpl = headroomBinPath,
+}) {
   try {
+    const home = homedirImpl();
+    const registration = await managedHeadroomRegistrationStatusImpl({
+      os,
+      winManager,
+      home,
+      headroomPort: cfg?.proxy?.headroom?.port ?? 8787,
+    });
+    if (!registration.registered) {
+      await ensureManagedHeadroomServiceImpl({
+        os,
+        winManager,
+        home,
+        headroomBin: headroomBinPathImpl(),
+        port: cfg?.proxy?.headroom?.port ?? 8787,
+        envVars: buildManagedHeadroomEnv(cfg),
+        interceptToolResults: cfg?.proxy?.headroom?.intercept_tool_results ?? true,
+        logFn: log,
+        warnFn: warn,
+      });
+      return;
+    }
     if (os === 'darwin') {
       const uid = execSync('id -u').toString().trim();
-      const plist = join(homedir(), 'Library', 'LaunchAgents', 'com.myelin.headroom.plist');
+      const plist = join(home, 'Library', 'LaunchAgents', 'com.myelin.headroom.plist');
       try { execSync(`launchctl bootout gui/${uid}/com.myelin.headroom`, { stdio: 'ignore' }); } catch {}
       execSync('sleep 1');
       execSync(`launchctl bootstrap gui/${uid} ${plist}`, { stdio: 'pipe' });
@@ -240,11 +293,32 @@ async function defaultRestartManagedHeadroom({ os, cfg, winManager, log, warn })
       return;
     }
     const port = cfg?.proxy?.headroom?.port ?? 8787;
-    stopProcessByPort(port, os);
+    const persistedEnv = (os === 'windows' && winManager !== 'winsw')
+      ? (await import('../service/windows.mjs')).readUserEnvVars([
+          'SSL_CERT_FILE',
+          'REQUESTS_CA_BUNDLE',
+          'NODE_EXTRA_CA_CERTS',
+          'HEADROOM_CA_BUNDLE',
+          'HTTPS_PROXY',
+          'HTTP_PROXY',
+          'NO_PROXY',
+        ])
+      : {};
+    try {
+      const { stopManagedHeadroomProcess } = await import('../service/windows.mjs');
+      stopManagedHeadroomProcess({ port, home });
+    } catch {}
     await new Promise(r => setTimeout(r, 500));
-    const { spawnDetachedService } = await import('../service/windows.mjs');
-    spawnDetachedService('MyelinHeadroom', headroomBinPath(), `proxy --port ${port}`);
-    log('  ✓ headroom restarted');
+    const { installService } = await import('../service/windows.mjs');
+    await installService({
+      headroomBin: headroomBinPathImpl(),
+      port,
+      envVars: buildManagedHeadroomEnv(cfg, { ...process.env, ...persistedEnv }),
+      home,
+      interceptToolResults: cfg?.proxy?.headroom?.intercept_tool_results ?? true,
+      manager: 'registry',
+    });
+    log('  ✓ headroom restarted (registry)');
   } catch (e) {
     warn(`  ⚠ headroom restart failed: ${e.message?.split('\n')[0] ?? e}`);
   }

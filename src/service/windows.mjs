@@ -123,7 +123,14 @@ export function defaultWindowsHome(
   } = {},
 ) {
   const wsl = isWslImpl();
-  const resolvedHome = home ?? process.env.USERPROFILE ?? (wsl ? resolveWslWindowsHomeImpl() : null) ?? homedirImpl();
+  const explicitHome = home ?? process.env.USERPROFILE ?? null;
+  const shouldResolveWindowsHome = wsl
+    && explicitHome
+    && !/^[a-zA-Z]:[\\/]/u.test(explicitHome)
+    && !String(explicitHome).startsWith('\\\\');
+  const resolvedHome = shouldResolveWindowsHome
+    ? (resolveWslWindowsHomeImpl() ?? explicitHome)
+    : (explicitHome ?? (wsl ? resolveWslWindowsHomeImpl() : null) ?? homedirImpl());
   return windowsPath(wsl ? wslMountToWindowsPath(resolvedHome) : resolvedHome);
 }
 
@@ -224,8 +231,98 @@ ${cleanupRunKey}
  *  NOT live-tested on Windows (Mac is this project's primary dev/test
  *  platform) — review carefully before relying on it in production.
  */
-function stopByPortScript(processExeName, port) {
-  return `Get-CimInstance Win32_Process -Filter "Name = '${processExeName}'" | Where-Object { $_.CommandLine -like '*--port ${port}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+function escapePsRegex(value = '') {
+  return String(value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stopByPortScript(processExeName, port, { requiredArgs = [], requiredExecutablePath = '' } = {}) {
+  const clauses = [
+    `$_.CommandLine`,
+    ...requiredArgs.map((arg) => `$_.CommandLine -match '${escapePsRegex(arg)}'`),
+    `$_.CommandLine -match '(^|\\s)--port\\s+${port}(\\s|$)'`,
+    ...(requiredExecutablePath ? [`$_.ExecutablePath -eq '${escapePs(requiredExecutablePath)}'`] : []),
+  ];
+  return `Get-CimInstance Win32_Process -Filter "Name = '${processExeName}'" | Where-Object { ${clauses.join(' -and ')} } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+}
+
+export function managedHeadroomLauncherPath({ home } = {}) {
+  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
+}
+
+export function managedHeadroomPidPath({ home } = {}) {
+  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
+}
+
+export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath } = {}) {
+  const pidPath = windowsPath(pidFilePath ?? managedHeadroomPidPath());
+  return [
+    `$pidPath = '${escapePs(pidPath)}'`,
+    `if (Test-Path $pidPath) {`,
+    `  $managedPid = (Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1)`,
+    `  if ($managedPid -and $managedPid.ToString().Trim() -match '^[0-9]+$') {`,
+    `    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`,
+    `    if ($proc -and $proc.Name -ieq '${processExeName}' -and $proc.CommandLine -match 'proxy' -and $proc.CommandLine -match '(^|\\s)--port\\s+${port}(\\s|$)') {`,
+    `      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue`,
+    `    }`,
+    `  }`,
+    `  Remove-Item -Path $pidPath -ErrorAction SilentlyContinue`,
+    `}`,
+  ].join('\n');
+}
+
+export function isLegacyManagedHeadroomRunKeyValue({ port, runKeyValue = '' } = {}) {
+  const value = String(runKeyValue ?? '');
+  return !/start-headroom\.ps1/i.test(value)
+    && /headroom(?:\.exe)?/i.test(value)
+    && /proxy/i.test(value)
+    && new RegExp(`--port\\s+${port}(?:\\D|$)`, 'i').test(value);
+}
+
+function parseLegacyManagedHeadroomRunKeyValue({ port, runKeyValue = '' } = {}) {
+  if (!isLegacyManagedHeadroomRunKeyValue({ port, runKeyValue })) return null;
+  const trimmed = String(runKeyValue ?? '').trim();
+  const quoted = trimmed.match(/^"([^"]+headroom(?:\.exe)?)"\s+proxy\b/i);
+  if (quoted) return { executablePath: quoted[1] };
+  const bare = trimmed.match(/^([^"\s]+headroom(?:\.exe)?)\s+proxy\b/i);
+  if (bare) return { executablePath: bare[1] };
+  return null;
+}
+
+export function stopManagedHeadroomProcess({
+  port,
+  processExeName = 'headroom.exe',
+  home,
+  execSyncImpl = execSync,
+  headroomRunKeyStatusImpl = headroomRunKeyStatus,
+} = {}) {
+  const runKeyStatus = headroomRunKeyStatusImpl();
+  let script = buildManagedHeadroomStopScript({
+    port,
+    processExeName,
+    pidFilePath: managedHeadroomPidPath({ home }),
+  });
+  const legacyRunKey = parseLegacyManagedHeadroomRunKeyValue({ port, runKeyValue: runKeyStatus?.raw });
+  if (legacyRunKey?.executablePath) {
+    script += `\n${stopByPortScript(processExeName, port, {
+      requiredArgs: ['proxy'],
+      requiredExecutablePath: windowsPath(legacyRunKey.executablePath),
+    })}`;
+  }
+  script = script.replace(/"/g, '\\"');
+  execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' });
+}
+
+export function stopHeadroomProcessByExecutablePath({
+  port,
+  executablePath,
+  processExeName = 'headroom.exe',
+  execSyncImpl = execSync,
+} = {}) {
+  const script = stopByPortScript(processExeName, port, {
+    requiredArgs: ['proxy'],
+    requiredExecutablePath: windowsPath(executablePath),
+  }).replace(/"/g, '\\"');
+  execSyncImpl(`powershell -NoProfile -Command "& { ${script} }"`, { stdio: 'pipe' });
 }
 
 export function winswServiceDir({ id, home } = {}) {
@@ -466,25 +563,44 @@ function buildEnvSetLines(envVars = {}) {
     .join('\n');
 }
 
-export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars = {} }) {
+function generateManagedHeadroomLauncherScript({ headroomBin, argStr, envVars = {}, pidPath }) {
+  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
+  const envBlock = buildEnvSetLines(envVars);
+  return `
+$ErrorActionPreference = 'Stop'
+${unsetBlock}
+${envBlock}
+try { Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue } catch {}
+$proc = Start-Process -FilePath '${escapePs(headroomBin)}' -ArgumentList '${escapePs(argStr)}' -WindowStyle Hidden -PassThru
+Set-Content -Path '${escapePs(pidPath)}' -Value $proc.Id -Encoding ASCII
+Wait-Process -Id $proc.Id
+Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue
+`.trim();
+}
+
+export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars = {}, home } = {}) {
   const bin = windowsPath(headroomBin);
   const exeName = bin.split('\\').pop();
   const args = buildHeadroomArgumentString({ port, interceptToolResults });
-  // Set process-level env vars before Start-Process so the child inherits them.
-  // In PS 5.1, Start-Process has no -Environment param — setting $env:X in the
-  // current process is the reliable way to pass env vars to a hidden child.
-  const envBlock = buildEnvSetLines(envVars);
-  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
+  const launcherPath = managedHeadroomLauncherPath({ home });
+  const pidPath = managedHeadroomPidPath({ home });
+  const launcherDir = dirname(launcherPath);
+  const launcher = windowsPath(launcherPath);
+  const launcherContent = generateManagedHeadroomLauncherScript({
+    headroomBin: bin,
+    argStr: args,
+    envVars,
+    pidPath: windowsPath(pidPath),
+  });
   return `
-${stopByPortScript(exeName, port)}
+New-Item -ItemType Directory -Force -Path '${escapePs(windowsPath(launcherDir))}' | Out-Null
+Set-Content -Path '${escapePs(launcher)}' -Value @'
+${launcherContent}
+'@ -Encoding UTF8
+${buildManagedHeadroomStopScript({ port, processExeName: exeName, pidFilePath: pidPath })}
 Start-Sleep -Milliseconds 500
-# Clear client-side provider env vars so headroom's own routing is never
-# confused by inherited ANTHROPIC_BASE_URL or similar. Passing target URLs
-# happens explicitly via ${envBlock ? 'envVars below' : 'the service config'}.
-${unsetBlock}
-${envBlock}
-Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WindowStyle Hidden
-Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value '"${bin}" ${args}'
+Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"' -WindowStyle Hidden
+Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"'
 Write-Host "[myelin] headroom started (hidden)"
 `;
 }
@@ -576,7 +692,7 @@ export async function installService({ headroomBin, port, envVars = {}, logPath,
   // (the CLI flag triggers ensure_tools() which downloads ast-grep; env var bypasses it)
   const mergedEnv = interceptToolResults ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars } : envVars;
   if (manager !== 'winsw') {
-    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults: false, envVars: mergedEnv }));
+    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults: false, envVars: mergedEnv, home }));
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
@@ -771,6 +887,32 @@ export function serviceStatus({ manager = 'registry' } = {}) {
     }
   }
   return winswServiceStatus({ id: HEADROOM_SERVICE_ID });
+}
+
+export function headroomRunKeyStatus({ execSyncImpl = execSync } = {}) {
+  try {
+    const raw = trimPowershellOutput(execSyncImpl(
+      `powershell -NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${HEADROOM_KEY}'"`,
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString());
+    return { registered: !!raw, raw };
+  } catch {
+    return { registered: false, raw: '' };
+  }
+}
+
+export function readUserEnvVars(keys = [], { execSyncImpl = execSync } = {}) {
+  const env = {};
+  for (const key of keys) {
+    try {
+      const value = trimPowershellOutput(execSyncImpl(
+        `powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('${key}','User')"`,
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      ).toString());
+      if (value) env[key] = value;
+    } catch {}
+  }
+  return env;
 }
 
 /**

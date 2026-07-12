@@ -7,7 +7,7 @@
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
@@ -85,7 +85,7 @@ function isVersionAtLeast(version, minimum) {
   return true;
 }
 
-async function removeManagedHeadroomRegistration({ os, winManager, headroomPort = 8787, warnFn = warn, okFn = ok }) {
+export async function removeManagedHeadroomRegistration({ os, winManager, home, headroomPort = 8787, warnFn = warn, okFn = ok }) {
   if (os === 'darwin') {
     try {
       const { plistPath } = await import('./service/launchd.mjs');
@@ -127,10 +127,8 @@ async function removeManagedHeadroomRegistration({ os, winManager, headroomPort 
 
   try {
     try {
-      execSync(
-        `powershell -Command "Get-NetTCPConnection -LocalPort ${headroomPort} -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`,
-        { stdio: 'pipe' }
-      );
+      const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
+      stopManagedHeadroomProcess({ port: headroomPort, home });
     } catch {}
     execSync(
       String.raw`powershell -NoProfile -Command "Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`,
@@ -140,6 +138,96 @@ async function removeManagedHeadroomRegistration({ os, winManager, headroomPort 
   } catch (e) {
     warnFn(`obsolete headroom cleanup failed: ${e.message}`);
   }
+}
+
+export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787 } = {}) {
+  if (os === 'darwin') {
+    const { plistPath } = await import('./service/launchd.mjs');
+    return { registered: existsSync(plistPath()) };
+  }
+
+  if (os === 'linux') {
+    const { unitPath } = await import('./service/systemd.mjs');
+    return { registered: existsSync(unitPath()) };
+  }
+
+  if (winManager === 'winsw') {
+    const { HEADROOM_SERVICE_ID, winswServiceStatus } = await import('./service/windows.mjs');
+    const status = winswServiceStatus({ id: HEADROOM_SERVICE_ID, home });
+    return {
+      registered: status.state !== 'Missing' && status.state !== 'NonExistent',
+      status,
+    };
+  }
+
+  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue } = await import('./service/windows.mjs');
+  const status = headroomRunKeyStatus();
+  return {
+    ...status,
+    registered: status.registered && !isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+    needsMigration: isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+  };
+}
+
+export async function ensureManagedHeadroomService({
+  os = detectOS(),
+  winManager = 'registry',
+  home,
+  headroomBin,
+  port,
+  envVars = {},
+  interceptToolResults,
+  logFn = console.log,
+  okFn = ok,
+  warnFn = warn,
+  installServiceImpl = installService,
+  waitForHeadroomImpl = waitForHeadroom,
+  registrationStatusImpl = managedHeadroomRegistrationStatus,
+  stopHealthyProcessImpl = stopHealthyProcessForManagedInstall,
+} = {}) {
+  const registration = await registrationStatusImpl({ os, winManager, home, headroomPort: port });
+  const alreadyHealthy = await waitForHeadroomImpl(port, 1500).catch(() => false);
+  const shouldInstall = !alreadyHealthy || !registration?.registered;
+
+  if (shouldInstall) {
+    if (alreadyHealthy && !registration?.registered) {
+      await stopHealthyProcessImpl({ os, winManager, home, port, headroomBin });
+    }
+    await installServiceImpl({
+      headroomBin,
+      port,
+      envVars,
+      home,
+      interceptToolResults,
+      logPath: join(home, '.myelin', 'headroom.log'),
+      manager: winManager,
+    });
+    okFn(`service registered (port ${port})`);
+    logFn('  Waiting for proxy...');
+    const healthy = await waitForHeadroomImpl(port, os === 'windows' ? 15000 : 10000);
+    healthy ? okFn(`proxy healthy on :${port}`) : warnFn('no response — run: myelin diagnose');
+    return { installed: true, alreadyHealthy, registeredBefore: !!registration?.registered, healthy };
+  }
+
+  okFn(`service registered (port ${port})`);
+  okFn(`proxy healthy on :${port}`);
+  return { installed: false, alreadyHealthy: true, registeredBefore: true, healthy: true };
+}
+
+async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
+  if (os === 'windows') {
+    try {
+      const { stopManagedHeadroomProcess, stopHeadroomProcessByExecutablePath } = await import('./service/windows.mjs');
+      stopManagedHeadroomProcess({ port, home });
+      stopHeadroomProcessByExecutablePath({ port, executablePath: headroomBin });
+    } catch {}
+    return;
+  }
+
+  try {
+    const command = `pids=$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null); for pid in $pids; do cmd=$(ps -p "$pid" -o command=); case "$cmd" in *"${headroomBin}"*"proxy --port ${port}"*) kill -9 "$pid" ;; esac; done`;
+    execSync(command, { stdio: 'pipe', shell: '/bin/bash' });
+  } catch {}
 }
 
 async function detectHeadroomFork() {
@@ -1123,21 +1211,17 @@ async function main() {
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
     if (enginePlan.shouldRunManagedHeadroom) {
-      const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
-      if (!alreadyHealthy) {
-        await installService({ headroomBin: binPath, port, envVars,
-          interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
-          logPath: join(home, '.myelin', 'headroom.log'), manager: winManager });
-        ok(`service registered (port ${port})`);
-        console.log('  Waiting for proxy...');
-        const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
-        healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
-      } else {
-        ok(`service registered (port ${port})`);
-        ok(`proxy healthy on :${port}`);
-      }
+      await ensureManagedHeadroomService({
+        os,
+        winManager,
+        home,
+        headroomBin: binPath,
+        port,
+        envVars,
+        interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
+      });
     } else if (enginePlan.shouldRemoveManagedHeadroom) {
-      await removeManagedHeadroomRegistration({ os, winManager, headroomPort: enginePlan.headroomPort });
+      await removeManagedHeadroomRegistration({ os, winManager, home, headroomPort: enginePlan.headroomPort });
     }
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
@@ -1649,4 +1733,6 @@ ${initSkillBody}`);
   await runReload();
 }
 
-main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
+}

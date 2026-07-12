@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildCopilotHeadroomTaskEnv, runRestart } from '../src/cli/restart.mjs';
+import { buildCopilotHeadroomTaskEnv, buildManagedHeadroomEnv, defaultRestartManagedHeadroom, runRestart } from '../src/cli/restart.mjs';
 
 describe('buildCopilotHeadroomTaskEnv', () => {
   it('points Copilot-Headroom at the local mitm egress listener', () => {
@@ -16,6 +16,39 @@ describe('buildCopilotHeadroomTaskEnv', () => {
     assert.equal(env.HEADROOM_MODE, 'cache');
     assert.equal(env.NO_PROXY, '127.0.0.1,localhost,::1');
     assert.match(env.HEADROOM_WORKSPACE_DIR, /[\\/]Users[\\/]alice[\\/]\.myelin[\\/]headroom-copilot-8788$/);
+  });
+});
+
+describe('buildManagedHeadroomEnv', () => {
+  it('preserves the configured corporate proxy when rebuilding a managed service env', () => {
+    const env = buildManagedHeadroomEnv({
+      proxy: {
+        headroom: {
+          port: 8787,
+          mode: 'cache',
+          corporate_proxy: 'http://corp-proxy:8080',
+          openai_target_url: 'https://api.githubcopilot.com',
+        },
+      },
+    }, {});
+
+    assert.equal(env.HTTPS_PROXY, 'http://corp-proxy:8080');
+  });
+
+  it('does not persist a loopback wrapper proxy into the durable managed env', () => {
+    const env = buildManagedHeadroomEnv({
+      proxy: {
+        headroom: {
+          port: 8787,
+        },
+      },
+    }, {
+      HTTPS_PROXY: 'http://127.0.0.1:8888',
+      NO_PROXY: '127.0.0.1,localhost,::1',
+    });
+
+    assert.equal(env.HTTPS_PROXY, undefined);
+    assert.equal(env.NO_PROXY, '127.0.0.1,localhost,::1');
   });
 });
 
@@ -104,5 +137,42 @@ describe('runRestart engine selection', () => {
     });
 
     assert.deepEqual(calls, ['lite']);
+  });
+});
+
+describe('defaultRestartManagedHeadroom', () => {
+  it('reinstalls a missing managed registration instead of spawning a transient-only restart', async () => {
+    const calls = [];
+    const cfg = {
+      proxy: {
+        headroom: {
+          port: 8787,
+          mode: 'cache',
+          corporate_proxy: 'http://corp-proxy:8080',
+          openai_target_url: 'https://api.githubcopilot.com',
+          intercept_tool_results: true,
+        },
+      },
+    };
+
+    await defaultRestartManagedHeadroom({
+      os: 'windows',
+      cfg,
+      winManager: 'registry',
+      log: () => {},
+      warn: () => {},
+      homedirImpl: () => 'C:\\Users\\alice',
+      headroomBinPathImpl: () => 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      managedHeadroomRegistrationStatusImpl: async () => ({ registered: false }),
+      ensureManagedHeadroomServiceImpl: async (opts) => {
+        calls.push(opts);
+      },
+    });
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].home, 'C:\\Users\\alice');
+    assert.equal(calls[0].headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
+    assert.deepEqual(calls[0].envVars, buildManagedHeadroomEnv(cfg));
+    assert.equal(calls[0].interceptToolResults, true);
   });
 });
