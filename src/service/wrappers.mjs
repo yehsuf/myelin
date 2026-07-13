@@ -149,7 +149,7 @@ function _copilot() {
   if nc -z 127.0.0.1 ${mitmPort} 2>/dev/null; then
     env ${unsetFlags} \\
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
-      NO_PROXY=${COPILOT_NO_PROXY_HOSTS} \\
+      NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
       copilot "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
