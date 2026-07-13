@@ -3,14 +3,27 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generatePlist, generateGenericPlist, generateLaunchdWatchdogScript } from '../src/service/launchd.mjs';
-import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } from '../src/service/systemd.mjs';
+import {
+  generatePlist,
+  generateGenericPlist,
+  generateLaunchdWatchdogScript,
+  generateEngineInstancePlist,
+} from '../src/service/launchd.mjs';
+import {
+  generateSystemdUnit,
+  generateCopilotHeadroomUnit,
+  generateMitmUnit,
+  generateEngineInstanceUnit,
+} from '../src/service/systemd.mjs';
 import {
   buildManagedHeadroomStopScript,
   HEADROOM_SERVICE_ID,
   collapseRedundantBackslashes,
   copilotHeadroomServiceStatus,
   defaultWindowsHome,
+  engineInstanceStatus as windowsEngineInstanceStatus,
+  generateEngineInstanceRunScript,
+  generateEngineInstanceWinswConfig,
   generateCopilotHeadroomRunScript,
   generateHeadroomRunScript,
   generateMitmRunScript,
@@ -41,6 +54,153 @@ const OPTS = {
   logPath: '/tmp/headroom.log',
   user: 'testuser',
 };
+
+const ENGINE_BINS = {
+  headroomBin: '/opt/myelin/bin/headroom',
+  headroomLiteBin: '/opt/myelin/bin/headroom-lite',
+};
+
+function engineInstance(engine, role) {
+  const port = role === 'primary' ? 8790 : 8788;
+  return {
+    engine,
+    role,
+    port,
+    id: `${engine}-${role}`,
+    stateDir: `/home/me/.myelin/state/${engine}-${role}`,
+    logPath: `/home/me/.myelin/${engine}-${role}.log`,
+    healthUrl: `http://127.0.0.1:${port}/health`,
+    env: role === 'copilot'
+      ? (engine === 'headroom_lite'
+          ? { HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889' }
+          : { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' })
+      : {},
+  };
+}
+
+describe('engine instance service generators', () => {
+  for (const engine of ['headroom', 'headroom_lite']) {
+    for (const role of ['primary', 'copilot']) {
+      const instance = engineInstance(engine, role);
+      const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
+      const expectedLabel = role === 'primary' ? 'com.myelin.headroom' : 'com.myelin.copilot-headroom';
+      const expectedServiceId = role === 'primary' ? 'myelin-headroom' : 'myelin-copilot-headroom';
+
+      it(`generates a ${engine} ${role} launchd service from its descriptor`, () => {
+        const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
+        assert.match(plist, new RegExp(expectedBinary));
+        assert.match(plist, new RegExp(expectedLabel));
+        assert.match(plist, new RegExp(instance.stateDir));
+        assert.match(plist, new RegExp(instance.logPath));
+        if (engine === 'headroom_lite') {
+          assert.match(plist, /HEADROOM_LITE_PORT/);
+          assert.doesNotMatch(plist, /\bheadroom proxy\b/);
+        } else {
+          assert.match(plist, new RegExp(`proxy.*--port.*${instance.port}`));
+        }
+      });
+
+      it(`generates a ${engine} ${role} systemd service from its descriptor`, () => {
+        const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS });
+        assert.match(unit, new RegExp(expectedBinary));
+        assert.match(unit, new RegExp(expectedServiceId));
+        assert.match(unit, new RegExp(`WorkingDirectory=${instance.stateDir}`));
+        assert.match(unit, new RegExp(instance.logPath));
+        if (engine === 'headroom_lite') {
+          assert.match(unit, /Environment=HEADROOM_LITE_PORT=/);
+          assert.doesNotMatch(unit, /\bheadroom proxy\b/);
+        } else {
+          assert.match(unit, new RegExp(`proxy --port ${instance.port}`));
+        }
+      });
+
+      it(`generates a ${engine} ${role} registry service from its descriptor`, () => {
+        const script = generateEngineInstanceRunScript({ instance, ...ENGINE_BINS });
+        assert.match(script, new RegExp(expectedServiceId === HEADROOM_SERVICE_ID ? 'MyelinHeadroom' : 'MyelinCopilotHeadroom'));
+        assert.ok(script.includes(instance.stateDir.replace(/\//g, '\\')));
+        if (engine === 'headroom_lite') {
+          assert.match(script, /HEADROOM_LITE_PORT/);
+          assert.doesNotMatch(script, /\bheadroom proxy\b/);
+        } else {
+          assert.match(script, new RegExp(`proxy --port ${instance.port}`));
+        }
+      });
+
+      it(`generates a ${engine} ${role} WinSW service from its descriptor`, () => {
+        const xml = generateEngineInstanceWinswConfig({ instance, ...ENGINE_BINS });
+        assert.match(xml, new RegExp(`<id>${expectedServiceId}</id>`));
+        assert.ok(xml.includes(expectedBinary.replace(/\//g, '\\')));
+        assert.ok(xml.includes(instance.stateDir.replace(/\//g, '\\')));
+        assert.ok(xml.includes(instance.logPath.replace(/\//g, '\\')));
+        if (engine === 'headroom_lite') {
+          assert.match(xml, /HEADROOM_LITE_PORT/);
+          assert.doesNotMatch(xml, /\bheadroom proxy\b/);
+        } else {
+          assert.match(xml, new RegExp(`proxy --port ${instance.port}`));
+        }
+      });
+    }
+  }
+});
+
+describe('Windows registry engine-instance ownership', () => {
+  const LITE_INSTANCE = {
+    engine: 'headroom_lite',
+    role: 'primary',
+    port: 8790,
+    id: 'headroom_lite-primary',
+    stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+    logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+    healthUrl: 'http://127.0.0.1:8790/health',
+    env: {},
+  };
+
+  it('parses a Lite registry launcher with empty arguments', () => {
+    const commands = [];
+    const status = windowsEngineInstanceStatus(LITE_INSTANCE, {
+      manager: 'registry',
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes('Get-Content -Path') && command.includes('start-headroom.ps1')) {
+          return Buffer.from("Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe' -ArgumentList '' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary' -WindowStyle Hidden -PassThru");
+        }
+        if (command.includes('headroom.pid')) return Buffer.from('4321\n');
+        return Buffer.from('Running\n');
+      },
+      runKeyStatusImpl: () => ({
+        registered: true,
+        raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary\\start-headroom.ps1"',
+      }),
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('Windows launcher should be read through PowerShell');
+      },
+    });
+
+    assert.equal(status.running, true);
+    assert.ok(commands.some((command) => command.includes("Name -ieq 'headroom-lite.exe'")));
+  });
+
+  it('only stops a registry process whose parent is the managed launcher', () => {
+    const script = generateEngineInstanceRunScript({
+      instance: LITE_INSTANCE,
+      headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe',
+    });
+
+    assert.ok(script.includes('$previousParent = if ($previousProcess.ParentProcessId)'));
+    assert.ok(script.includes('$previousParent.CommandLine -match'));
+    assert.ok(script.includes("ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe'"));
+  });
+
+  it('keeps a replacement launcher PID file when an earlier launcher exits', () => {
+    const script = generateEngineInstanceRunScript({
+      instance: LITE_INSTANCE,
+      headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe',
+    });
+
+    assert.ok(script.includes('$recordedPid -eq $proc.Id'));
+  });
+});
 
 
 describe('generateLaunchdWatchdogScript', () => {
@@ -167,10 +327,10 @@ describe('systemd copilot-headroom unit generator', () => {
     const unit = generateCopilotHeadroomUnit(CH_OPTS);
     assert.ok(unit.includes('WorkingDirectory=/home/user/.myelin/copilot-headroom'));
   });
-  it('contains the port and mode in ExecStart', () => {
+  it('uses engine-owned proxy arguments without a role-specific mode', () => {
     const unit = generateCopilotHeadroomUnit(CH_OPTS);
     assert.ok(unit.includes('--port 8788'));
-    assert.ok(unit.includes('--mode cache'));
+    assert.ok(!unit.includes('--mode cache'));
   });
   it('has a distinct description from the Claude-Headroom unit', () => {
     const unit = generateCopilotHeadroomUnit(CH_OPTS);
@@ -758,10 +918,10 @@ describe('windows copilot-headroom run-script generator', () => {
     assert.ok(script.includes('-WorkingDirectory'));
     assert.ok(script.includes('copilot-headroom'));
   });
-  it('contains the port and mode', () => {
+  it('uses engine-owned proxy arguments without a role-specific mode', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);
     assert.ok(script.includes('--port 8788'));
-    assert.ok(script.includes('--mode cache'));
+    assert.ok(!script.includes('--mode cache'));
   });
   it('stops only the process on this exact port', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);

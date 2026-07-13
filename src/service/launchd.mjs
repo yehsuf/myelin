@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -8,6 +8,67 @@ const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 const WATCHDOG_LABEL = 'com.myelin.watchdog';
 const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';
+
+function engineInstanceIdentity(instance = {}) {
+  if (instance.role === 'primary') {
+    return {
+      label: LABEL,
+      serviceId: 'myelin-headroom',
+      name: 'Myelin Headroom',
+    };
+  }
+  if (instance.role === 'copilot') {
+    return {
+      label: COPILOT_HEADROOM_LABEL,
+      serviceId: 'myelin-copilot-headroom',
+      name: 'Myelin Copilot Headroom',
+    };
+  }
+  throw new Error(`Unsupported engine instance role: ${instance.role}`);
+}
+
+function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } = {}) {
+  if (instance.engine === 'headroom') {
+    if (!headroomBin) throw new Error('headroomBin is required for headroom engine instances');
+    return {
+      command: headroomBin,
+      args: ['proxy', '--port', String(instance.port)],
+      env: {},
+    };
+  }
+  if (instance.engine === 'headroom_lite') {
+    if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
+    return {
+      command: headroomLiteBin,
+      args: [],
+      env: { HEADROOM_LITE_PORT: String(instance.port) },
+    };
+  }
+  throw new Error(`Unsupported engine instance engine: ${instance.engine}`);
+}
+
+function legacyEngineInstance({
+  instance,
+  engine = 'headroom',
+  role,
+  port,
+  envVars = {},
+  logPath,
+  home = homedir(),
+} = {}) {
+  if (instance) return instance;
+  const id = `${engine}-${role}`;
+  return {
+    engine,
+    role,
+    port,
+    id,
+    stateDir: join(home, '.myelin', 'state', id),
+    logPath: logPath ?? join(home, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
+    env: envVars,
+  };
+}
 
 /**
  * Wrap a command + args in a `/bin/sh -c 'unset X Y; exec <cmd> <args>'` shell
@@ -38,45 +99,15 @@ function xmlEscape(s) {
     .replace(/>/g, '&gt;');
 }
 
-export function generatePlist({ headroomBin, port, envVars = {}, logPath, interceptToolResults }) {
-  // Use HEADROOM_INTERCEPT_ENABLED=1 env var instead of --intercept-tool-results CLI flag
-  // (the flag calls ensure_tools() which can block in restricted-network environments)
-  const mergedEnv = interceptToolResults
-    ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars }
-    : envVars;
-  const envEntries = Object.entries(mergedEnv)
-    .map(([k, v]) => `        <key>${k}</key>\n        <string>${xmlEscape(v)}</string>`)
-    .join('\n');
-  // Wrap through /bin/sh -c so we can unset client-side provider vars before
-  // exec — launchd EnvironmentVariables is additive, not a filter (see docs).
-  const progArgs = shWrappedProgramArgs(headroomBin, ['proxy', '--port', String(port)]);
-  const argItems = progArgs.map(a => `        <string>${xmlEscape(a)}</string>`).join('\n');
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-${argItems}
-    </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-${envEntries}
-    </dict>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-    <key>StandardOutPath</key>
-    <string>${logPath ?? '/tmp/myelin-headroom.log'}</string>
-    <key>StandardErrorPath</key>
-    <string>${logPath ?? '/tmp/myelin-headroom.log'}</string>
-</dict>
-</plist>`;
+export function generatePlist(opts = {}) {
+  const mergedEnv = opts.interceptToolResults
+    ? { HEADROOM_INTERCEPT_ENABLED: '1', ...opts.envVars }
+    : (opts.envVars ?? {});
+  return generateEngineInstancePlist({
+    ...opts,
+    instance: legacyEngineInstance({ ...opts, role: 'primary', envVars: mergedEnv }),
+    envVars: {},
+  });
 }
 
 export function plistPath() {
@@ -129,6 +160,60 @@ ${envEntries}
     <string>${logPath ?? '/tmp/myelin.log'}</string>${workingDirEntry}
 </dict>
 </plist>`;
+}
+
+export function generateEngineInstancePlist({ instance, envVars = {}, ...options }) {
+  const { label } = engineInstanceIdentity(instance);
+  const command = engineInstanceCommand(instance, options);
+  return generateGenericPlist({
+    label,
+    command: command.command,
+    args: command.args,
+    envVars: { ...command.env, ...instance.env, ...envVars },
+    logPath: instance.logPath,
+    workingDirectory: instance.stateDir,
+  });
+}
+
+export function engineInstancePlistPath(instance) {
+  const { label } = engineInstanceIdentity(instance);
+  return join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+}
+
+export function installEngineInstance(instance, options = {}) {
+  const { label } = engineInstanceIdentity(instance);
+  const p = engineInstancePlistPath(instance);
+  const content = generateEngineInstancePlist({ instance, ...options });
+  mkdirSync(instance.stateDir, { recursive: true });
+  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
+  writeFileSync(p, content, 'utf8');
+  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
+  try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
+  execSync('sleep 1');
+  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+}
+
+export function engineInstanceStatus(instance) {
+  const { label } = engineInstanceIdentity(instance);
+  try {
+    const out = execSync(`launchctl list ${label} 2>&1`).toString();
+    return {
+      running: !out.includes('Could not find service'),
+      label,
+      healthUrl: instance.healthUrl,
+      raw: out,
+    };
+  } catch {
+    return { running: false, label, healthUrl: instance.healthUrl, raw: '' };
+  }
+}
+
+export function removeEngineInstance(instance) {
+  const { label } = engineInstanceIdentity(instance);
+  const p = engineInstancePlistPath(instance);
+  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
+  try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
+  if (existsSync(p)) unlinkSync(p);
 }
 
 /** Install mitmproxy as a LaunchAgent running the Myelin addon.
@@ -208,14 +293,7 @@ export function mitmServiceStatus() {
 }
 
 export function installService(opts) {
-  const content = generatePlist(opts);
-  const p = plistPath();
-  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  writeFileSync(p, content, 'utf8');
-  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
-  try { execSync(`launchctl bootout gui/${uid}/${LABEL}`, { stdio: 'ignore' }); } catch {}
-  execSync('sleep 1');
-  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+  return installEngineInstance(legacyEngineInstance({ ...opts, role: 'primary' }), opts);
 }
 
 export function copilotHeadroomPlistPath() {
@@ -231,36 +309,12 @@ export function copilotHeadroomPlistPath() {
  * WorkingDirectory is the isolation mechanism (confirmed against headroom's
  * own --memory-db-path default of "{cwd}/.headroom/memory.db").
  */
-export function installCopilotHeadroomService({ headroomBin, port, envVars = {}, logPath, home }) {
-  home = home ?? homedir();
-  const workingDirectory = join(home, '.myelin', 'copilot-headroom');
-  mkdirSync(workingDirectory, { recursive: true });
-  const args = ['proxy', '--port', String(port), '--mode', envVars.HEADROOM_MODE ?? 'cache',
-    '--connect-timeout-seconds', '10'];
-  const content = generateGenericPlist({
-    label: COPILOT_HEADROOM_LABEL,
-    command: headroomBin,
-    args,
-    envVars,
-    logPath: logPath ?? join(home, '.myelin', 'copilot-headroom.log'),
-    workingDirectory,
-  });
-  mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  const p = copilotHeadroomPlistPath();
-  writeFileSync(p, content, 'utf8');
-  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
-  try { execSync(`launchctl bootout gui/${uid}/${COPILOT_HEADROOM_LABEL}`, { stdio: 'ignore' }); } catch {}
-  execSync('sleep 1');
-  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+export function installCopilotHeadroomService(opts = {}) {
+  return installEngineInstance(legacyEngineInstance({ ...opts, role: 'copilot' }), opts);
 }
 
-export function copilotHeadroomServiceStatus() {
-  try {
-    const out = execSync(`launchctl list ${COPILOT_HEADROOM_LABEL} 2>&1`).toString();
-    return { running: !out.includes('Could not find service'), label: COPILOT_HEADROOM_LABEL, raw: out };
-  } catch {
-    return { running: false, raw: '' };
-  }
+export function copilotHeadroomServiceStatus(opts = {}) {
+  return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
 /**
@@ -364,35 +418,5 @@ export function installWatchdog({ home, headroomPort, mitmPort = 8888, copilotHe
 }
 
 export function serviceStatus() {
-  try {
-    // Check our canonical label first
-    const labels = [
-      LABEL,
-      // Username-variant: com.<username>.headroom (common pattern in manual setups)
-      `com.${process.env.USER || process.env.USERNAME || ''}.headroom`,
-    ].filter((l, i, a) => l !== LABEL || i === 0 ? true : a.indexOf(l) === i); // dedupe
-
-    for (const label of labels) {
-      try {
-        const out = execSync(`launchctl list ${label} 2>&1`).toString();
-        if (!out.includes('Could not find service')) {
-          return { running: true, label, raw: out };
-        }
-      } catch {}
-    }
-
-    // Fallback: scan all loaded agents for anything headroom-related
-    try {
-      const all = execSync('launchctl list 2>&1').toString();
-      const match = all.split('\n').find(l => l.toLowerCase().includes('headroom'));
-      if (match) {
-        const label = match.trim().split(/\s+/).pop();
-        return { running: true, label, raw: match };
-      }
-    } catch {}
-
-    return { running: false, raw: '' };
-  } catch {
-    return { running: false, raw: '' };
-  }
+  return engineInstanceStatus(legacyEngineInstance({ role: 'primary' }));
 }

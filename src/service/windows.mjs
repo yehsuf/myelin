@@ -21,6 +21,77 @@ export const HEADROOM_SERVICE_ID = 'myelin-headroom';
 export const MITM_SERVICE_ID = 'myelin-mitmproxy';
 export const COPILOT_HEADROOM_SERVICE_ID = 'myelin-copilot-headroom';
 
+function engineInstanceIdentity(instance = {}) {
+  if (instance.role === 'primary') {
+    return {
+      id: HEADROOM_SERVICE_ID,
+      runKey: HEADROOM_KEY,
+      name: 'Myelin Headroom',
+      description: 'Myelin token-efficiency proxy',
+      launcherName: 'start-headroom.ps1',
+      pidName: 'headroom.pid',
+    };
+  }
+  if (instance.role === 'copilot') {
+    return {
+      id: COPILOT_HEADROOM_SERVICE_ID,
+      runKey: COPILOT_HEADROOM_KEY,
+      name: 'Myelin Copilot Headroom',
+      description: 'Myelin dedicated Copilot CLI proxy',
+      launcherName: 'start-copilot-headroom.ps1',
+      pidName: 'copilot-headroom.pid',
+    };
+  }
+  throw new Error(`Unsupported engine instance role: ${instance.role}`);
+}
+
+function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } = {}) {
+  if (instance.engine === 'headroom') {
+    if (!headroomBin) throw new Error('headroomBin is required for headroom engine instances');
+    return {
+      executable: headroomBin,
+      arguments: `proxy --port ${instance.port}`,
+      env: {},
+    };
+  }
+  if (instance.engine === 'headroom_lite') {
+    if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
+    return {
+      executable: headroomLiteBin,
+      arguments: '',
+      env: { HEADROOM_LITE_PORT: String(instance.port) },
+    };
+  }
+  throw new Error(`Unsupported engine instance engine: ${instance.engine}`);
+}
+
+function legacyEngineInstance({
+  instance,
+  engine = 'headroom',
+  role,
+  port,
+  envVars = {},
+  logPath,
+  home,
+} = {}) {
+  if (instance) return instance;
+  const winHome = defaultWindowsHome(home);
+  const id = `${engine}-${role}`;
+  const stateDir = role === 'primary'
+    ? winswServiceDir({ id: HEADROOM_SERVICE_ID, home: winHome })
+    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+  return {
+    engine,
+    role,
+    port,
+    id,
+    stateDir,
+    logPath: logPath ?? pathWin32.join(winHome, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
+    env: envVars,
+  };
+}
+
 const MITM_IGNORE_HOSTS = [
   String.raw`.*\.akamai\.com`,
   String.raw`.*\.corp\.akamai\.com`,
@@ -369,7 +440,7 @@ function readWindowsScriptText(scriptPath, opts = {}) {
 }
 
 function parseLauncherStartProcess(script = '') {
-  const match = String(script ?? '').match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])+)'/m);
+  const match = String(script ?? '').match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])*)'/m);
   if (!match) return null;
   return {
     executablePath: match[1].replace(/''/g, "'"),
@@ -507,6 +578,7 @@ export function generateWinswConfigXml({
   executable,
   arguments: serviceArguments,
   logPath,
+  workingDirectory,
   envVars = {},
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
@@ -519,6 +591,9 @@ export function generateWinswConfigXml({
     .map((delay) => `  <onfailure action="restart" delay="${xmlEscape(delay)}"/>`)
     .join('\n');
   const hideWindowEntry = hideWindow ? '\n  <hidewindow>true</hidewindow>' : '';
+  const workingDirectoryEntry = workingDirectory
+    ? `\n  <workingdirectory>${xmlEscape(workingDirectory)}</workingdirectory>`
+    : '';
   const envBlock = envEntries ? `${envEntries}\n` : '';
   return `<?xml version="1.0" encoding="utf-8"?>
 <service>
@@ -529,7 +604,7 @@ ${envBlock}  <executable>${xmlEscape(executable)}</executable>
   <arguments>${xmlEscape(serviceArguments)}</arguments>
   <startmode>Automatic</startmode>
   <logpath>${xmlEscape(logPath)}</logpath>
-  <log mode="roll"></log>${hideWindowEntry}
+  <log mode="roll"></log>${hideWindowEntry}${workingDirectoryEntry}
 ${failureEntries}
   <resetfailure>${xmlEscape(resetFailure)}</resetfailure>
 </service>`;
@@ -625,6 +700,7 @@ export async function installWinswService({
   arguments: serviceArguments,
   envVars = {},
   logPath,
+  workingDirectory,
   home,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
@@ -655,6 +731,7 @@ export async function installWinswService({
     executable: windowsPath(executable),
     arguments: serviceArguments,
     logPath: windowsPath(logDir),
+    workingDirectory: workingDirectory ? windowsPath(workingDirectory) : undefined,
     envVars: defaultServiceEnv({ home: winHome, envVars }),
     onFailureDelays,
     resetFailure,
@@ -722,6 +799,212 @@ export function uninstallWinswService({ id, home } = {}) {
   } catch {
     return false;
   }
+}
+
+function engineInstancePaths(instance) {
+  const identity = engineInstanceIdentity(instance);
+  const stateDir = normalizeWindowsFilesystemPath(instance.stateDir);
+  return {
+    ...identity,
+    stateDir,
+    launcherPath: pathWin32.join(stateDir, identity.launcherName),
+    pidPath: pathWin32.join(stateDir, identity.pidName),
+  };
+}
+
+function engineInstanceRunKeyStatus(runKey, { execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
+  try {
+    const raw = trimPowershellOutput(execSyncImpl(
+      withPowerShell(`-NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${runKey}' -ErrorAction SilentlyContinue).'${runKey}'"`, powershellExe),
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString());
+    return { registered: !!raw, raw };
+  } catch {
+    return { registered: false, raw: '' };
+  }
+}
+
+function engineInstanceLauncherPath(runKeyValue, fallbackPath) {
+  return String(runKeyValue ?? '').match(/-File\s+"([^"]+)"/i)?.[1] ?? fallbackPath;
+}
+
+export function generateEngineInstanceRunScript({ instance, envVars = {}, ...options }) {
+  const paths = engineInstancePaths(instance);
+  const command = engineInstanceCommand(instance, options);
+  const executable = normalizeWindowsFilesystemPath(command.executable);
+  const logPath = normalizeWindowsFilesystemPath(instance.logPath);
+  const args = command.arguments;
+  const executableName = escapePs(executable.split('\\').pop() ?? '');
+  const launcherRegex = escapePs(escapePsRegex(paths.launcherPath));
+  const commandLineClause = args
+    ? ` -and $previousProcess.CommandLine -match '${escapePs(escapePsRegex(args))}$'`
+    : '';
+  const mergedEnv = { ...command.env, ...instance.env, ...envVars };
+  const envLines = Object.entries(mergedEnv)
+    .filter(([, value]) => value != null && String(value).length > 0)
+    .map(([key, value]) => {
+      const escapedValue = escapePs(String(value ?? ''));
+      return `$env:${key} = '${escapedValue}'\n[System.Environment]::SetEnvironmentVariable('${escapePs(key)}', '${escapedValue}', 'Process')`;
+    })
+    .join('\n');
+  const launcherContent = `
+$ErrorActionPreference = 'Stop'
+${buildServiceEnvUnsetLines({ os: 'windows' })}
+${envLines}
+try { Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue } catch {}
+$proc = Start-Process -FilePath '${escapePs(executable)}' -ArgumentList '${escapePs(args)}' -WorkingDirectory '${escapePs(paths.stateDir)}' -RedirectStandardOutput '${escapePs(logPath)}' -WindowStyle Hidden -PassThru
+Set-Content -Path '${escapePs(paths.pidPath)}' -Value $proc.Id -Encoding ASCII
+Wait-Process -Id $proc.Id
+if (Test-Path '${escapePs(paths.pidPath)}') {
+  $recordedPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($recordedPid -eq $proc.Id) {
+    Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue
+  }
+}
+`.trim();
+  return `
+New-Item -ItemType Directory -Force -Path '${escapePs(paths.stateDir)}' | Out-Null
+Set-Content -Path '${escapePs(paths.launcherPath)}' -Value @'
+${launcherContent}
+'@ -Encoding UTF8
+if (Test-Path '${escapePs(paths.pidPath)}') {
+  $previousPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($previousPid -match '^[0-9]+$') {
+    $previousProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $previousPid" -ErrorAction SilentlyContinue
+    $previousParent = if ($previousProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($previousProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+    if ($previousProcess -and $previousProcess.Name -ieq '${executableName}' -and $previousProcess.ExecutablePath -eq '${escapePs(executable)}'${commandLineClause} -and $previousParent -and $previousParent.CommandLine -match '${launcherRegex}') {
+      Stop-Process -Id $previousPid -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${escapePs(paths.launcherPath)}"' -WindowStyle Hidden
+Set-ItemProperty -Path '${REG_RUN}' -Name '${paths.runKey}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${escapePs(paths.launcherPath)}"'
+Write-Host "[myelin] ${paths.name} started (hidden)"
+`;
+}
+
+export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, ...options }) {
+  const identity = engineInstanceIdentity(instance);
+  const command = engineInstanceCommand(instance, options);
+  return generateWinswConfigXml({
+    id: identity.id,
+    name: identity.name,
+    description: identity.description,
+    executable: normalizeWindowsFilesystemPath(command.executable),
+    arguments: command.arguments,
+    logPath: normalizeWindowsFilesystemPath(instance.logPath),
+    workingDirectory: normalizeWindowsFilesystemPath(instance.stateDir),
+    envVars: defaultServiceEnv({
+      home,
+      envVars: { ...command.env, ...instance.env, ...envVars },
+    }),
+  });
+}
+
+export async function installEngineInstance(instance, { manager = 'registry', envVars = {}, home, ...options } = {}) {
+  const identity = engineInstanceIdentity(instance);
+  const command = engineInstanceCommand(instance, options);
+  const mergedEnv = { ...command.env, ...instance.env, ...envVars };
+  if (manager !== 'winsw') {
+    runPs(generateEngineInstanceRunScript({ instance, envVars, ...options }));
+    return { ok: true, manager: 'registry', id: identity.id };
+  }
+  return installWinswService({
+    id: identity.id,
+    name: identity.name,
+    description: identity.description,
+    executable: command.executable,
+    arguments: command.arguments,
+    envVars: mergedEnv,
+    logPath: instance.logPath,
+    workingDirectory: instance.stateDir,
+    home,
+  });
+}
+
+export function engineInstanceStatus(instance, {
+  manager = 'registry',
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  runKeyStatusImpl,
+  powershellExe = powerShellExecutable(),
+  home,
+} = {}) {
+  const paths = engineInstancePaths(instance);
+  if (manager === 'winsw') {
+    return { ...winswServiceStatus({ id: paths.id, home, execSyncImpl, powershellExe }), healthUrl: instance.healthUrl };
+  }
+  try {
+    const runKeyStatus = (runKeyStatusImpl ?? ((deps) => engineInstanceRunKeyStatus(paths.runKey, deps)))({
+      execSyncImpl,
+      powershellExe,
+    });
+    if (!runKeyStatus?.registered) {
+      return { running: false, state: 'Stopped', raw: '', label: paths.id, healthUrl: instance.healthUrl };
+    }
+    const launcherPath = engineInstanceLauncherPath(runKeyStatus.raw, paths.launcherPath);
+    const launcherScript = readWindowsScriptText(launcherPath, {
+      execSyncImpl,
+      existsSyncImpl,
+      readFileSyncImpl,
+      powershellExe,
+    });
+    const legacyCommand = parseLegacyManagedHeadroomRunKeyValue({ runKeyValue: runKeyStatus.raw });
+    const launcherCommand = parseLauncherStartProcess(launcherScript);
+    const command = launcherCommand ?? legacyCommand ?? {};
+    const executable = windowsPath(command.executablePath ?? '');
+    const argumentsRegex = escapePs(escapePsRegex(command.argStr ?? ''));
+    const executableName = escapePs(executable.split('\\').pop() ?? '');
+    const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+    const pidText = trimPowershellOutput(readWindowsFileText(paths.pidPath, {
+      execSyncImpl,
+      existsSyncImpl,
+      readFileSyncImpl,
+      powershellExe,
+    }));
+    const pidClause = /^[0-9]+$/u.test(pidText)
+      ? `Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`
+      : `Get-CimInstance Win32_Process -Filter "Name = '${executableName}'" -ErrorAction SilentlyContinue | Select-Object -First 1`;
+    const identityCheck = `$proc.Name -ieq '${executableName}' -and $proc.ExecutablePath -eq '${escapePs(executable)}' -and $proc.CommandLine -match '${argumentsRegex}$'`;
+    const script = [
+      `$managedPid = ${/^[0-9]+$/u.test(pidText) ? pidText : '$null'}`,
+      `$proc = ${pidClause}`,
+      launcherCommand
+        ? `if ($proc -and ${identityCheck}) {
+  $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+  if ($parent -and $parent.CommandLine -match '${launcherRegex}') { 'Running' } else { 'Stopped' }
+} else { 'Stopped' }`
+        : `if ($proc -and ${identityCheck}) { 'Running' } else { 'Stopped' }`,
+    ].join('\n').replace(/"/g, '\\"');
+    const raw = trimPowershellOutput(execSyncImpl(
+      withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString());
+    return { ...parseManagedHeadroomStatus(raw), label: paths.id, healthUrl: instance.healthUrl };
+  } catch {
+    return { running: false, state: 'Unknown', raw: '', label: paths.id, healthUrl: instance.healthUrl };
+  }
+}
+
+export function removeEngineInstance(instance, { manager = 'registry', home } = {}) {
+  const paths = engineInstancePaths(instance);
+  if (manager === 'winsw') return uninstallWinswService({ id: paths.id, home });
+  runPs(`
+if (Test-Path '${escapePs(paths.pidPath)}') {
+  $managedPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($managedPid -match '^[0-9]+$') {
+    $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
+    $managedParent = if ($managedProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($managedProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+    if ($managedParent -and $managedParent.CommandLine -match '${escapePs(escapePsRegex(paths.launcherPath))}') {
+      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue
+}
+Remove-ItemProperty -Path '${REG_RUN}' -Name '${paths.runKey}' -ErrorAction SilentlyContinue
+`);
+  return true;
 }
 
 /** Pure builder — returns the PowerShell script text without executing it. */
@@ -978,31 +1261,15 @@ Remove-Item -Path '${escapePs(pidPath)}' -ErrorAction SilentlyContinue
 `.trim();
 }
 
-export function generateHeadroomRunScript({ headroomBin, port, interceptToolResults, envVars = {}, home } = {}) {
-  const bin = windowsPath(headroomBin);
-  const exeName = bin.split('\\').pop();
-  const args = buildHeadroomArgumentString({ port, interceptToolResults });
-  const launcherPath = managedHeadroomLauncherPath({ home });
-  const pidPath = managedHeadroomPidPath({ home });
-  const launcherDir = pathWin32.dirname(launcherPath);
-  const launcher = windowsPath(launcherPath);
-  const launcherContent = generateManagedHeadroomLauncherScript({
-    headroomBin: bin,
-    argStr: args,
-    envVars,
-    pidPath: windowsPath(pidPath),
+export function generateHeadroomRunScript(opts = {}) {
+  const mergedEnv = opts.interceptToolResults
+    ? { HEADROOM_INTERCEPT_ENABLED: '1', ...opts.envVars }
+    : (opts.envVars ?? {});
+  return generateEngineInstanceRunScript({
+    ...opts,
+    instance: legacyEngineInstance({ ...opts, role: 'primary', envVars: mergedEnv }),
+    envVars: {},
   });
-  return `
-New-Item -ItemType Directory -Force -Path '${escapePs(windowsPath(launcherDir))}' | Out-Null
-Set-Content -Path '${escapePs(launcher)}' -Value @'
-${launcherContent}
-'@ -Encoding UTF8
-${buildManagedHeadroomStopScript({ port, processExeName: exeName, pidFilePath: pidPath })}
-Start-Sleep -Milliseconds 500
-Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"' -WindowStyle Hidden
-Set-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${escapePs(launcher)}"'
-Write-Host "[myelin] headroom started (hidden)"
-`;
 }
 
 /**
@@ -1087,24 +1354,14 @@ ${batLines.join('\r\n')}
 }
 
 
-export async function installService({ headroomBin, port, envVars = {}, logPath, home, interceptToolResults, manager = 'registry' }) {
-  // Move --intercept-tool-results from CLI flag to env var to avoid startup hang
-  // (the CLI flag triggers ensure_tools() which downloads ast-grep; env var bypasses it)
-  const mergedEnv = interceptToolResults ? { HEADROOM_INTERCEPT_ENABLED: '1', ...envVars } : envVars;
-  if (manager !== 'winsw') {
-    runPs(generateHeadroomRunScript({ headroomBin, port, interceptToolResults: false, envVars: mergedEnv, home }));
-    return { ok: true, manager: 'registry' };
-  }
-  return installWinswService({
-    id: HEADROOM_SERVICE_ID,
-    name: 'Myelin Headroom',
-    description: 'Myelin token-efficiency proxy (Headroom)',
-    executable: headroomBin,
-    arguments: buildHeadroomArgumentString({ port }),
-    envVars: mergedEnv,
-    logPath,
-    home,
-  });
+export async function installService(opts = {}) {
+  const mergedEnv = opts.interceptToolResults
+    ? { HEADROOM_INTERCEPT_ENABLED: '1', ...opts.envVars }
+    : (opts.envVars ?? {});
+  return installEngineInstance(
+    legacyEngineInstance({ ...opts, role: 'primary', envVars: mergedEnv }),
+    { ...opts, envVars: {} },
+  );
 }
 
 /**
@@ -1117,57 +1374,30 @@ export async function installService({ headroomBin, port, envVars = {}, logPath,
  * mechanism, matching the launchd.mjs implementation).
  * NOT live-tested on Windows — review carefully before relying on it.
  */
-export function generateCopilotHeadroomRunScript({ headroomBin, port, mode, workingDirectory, envVars = {} }) {
-  const bin = windowsPath(headroomBin);
-  const exeName = bin.split('\\').pop();
-  const workDir = windowsPath(workingDirectory ?? '');
-  const args = buildCopilotHeadroomArgumentString({ port, mode });
-  const envLines = Object.entries(envVars)
-    .map(([k, v]) => `[System.Environment]::SetEnvironmentVariable('${k}', '${String(v ?? '').replace(/'/g, "''")}', 'Process')`)
-    .join('\n');
-  const unsetBlock = buildServiceEnvUnsetLines({ os: 'windows' });
-  const launcherPath = pathWin32.join(workDir, 'start-copilot-headroom.ps1');
-  const launcher = windowsPath(launcherPath);
-  const launcherContent = `
-# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.
-${unsetBlock}
-${envLines}
-Start-Process -FilePath '${bin}' -ArgumentList '${args}' -WorkingDirectory '${workDir}' -WindowStyle Hidden
-`.trim();
-  return `
-# Clear client-side provider env vars from Process scope before starting the
-# dedicated copilot-headroom instance — its own routing target is set below
-# via envVars, so it must not inherit stray ANTHROPIC_BASE_URL etc.
-${unsetBlock}
-${envLines}
-New-Item -ItemType Directory -Force -Path '${workDir}' | Out-Null
-Set-Content -Path '${launcher}' -Value @'
-${launcherContent}
-'@ -Encoding UTF8
-${stopByPortScript(exeName, port)}
-Start-Sleep -Milliseconds 500
-& powershell.exe -NoProfile -ExecutionPolicy Bypass -File '${launcher}'
-Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_KEY}' -Value 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${launcher}"'
-Write-Host "[myelin] copilot-headroom started (hidden)"
-`;
+export function generateCopilotHeadroomRunScript(opts = {}) {
+  const selectedEngine = opts.engine ?? 'headroom';
+  const stateDir = opts.workingDirectory ?? legacyEngineInstance({ ...opts, role: 'copilot' }).stateDir;
+  return generateEngineInstanceRunScript({
+    ...opts,
+    instance: opts.instance ?? {
+      engine: selectedEngine,
+      role: 'copilot',
+      port: opts.port,
+      id: `${selectedEngine}-copilot`,
+      stateDir,
+      logPath: pathWin32.join(stateDir ?? '', 'copilot-headroom.log'),
+      healthUrl: `http://127.0.0.1:${opts.port}/health`,
+      env: opts.envVars ?? {},
+    },
+    envVars: {},
+  });
 }
 
-export async function installCopilotHeadroomService({ headroomBin, port, envVars = {}, logPath, home, manager = 'registry' }) {
-  if (manager !== 'winsw') {
-    const workingDirectory = pathWin32.join(defaultWindowsHome(home), '.myelin', 'copilot-headroom');
-    runPs(generateCopilotHeadroomRunScript({ headroomBin, port, mode: envVars.HEADROOM_MODE, workingDirectory, envVars }));
-    return { ok: true, manager: 'registry' };
-  }
-  return installWinswService({
-    id: COPILOT_HEADROOM_SERVICE_ID,
-    name: 'Myelin Copilot Headroom',
-    description: 'Myelin dedicated Copilot CLI proxy (Headroom)',
-    executable: headroomBin,
-    arguments: buildCopilotHeadroomArgumentString({ port, mode: envVars.HEADROOM_MODE }),
-    envVars,
-    logPath,
-    home,
-  });
+export async function installCopilotHeadroomService(opts = {}) {
+  return installEngineInstance(
+    legacyEngineInstance({ ...opts, role: 'copilot' }),
+    { ...opts, envVars: {} },
+  );
 }
 
 function copilotHeadroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
@@ -1182,42 +1412,12 @@ function copilotHeadroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = 
   }
 }
 
-export function copilotHeadroomServiceStatus({
-  manager = 'registry',
-  port = 8788,
-  execSyncImpl = execSync,
-  existsSyncImpl = existsSync,
-  readFileSyncImpl = readFileSync,
-  runKeyStatusImpl = copilotHeadroomRunKeyStatus,
-  powershellExe = powerShellExecutable(),
-} = {}) {
-  if (manager !== 'winsw') {
-    try {
-      const identity = readManagedCopilotHeadroomIdentity({
-        execSyncImpl,
-        existsSyncImpl,
-        readFileSyncImpl,
-        runKeyStatusImpl,
-        powershellExe,
-      });
-      const configuredPort = Number(port);
-      const effectivePort = identity?.port ?? (Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8788);
-      const script = buildManagedHeadroomStatusScript({
-        executablePath: identity?.executablePath,
-        argStr: identity?.argStr,
-        launcherPath: identity?.launcherPath,
-        port: effectivePort,
-      }).replace(/"/g, '\\"');
-      const raw = trimPowershellOutput(execSyncImpl(
-        withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
-        { stdio: ['ignore', 'pipe', 'pipe'] },
-      ).toString());
-      return parseManagedHeadroomStatus(raw);
-    } catch {
-      return { running: false, state: 'Unknown', raw: '' };
-    }
-  }
-  return winswServiceStatus({ id: COPILOT_HEADROOM_SERVICE_ID });
+export function copilotHeadroomServiceStatus(opts = {}) {
+  const status = engineInstanceStatus(
+    legacyEngineInstance({ ...opts, role: 'copilot', port: opts.port ?? 8788 }),
+    opts,
+  );
+  return { running: status.running, state: status.state, raw: status.raw };
 }
 
 /** Pure builder — returns the PowerShell script text without executing it.
@@ -1338,68 +1538,12 @@ export function mitmServiceStatus({
   return winswServiceStatus({ id: MITM_SERVICE_ID });
 }
 
-export function serviceStatus({
-  manager = 'registry',
-  home = defaultWindowsHome(),
-  port = 8787,
-  execSyncImpl = execSync,
-  existsSyncImpl = existsSync,
-  readFileSyncImpl = readFileSync,
-  runKeyStatusImpl = headroomRunKeyStatus,
-  powershellExe = powerShellExecutable(),
-} = {}) {
-  if (manager !== 'winsw') {
-    try {
-      const identity = readManagedHeadroomIdentity({
-        home,
-        execSyncImpl,
-        existsSyncImpl,
-        readFileSyncImpl,
-        runKeyStatusImpl,
-        powershellExe,
-      });
-      const hasLegacyIdentity = !!identity?.executablePath && !!identity?.argStr && !identity?.launcherPath;
-      const hasManagedLauncherIdentity = !!identity?.launcherPath && !!identity?.executablePath && !!identity?.argStr;
-      if (!hasLegacyIdentity && !hasManagedLauncherIdentity) {
-        return { running: false, state: 'Stopped', raw: '' };
-      }
-      const configuredPort = Number(port);
-      const effectivePort = identity.port ?? (Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : 8787);
-      let script;
-      if (hasManagedLauncherIdentity) {
-        const pidText = trimPowershellOutput(readWindowsFileText(identity.pidPath, {
-          execSyncImpl,
-          existsSyncImpl,
-          readFileSyncImpl,
-          powershellExe,
-        }));
-        if (!pidText || !/^[0-9]+$/u.test(pidText)) {
-          return { running: false, state: 'Stopped', raw: '' };
-        }
-        script = buildManagedHeadroomStatusScript({
-          pid: pidText,
-          executablePath: identity.executablePath,
-          argStr: identity.argStr,
-          launcherPath: identity.launcherPath,
-          port: effectivePort,
-        }).replace(/"/g, '\\"');
-      } else {
-        script = buildManagedHeadroomStatusScript({
-          executablePath: identity.executablePath,
-          argStr: identity.argStr,
-          port: effectivePort,
-        }).replace(/"/g, '\\"');
-      }
-      const raw = trimPowershellOutput(execSyncImpl(
-        withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
-        { stdio: ['ignore', 'pipe', 'pipe'] },
-      ).toString());
-      return parseManagedHeadroomStatus(raw);
-    } catch {
-      return { running: false, state: 'Unknown', raw: '' };
-    }
-  }
-  return winswServiceStatus({ id: HEADROOM_SERVICE_ID });
+export function serviceStatus(opts = {}) {
+  const status = engineInstanceStatus(
+    legacyEngineInstance({ ...opts, role: 'primary', port: opts.port ?? 8787 }),
+    opts,
+  );
+  return { running: status.running, state: status.state, raw: status.raw };
 }
 
 export function headroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {

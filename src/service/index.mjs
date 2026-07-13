@@ -1,5 +1,47 @@
 import { detectOS } from '../detect/os.mjs';
 
+export async function installEngineInstance(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.installEngineInstance(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.installEngineInstance(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.installEngineInstance(instance, platformOptions);
+}
+
+export async function engineInstanceStatus(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.engineInstanceStatus(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.engineInstanceStatus(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.engineInstanceStatus(instance, platformOptions);
+}
+
+export async function removeEngineInstance(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.removeEngineInstance(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.removeEngineInstance(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.removeEngineInstance(instance, platformOptions);
+}
+
 export async function installService(opts) {
   const os = detectOS();
   if (os === 'darwin') {
