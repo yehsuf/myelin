@@ -963,19 +963,45 @@ export async function defaultRestartWatchdog({
   }
 }
 
-function ownedEngineRoleInstance(engine, role, home) {
+function cleanupPort(engine, role, cfg = {}) {
+  const rawPort = role === 'primary'
+    ? (engine === 'headroom_lite'
+      ? cfg?.proxy?.headroom_lite?.port ?? 8790
+      : cfg?.proxy?.headroom?.port ?? 8787)
+    : cfg?.proxy?.copilot_headroom?.port ?? 8788;
+  const port = typeof rawPort === 'string' ? Number(rawPort) : rawPort;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return null;
+  }
+  return port;
+}
+
+function ownedEngineRoleInstance(engine, role, home, cfg) {
   const id = `${engine}-${role}`;
+  const port = cleanupPort(engine, role, cfg);
+  if (port == null) return null;
   return {
     engine,
     role,
     id,
+    port,
     stateDir: join(home, '.myelin', 'state', id),
     logPath: join(home, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
   };
+}
+
+function ownedEngineRoleInstances(engine, roles, home, cfg, warnFn) {
+  return roles.map((role) => {
+    const instance = ownedEngineRoleInstance(engine, role, home, cfg);
+    if (!instance) warnFn?.(`  ⚠ skipped ${engine}-${role} cleanup: configured port is invalid`);
+    return instance;
+  }).filter(Boolean);
 }
 
 export async function stopObsoleteOwnedInstances({
   selectedEngine,
+  cfg,
   winManager,
   home = homedir(),
   warn: warnFn,
@@ -983,8 +1009,9 @@ export async function stopObsoleteOwnedInstances({
   instances,
 } = {}) {
   const obsoleteEngine = selectedEngine === 'headroom' ? 'headroom_lite' : 'headroom';
-  const ownedInstances = instances ?? ['primary', 'copilot']
-    .map((role) => ownedEngineRoleInstance(obsoleteEngine, role, home));
+  const ownedInstances = instances ?? ownedEngineRoleInstances(
+    obsoleteEngine, ['primary', 'copilot'], home, cfg, warnFn,
+  );
   for (const instance of ownedInstances) {
     await removeEngineInstanceImpl(instance, {
       manager: winManager,
@@ -997,13 +1024,19 @@ export async function stopObsoleteOwnedInstances({
 
 export async function removeDisabledCopilotInstance({
   plan,
+  cfg,
   winManager,
   home = homedir(),
   warn: warnFn,
   removeEngineInstanceImpl = removeEngineInstance,
 } = {}) {
   if (plan.instances.some((instance) => instance.role === 'copilot')) return false;
-  await removeEngineInstanceImpl(ownedEngineRoleInstance(plan.engine, 'copilot', home), {
+  const instance = ownedEngineRoleInstance(plan.engine, 'copilot', home, cfg);
+  if (!instance) {
+    warnFn?.(`  ⚠ skipped ${plan.engine}-copilot cleanup: configured port is invalid`);
+    return false;
+  }
+  await removeEngineInstanceImpl(instance, {
     manager: winManager,
     home,
     warn: warnFn,
@@ -1094,8 +1127,9 @@ export async function runRestart({
   log('\n🔄 Restarting Myelin services...');
 
   const obsoleteEngine = plan.engine === 'headroom' ? 'headroom_lite' : 'headroom';
-  const obsoleteInstances = ['primary', 'copilot']
-    .map((role) => ownedEngineRoleInstance(obsoleteEngine, role, home));
+  const obsoleteInstances = ownedEngineRoleInstances(
+    obsoleteEngine, ['primary', 'copilot'], home, cfg, warn,
+  );
   await stopObsoleteOwnedInstancesImpl({
     selectedEngine: plan.engine,
     instances: obsoleteInstances,

@@ -477,6 +477,114 @@ describe('runRestart descriptor plan', () => {
       manager: 'winsw',
     }]);
   });
+
+  it('skips an obsolete role with an invalid stale port without blocking the active restart', async () => {
+    const restarted = [];
+    const warnings = [];
+
+    await runRestart({
+      config: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 9787 },
+          headroom_lite: { port: '' },
+          mitm: { enabled: true, port: 9888 },
+          copilot_headroom: { enabled: false },
+          windows_service: { manager: 'winsw' },
+        },
+      },
+      detectOSImpl: () => 'windows',
+      removeEngineInstanceImpl: async () => {},
+      restartEngineInstanceImpl: async (instance) => restarted.push(instance.id),
+      restartMitmImpl: async () => {},
+      restartWatchdogImpl: async () => {},
+      log: () => {},
+      warn: (message) => warnings.push(message),
+    });
+
+    assert.deepEqual(restarted, ['headroom-primary']);
+    assert.ok(warnings.some((message) => message.includes('headroom_lite-primary')));
+  });
+
+  for (const {
+    label,
+    headroomPort,
+    copilotPort,
+    config,
+  } of [
+    {
+      label: 'default ports',
+      headroomPort: 8787,
+      copilotPort: 8788,
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { port: 8790 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: false },
+          windows_service: { manager: 'winsw' },
+        },
+      },
+    },
+    {
+      label: 'custom normalized ports',
+      headroomPort: 9787,
+      copilotPort: 9788,
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: '9787' },
+          headroom_lite: { port: 9790 },
+          mitm: { enabled: true, port: 9888 },
+          copilot_headroom: { enabled: false, port: '9788' },
+          windows_service: { manager: 'winsw' },
+        },
+      },
+    },
+  ]) {
+    it(`removes obsolete and disabled Windows roles with ${label}`, async () => {
+      const removed = [];
+
+      await runRestart({
+        config,
+        detectOSImpl: () => 'windows',
+        removeEngineInstanceImpl: (instance, options) => {
+          const expectedPort = instance.role === 'primary' ? headroomPort : copilotPort;
+          const portIdentity = instance.engine === 'headroom_lite'
+            ? `<env name="HEADROOM_LITE_PORT" value="${expectedPort}"/>`
+            : `<arguments>proxy --port ${expectedPort}</arguments>`;
+          return removeWindowsEngineInstance(instance, {
+            ...options,
+            existsSyncImpl: () => true,
+            readFileSyncImpl: () => [
+              '<service>',
+              `  <id>${instance.id}</id>`,
+              `  <workingdirectory>${instance.stateDir.replaceAll('/', '\\')}</workingdirectory>`,
+              `  ${portIdentity}`,
+              `  <executable>C:\\Users\\alice\\.myelin\\bin\\${instance.engine === 'headroom_lite' ? 'headroom-lite.exe' : 'headroom.exe'}</executable>`,
+              '</service>',
+            ].join('\n'),
+            uninstallWinswServiceImpl: ({ id }) => {
+              removed.push(id);
+              return true;
+            },
+            uninstallWindowsWatchdogTaskImpl: () => {},
+          });
+        },
+        restartEngineInstanceImpl: async () => true,
+        restartMitmImpl: async () => {},
+        restartWatchdogImpl: async () => {},
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.deepEqual(removed, [
+        'headroom-primary',
+        'headroom-copilot',
+        'headroom_lite-copilot',
+      ]);
+    });
+  }
 });
 
 describe('Windows descriptor watchdogs', () => {
