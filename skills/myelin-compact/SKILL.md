@@ -1,5 +1,5 @@
 ---
-name: compact
+name: myelin-compact
 description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
 argument-hint: "[prepare|resume]"
 ---
@@ -32,7 +32,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 2. Run:
    ```bash
-   node ~/.copilot/skills/compact/compact-prepare.mjs prepare
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
    ```
 
 3. Print the full script output verbatim. The `<<<SESSION_STATE_BRIEF>>>` block
@@ -80,7 +80,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 1. Run:
    ```bash
-   node ~/.copilot/skills/compact/compact-prepare.mjs resume
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
    ```
 
 2. Print the output verbatim.
