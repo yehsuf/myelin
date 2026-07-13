@@ -561,11 +561,18 @@ def _poll_reachable(hostname: str, timeout: float = 30.0, interval: float = 1.0)
 # mitmproxy's replay/via mechanism entirely for this one bypass path.
 # ---------------------------------------------------------------------------
 
-def _recv_exact(sock: socket.socket, n: int) -> bytes:
+def _recv_exact(sock: socket.socket, n: int, deadline: Optional[float] = None) -> bytes:
     """Read exactly ``n`` bytes or raise ConnectionError (SOCKS replies are
-    short and fixed-length; a partial recv would desync the stream)."""
+    short and fixed-length; a partial recv would desync the stream). When
+    ``deadline`` (monotonic) is given, enforce it across the whole read so a
+    trickle-feeding peer cannot exceed the total budget."""
     buf = bytearray()
     while len(buf) < n:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f'SOCKS5 read deadline exceeded ({len(buf)}/{n} bytes)')
+            sock.settimeout(remaining)
         chunk = sock.recv(n - len(buf))
         if not chunk:
             raise ConnectionError(f'SOCKS5 short read: got {len(buf)} of {n} bytes')
@@ -573,10 +580,11 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
     return bytes(buf)
 
 
-def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int) -> None:
+def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int,
+                      deadline: Optional[float] = None) -> None:
     """Minimal no-auth SOCKS5 CONNECT handshake (RFC 1928) on an open socket."""
     sock.sendall(b'\x05\x01\x00')  # ver=5, 1 auth method offered, no-auth
-    reply = _recv_exact(sock, 2)
+    reply = _recv_exact(sock, 2, deadline)
     if reply[0] != 0x05 or reply[1] != 0x00:
         raise ConnectionError(f'SOCKS5 method negotiation rejected: {reply!r}')
 
@@ -584,7 +592,7 @@ def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int) -
     req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', target_port)
     sock.sendall(req)
 
-    header = _recv_exact(sock, 4)
+    header = _recv_exact(sock, 4, deadline)
     if header[0] != 0x05:
         raise ConnectionError(f'SOCKS5 CONNECT reply malformed: {header!r}')
     if header[1] != 0x00:
@@ -592,12 +600,12 @@ def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int) -
 
     atype = header[3]
     if atype == 0x01:        # IPv4
-        _recv_exact(sock, 4 + 2)
+        _recv_exact(sock, 4 + 2, deadline)
     elif atype == 0x03:      # domain name
-        n = _recv_exact(sock, 1)[0]
-        _recv_exact(sock, n + 2)
+        n = _recv_exact(sock, 1, deadline)[0]
+        _recv_exact(sock, n + 2, deadline)
     elif atype == 0x04:      # IPv6
-        _recv_exact(sock, 16 + 2)
+        _recv_exact(sock, 16 + 2, deadline)
     else:
         raise ConnectionError(f'SOCKS5 CONNECT unknown address type {atype}')
 
@@ -622,20 +630,28 @@ def _socks5_relay(host: str, port: int, method: str, path: str,
     raw_sock: Optional[socket.socket] = None
     tls_sock: Optional[ssl.SSLSocket] = None
     deadline = time.monotonic() + total_timeout
+
+    def _remaining() -> float:
+        r = deadline - time.monotonic()
+        if r <= 0:
+            raise TimeoutError('SOCKS5 relay total deadline exceeded')
+        return r
+
     try:
-        raw_sock = socket.create_connection((proxy_host, proxy_port), timeout=connect_timeout)
-        raw_sock.settimeout(connect_timeout)
-        _socks5_handshake(raw_sock, host, port)
+        # Clamp connect to whichever is smaller: the connect budget or the
+        # remaining total budget.
+        raw_sock = socket.create_connection(
+            (proxy_host, proxy_port), timeout=min(connect_timeout, _remaining()))
+        raw_sock.settimeout(min(connect_timeout, _remaining()))
+        _socks5_handshake(raw_sock, host, port, deadline)
 
         ssl_ctx = ssl.create_default_context(cafile=os.environ.get('SSL_CERT_FILE') or None)
+        raw_sock.settimeout(_remaining())  # bound the TLS handshake too
         tls_sock = ssl_ctx.wrap_socket(raw_sock, server_hostname=host)
         raw_sock = None  # ownership transferred to tls_sock
 
-        # Bound the read/write phase by the remaining total budget.
-        remaining = max(0.1, deadline - time.monotonic())
-        tls_sock.settimeout(remaining)
-
-        conn = http_client.HTTPSConnection(host, port, timeout=remaining)
+        tls_sock.settimeout(_remaining())
+        conn = http_client.HTTPSConnection(host, port, timeout=_remaining())
         conn.sock = tls_sock
 
         # Duplicate header names (rare — e.g. multiple Cookie headers) collapse
@@ -644,10 +660,22 @@ def _socks5_relay(host: str, port: int, method: str, path: str,
             k: v for k, v in headers.items()
             if k.lower() not in ('proxy-connection', 'connection')
         }
+        tls_sock.settimeout(_remaining())
         conn.request(method, path, body=body or b'', headers=req_headers)
         resp = conn.getresponse()
-        resp_body = resp.read()
-        return ReplayResult(resp.status, resp_body, dict(resp.getheaders()))
+
+        # Read the body in chunks, re-clamping the socket timeout to the
+        # remaining TOTAL budget before each read — settimeout() alone only
+        # bounds a single recv, so a trickle-feeding peer could otherwise block
+        # the worker far past total_timeout (Slowloris).
+        chunks = []
+        while True:
+            tls_sock.settimeout(_remaining())
+            chunk = resp.read(65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return ReplayResult(resp.status, b''.join(chunks), dict(resp.getheaders()))
     except Exception as e:
         logger.error(scrub_log_str(
             f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}'))
@@ -928,13 +956,19 @@ class MyelinAddon:
                         except Exception as e:
                             ctx.log.error(scrub_log_str(f'[myelin] override proxy replay failed: {e}'))
                 elif VPN_DOMAINS_FILE:
-                    # Legacy: domain-file fallback. Offload the blocking poll.
+                    # Legacy: domain-file fallback. Offload the blocking poll
+                    # through the guarded pool so it respects the admission cap
+                    # (a raw executor().submit would grow the unbounded queue and
+                    # starve guarded SOCKS jobs behind 30s polls).
                     ctx.log.warn(scrub_log_str(f'[myelin] network block on {host} — adding to VPN routing file'))
                     reachable = False
                     if _add_to_vpn_file(host):
-                        loop = asyncio.get_running_loop()
-                        reachable = await loop.run_in_executor(
-                            _SOCKS_POOL.executor(), _poll_reachable, host)
+                        try:
+                            reachable = await submit_guarded(
+                                _SOCKS_POOL, lambda exc, res: exc is None and bool(res),
+                                _poll_reachable, host)
+                        except Rejected:
+                            reachable = False
                     if reachable:
                         ctx.log.info(f'[myelin] {host} reachable via VPN — replaying')
                         flow.metadata['myelin_via_override'] = True

@@ -119,6 +119,34 @@ class BreakerStateTest(unittest.TestCase):
         self.assertEqual(self.pool.state(), OPEN)
         self.assertEqual(self.pool._gen, gen_before)
 
+    def test_stale_result_does_not_touch_failure_counter(self):
+        # A stale success must NOT reset the current generation's failure count,
+        # and a stale failure must NOT inflate it (CR finding: counter leaked
+        # across generations before the stale guard was moved up).
+        self.pool = GuardedPool('t', max_workers=4, failure_threshold=3,
+                                cooldown=30.0, clock=self.clk)
+        # Open then close the breaker so _gen advances past a lingering token.
+        stale = self.pool.admit()  # gen 0
+        for _ in range(3):
+            tok = self.pool.admit()
+            self.pool.settle(tok, success=False)   # OPEN, gen -> 1
+        self.clk.advance(31)
+        probe = self.pool.admit()                  # HALF_OPEN probe, gen 1
+        self.pool.settle(probe, success=True)      # CLOSED, gen -> 2
+        # Two genuine failures in gen 2 (threshold is 3 → still CLOSED).
+        for _ in range(2):
+            tok = self.pool.admit()
+            self.pool.settle(tok, success=False)
+        self.assertEqual(self.pool.state(), CLOSED)
+        cf_before = self.pool._consecutive_failures
+        # A stale (gen 0) success arrives — must NOT reset the gen-2 counter.
+        self.pool.settle(stale, success=True)
+        self.assertEqual(self.pool._consecutive_failures, cf_before)
+        # One more genuine failure now trips the threshold.
+        tok = self.pool.admit()
+        self.pool.settle(tok, success=False)
+        self.assertEqual(self.pool.state(), OPEN)
+
 
 class SubmitGuardedTest(unittest.TestCase):
     def test_runs_and_returns_result(self):

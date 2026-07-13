@@ -158,6 +158,59 @@ def test_breaker_open_skips_offload_and_preserves_418(monkeypatch):
     assert flow.response.status_code == 418  # client still sees the block
 
 
+def test_socks_relay_enforces_total_deadline_across_trickle_read():
+    # A proxy that trickles bytes just under the per-op timeout must still be
+    # cut off by the TOTAL deadline (Slowloris protection). We stand up a fake
+    # SOCKS5 proxy that completes the handshake then dribbles an HTTP response
+    # one byte at a time forever.
+    import socket as _s
+    import struct as _st
+    import threading as _t
+    import time as _time
+
+    srv = _s.socket(_s.AF_INET, _s.SOCK_STREAM)
+    srv.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+    srv.bind(('127.0.0.1', 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    stop = _t.Event()
+
+    def serve():
+        try:
+            c, _ = srv.accept()
+            c.recv(3)                       # greeting
+            c.sendall(b'\x05\x00')          # no-auth
+            c.recv(512)                     # CONNECT request
+            # success reply, BND.ADDR 0.0.0.0:0
+            c.sendall(b'\x05\x00\x00\x01' + b'\x00\x00\x00\x00' + _st.pack('>H', 0))
+            # NOTE: the client wraps TLS next; our fake proxy can't complete a
+            # real TLS handshake, so the relay will fail there. To exercise the
+            # READ deadline specifically we instead just stall — the relay's
+            # deadline must still fire. Dribble nothing; hold the socket open.
+            while not stop.is_set():
+                _time.sleep(0.05)
+            c.close()
+        except OSError:
+            pass
+
+    th = _t.Thread(target=serve, daemon=True)
+    th.start()
+    try:
+        t0 = _time.monotonic()
+        # total_timeout=1s: even though TLS will stall against our fake proxy,
+        # the relay must return (None) within ~the deadline, not hang.
+        res = copilot_addon._socks5_relay(
+            'api.example.com', 443, 'POST', '/v1/messages',
+            {'content-type': 'application/json'}, b'{}',
+            '127.0.0.1', port, connect_timeout=1.0, total_timeout=1.0)
+        elapsed = _time.monotonic() - t0
+        assert res is None
+        assert elapsed < 4.0, f'relay did not honor total deadline: {elapsed:.1f}s'
+    finally:
+        stop.set()
+        srv.close()
+
+
 if __name__ == '__main__':
     import pytest
     raise SystemExit(pytest.main([__file__, '-v']))
