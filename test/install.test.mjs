@@ -140,247 +140,118 @@ describe('ensureManagedHeadroomService', () => {
 });
 
 describe('applyServiceEngineInstallPlan', () => {
-  it('stops a previously managed headroom-lite instance before reinstalling Python headroom', async () => {
-    const calls = [];
-    const enginePlan = {
-      selectedEngine: 'headroom',
-      selectedPort: 8787,
-      headroomPort: 8787,
-      shouldRunManagedHeadroom: true,
-      shouldRemoveManagedHeadroom: false,
-    };
+  const liteCopilotConfig = {
+    proxy: {
+      engine: 'headroom_lite',
+      headroom_lite: { port: 8790 },
+      mitm: { port: 8888, egress_port: 8889 },
+      copilot_headroom: { enabled: true, port: 8788 },
+    },
+  };
 
-    const result = await applyServiceEngineInstallPlan({
-      enginePlan,
-      os: 'windows',
-      cfg: {
-        proxy: {
-          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
-          headroom_lite: { port: 8790 },
-          windows_service: { manager: 'registry' },
-        },
-      },
-      winManager: 'registry',
-      home: 'C:\\Users\\alice',
-      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
-      port: 8787,
-      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
-      ensureManagedHeadroomServiceImpl: async (opts) => {
-        calls.push({ type: 'ensure-headroom', opts });
-        return { healthy: true };
-      },
-      removeManagedHeadroomRegistrationImpl: async () => {
-        calls.push({ type: 'remove-headroom' });
-      },
-      stopObsoleteEngineImpl: async (opts) => {
-        calls.push({ type: 'stop-lite', opts });
-        return { stopped: true, conflict: false };
-      },
-      detectToolImpl: async () => ({ installed: true }),
-      restartHeadroomLiteImpl: async () => true,
-      warnFn: () => {},
-      logFn: () => {},
-      okFn: () => {},
-    });
+  it('installs Lite primary and Lite Copilot without probing Python Headroom', async () => {
+    const events = [];
+    const installCalls = [];
 
-    assert.equal(result.selectedInstallEngine, 'headroom');
-    assert.equal(result.selectedProxyPort, 8787);
-    assert.deepEqual(calls.map(({ type }) => type), ['stop-lite', 'ensure-headroom']);
-    assert.equal(calls[0].opts.engine, 'headroom_lite');
-    assert.equal(calls[0].opts.home, 'C:\\Users\\alice');
-    assert.equal(calls[0].opts.winManager, 'registry');
-    assert.equal(calls[1].opts.headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
-  });
-
-  it('removes managed Python Headroom before probing or starting healthy Lite transitions', async () => {
-    const calls = [];
-
-    const result = await applyServiceEngineInstallPlan({
-      enginePlan: {
-        selectedEngine: 'headroom_lite',
-        selectedPort: 8790,
-        headroomPort: 8787,
-        shouldRunManagedHeadroom: false,
-        shouldRemoveManagedHeadroom: true,
+    await applyServiceEngineInstallPlan({
+      cfg: liteCopilotConfig,
+      os: 'linux',
+      home: '/home/alice',
+      installEngineInstanceImpl: async (instance, options) => {
+        events.push(`install:${instance.engine}:${instance.role}`);
+        installCalls.push({ instance, options });
       },
-      os: 'windows',
-      cfg: {
-        proxy: {
-          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
-          headroom_lite: { port: 8790 },
-          windows_service: { manager: 'registry' },
-        },
-      },
-      winManager: 'registry',
-      home: 'C:\\Users\\alice',
-      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
-      port: 8787,
-      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
-      ensureManagedHeadroomServiceImpl: async (opts) => {
-        calls.push({ type: 'ensure-headroom', opts });
-        return { healthy: true };
-      },
-      removeManagedHeadroomRegistrationImpl: async (opts) => {
-        calls.push({ type: 'remove-headroom', opts });
-      },
-      stopObsoleteEngineImpl: async (opts) => {
-        calls.push({ type: 'stop-lite', opts });
-        return { stopped: true, conflict: false };
-      },
-      detectToolImpl: async () => {
-        calls.push({ type: 'detect-lite' });
-        return { installed: true };
-      },
-      restartHeadroomLiteImpl: async (port, osKind) => {
-        calls.push({ type: 'restart-lite', port, osKind });
-        return true;
-      },
-      warnFn: () => {},
-      logFn: () => {},
-      okFn: () => {},
-    });
-
-    assert.equal(result.persistHeadroomFallback, false);
-    assert.equal(result.selectedInstallEngine, 'headroom_lite');
-    assert.equal(result.selectedProxyPort, 8790);
-    assert.deepEqual(calls.map(({ type }) => type), ['remove-headroom', 'detect-lite', 'restart-lite']);
-  });
-
-  it('does not fall back from unavailable headroom-lite and removes managed Python Headroom', async () => {
-    const calls = [];
-    const warnings = [];
-
-    const result = await applyServiceEngineInstallPlan({
-      enginePlan: {
-        selectedEngine: 'headroom_lite',
-        selectedPort: 8790,
-        headroomPort: 8787,
-        shouldRunManagedHeadroom: false,
-        shouldRemoveManagedHeadroom: true,
-      },
-      os: 'windows',
-      cfg: {
-        proxy: {
-          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
-          headroom_lite: { port: 8790 },
-          windows_service: { manager: 'registry' },
-        },
-      },
-      winManager: 'registry',
-      home: 'C:\\Users\\alice',
-      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
-      port: 8787,
-      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
-      ensureManagedHeadroomServiceImpl: async (opts) => {
-        calls.push({ type: 'ensure-headroom', opts });
-        return { healthy: true };
-      },
-      removeManagedHeadroomRegistrationImpl: async (opts) => {
-        calls.push({ type: 'remove-headroom', opts });
-      },
-      stopObsoleteEngineImpl: async (opts) => {
-        calls.push({ type: 'stop-lite', opts });
-        return { stopped: true, conflict: false };
-      },
-      detectToolImpl: async () => ({ installed: false }),
-      warnFn: (message) => { warnings.push(message); },
-      logFn: () => {},
-      okFn: () => {},
-    });
-
-    assert.equal(result.persistHeadroomFallback, false);
-    assert.equal(result.selectedInstallEngine, 'headroom_lite');
-    assert.equal(result.selectedProxyPort, 8790);
-    assert.deepEqual(calls.map(({ type }) => type), ['remove-headroom']);
-    assert.equal(calls[0].opts.headroomPort, 8787);
-    assert.deepEqual(warnings, [
-      'headroom-lite selected but not installed — Python Headroom remains disabled; install @yehsuf/headroom-lite and run `myelin restart`',
-    ]);
-  });
-
-  it('keeps downstream mitm wiring on the configured Lite port when Lite is unhealthy', async () => {
-    const cfg = {
-      proxy: {
-        headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
-        headroom_lite: { port: 8790 },
-        mitm: { port: 8888 },
-        copilot_headroom: { enabled: true, port: 8788, mode: 'observe' },
-        windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 5 },
-      },
-    };
-
-    const installPlan = await applyServiceEngineInstallPlan({
-      enginePlan: {
-        selectedEngine: 'headroom_lite',
-        selectedPort: 8790,
-        headroomPort: 8787,
-        shouldRunManagedHeadroom: false,
-        shouldRemoveManagedHeadroom: true,
-      },
-      os: 'windows',
-      cfg,
-      winManager: 'winsw',
-      home: 'C:\\Users\\alice',
-      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
-      port: 8787,
-      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
-      ensureManagedHeadroomServiceImpl: async () => ({ healthy: true }),
       removeManagedHeadroomRegistrationImpl: async () => {},
-      stopObsoleteEngineImpl: async () => ({ stopped: true, conflict: false }),
-      detectToolImpl: async () => ({ installed: true }),
-      restartHeadroomLiteImpl: async () => false,
-      warnFn: () => {},
-      logFn: () => {},
-      okFn: () => {},
+      removeEngineInstanceImpl: async (instance) => {
+        events.push(`remove:${instance.engine}:${instance.role}`);
+      },
+      ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
+      detectToolImpl: async () => ({ installed: true, path: '/usr/local/bin/headroom-lite' }),
+      restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
     });
 
-    const downstream = buildDownstreamProxyServiceInstallOptions({
-      cfg,
-      os: 'windows',
-      home: 'C:\\Users\\alice',
-      mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
-      sslEnv: {},
-      winManager: 'winsw',
-      installPlan,
-    });
-
-    assert.equal(installPlan.selectedInstallEngine, 'headroom_lite');
-    assert.equal(installPlan.selectedProxyPort, 8790);
-    assert.equal(downstream.mitmOpts.envVars.MYELIN_HEADROOM_PORT, '8790');
-    assert.equal(downstream.watchdogOpts.headroomPort, undefined);
-    assert.equal(downstream.watchdogOpts.copilotHeadroomPort, 8788);
-    assert.equal(downstream.watchdogOpts.intervalMinutes, 5);
+    assert.deepEqual(events, [
+      'remove:headroom:primary', 'remove:headroom:copilot',
+      'install:headroom_lite:primary', 'install:headroom_lite:copilot',
+    ]);
+    assert.deepEqual(installCalls.map(({ instance }) => `${instance.engine}:${instance.role}`), [
+      'headroom_lite:primary', 'headroom_lite:copilot',
+    ]);
+    assert.equal(installCalls[0].options.headroomBin, undefined);
+    assert.equal(installCalls[0].options.headroomLiteBin, '/usr/local/bin/headroom-lite');
   });
 
-  it('leaves the main Headroom watchdog disabled while preserving Copilot wiring on WinSW Lite installs', () => {
-    const downstream = buildDownstreamProxyServiceInstallOptions({
-      cfg: {
-        proxy: {
-          engine: 'headroom_lite',
-          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
-          headroom_lite: { port: 8790 },
-          mitm: { port: 8888 },
-          copilot_headroom: { enabled: true, port: 8788, mode: 'observe' },
-          windows_service: { manager: 'winsw', watchdog_enabled: false, watchdog_interval_minutes: 5 },
-        },
-      },
-      os: 'windows',
-      home: 'C:\\Users\\alice',
-      mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
-      sslEnv: {},
-      winManager: 'winsw',
-      installPlan: {
-        selectedEngine: 'headroom_lite',
-        selectedPort: 8790,
-        headroomPort: 8787,
-        shouldRunManagedHeadroom: false,
-        shouldRemoveManagedHeadroom: true,
-      },
+  it('installs only the selected Python primary and does not detect Lite', async () => {
+    const installCalls = [];
+    const removed = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: { proxy: { engine: 'headroom', headroom: { port: 8787 } } },
+      os: 'linux',
+      home: '/home/alice',
+      headroomBin: '/opt/myelin/headroom',
+      installEngineInstanceImpl: async (instance, options) => installCalls.push({ instance, options }),
+      removeManagedHeadroomRegistrationImpl: async () => {},
+      removeEngineInstanceImpl: async (instance) => removed.push(instance),
+      detectToolImpl: () => assert.fail('Lite must not be detected for Python'),
+      restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived for Python'),
+      ensureManagedHeadroomServiceImpl: () => assert.fail('legacy Python installer must not run'),
+      stopObsoleteEngineImpl: () => assert.fail('restart orchestration must not run'),
     });
 
-    assert.equal(downstream.watchdogOpts.enabled, false);
-    assert.equal(downstream.watchdogOpts.headroomPort, undefined);
-    assert.equal(downstream.watchdogOpts.copilotHeadroomPort, 8788);
+    assert.deepEqual(removed.map(({ engine, role }) => `${engine}:${role}`), [
+      'headroom_lite:primary', 'headroom_lite:copilot',
+    ]);
+    assert.deepEqual(installCalls.map(({ instance }) => `${instance.engine}:${instance.role}`), ['headroom:primary']);
+    assert.equal(installCalls[0].options.headroomBin, '/opt/myelin/headroom');
+    assert.equal(installCalls[0].options.headroomLiteBin, undefined);
+  });
+
+  it('fails explicitly for missing Lite after disabling only owned Python descriptors', async () => {
+    const removed = [];
+    const installed = [];
+
+    await assert.rejects(
+      applyServiceEngineInstallPlan({
+        cfg: liteCopilotConfig,
+        os: 'linux',
+        installEngineInstanceImpl: async (instance) => installed.push(instance),
+        removeManagedHeadroomRegistrationImpl: async () => {},
+        removeEngineInstanceImpl: async (instance) => removed.push(instance),
+        ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
+        detectToolImpl: async () => ({ installed: false, path: null }),
+        restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
+      }),
+      /headroom-lite selected but not installed/,
+    );
+
+    assert.deepEqual(removed.map(({ engine, role }) => `${engine}:${role}`), [
+      'headroom:primary', 'headroom:copilot',
+    ]);
+    assert.deepEqual(installed, []);
+  });
+
+  it('surfaces a Lite registration failure without falling back to Python', async () => {
+    const installed = [];
+
+    await assert.rejects(
+      applyServiceEngineInstallPlan({
+        cfg: liteCopilotConfig,
+        os: 'linux',
+        installEngineInstanceImpl: async (instance) => {
+          installed.push(instance);
+          throw new Error('headroom-lite service is unhealthy');
+        },
+        removeManagedHeadroomRegistrationImpl: async () => {},
+        removeEngineInstanceImpl: async () => {},
+        ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
+        detectToolImpl: async () => ({ installed: true, path: '/usr/local/bin/headroom-lite' }),
+        restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
+      }),
+      /headroom-lite service is unhealthy/,
+    );
+
+    assert.deepEqual(installed.map(({ engine, role }) => `${engine}:${role}`), ['headroom_lite:primary']);
   });
 });
 
