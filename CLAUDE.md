@@ -1,7 +1,7 @@
 # Myelin — CLAUDE.md
 
 Cross-platform token-efficiency CLI for Claude Code + GitHub Copilot workspaces.
-Node.js ESM, Commander.js, TDD (`node --test`), direct-to-main git workflow.
+Node.js ESM, Commander.js, TDD (`node --test`), feature-branch → PR git workflow.
 
 ---
 
@@ -96,9 +96,16 @@ Starting Copilot/Claude Code from the worktree directory = session is registered
 
 
 
-## Git workflow (agents / hotfixes only)
-- Direct-to-main is only for agents doing concurrent work or emergency hotfixes.
-- **All other work uses worktrees** (see above).
+## Git workflow
+
+**Default (all normal work):** clean worktree from latest `origin/main` → feature-specific
+branch → push branch to origin periodically → run all tests on **all 3 environments**
+(Mac + Windows + Linux) → code review per rules → **open a PR to main** (after confirming
+the branch is rebased on latest `origin/main`) → **ask the human to approve the PR merge**.
+The branch is never the final destination, and never merge without explicit approval.
+
+**Exception — direct-to-main:** ONLY for agents doing concurrent work or emergency hotfixes.
+- **All other work uses worktrees + a PR** (see "Feature development workflow" above).
 - Always `git fetch origin && git pull --rebase origin main` before committing when working concurrently.
 - If push is rejected: `git pull --rebase origin main && git push origin main`.
 ```bash
