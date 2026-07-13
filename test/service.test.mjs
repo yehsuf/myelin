@@ -225,9 +225,11 @@ describe('Windows registry engine-instance ownership', () => {
       headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe',
     });
 
-    assert.ok(script.includes('$previousParent = if ($previousProcess.ParentProcessId)'));
-    assert.ok(script.includes('$previousParent.CommandLine -match'));
-    assert.ok(script.includes("ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe'"));
+    assert.ok(script.includes('$previousLauncherMatches = $false'));
+    assert.ok(script.includes('$previousCommandMatches = $false'));
+    assert.ok(script.includes('$previousOwnsPort'));
+    assert.ok(script.includes('ParentProcessId'));
+    assert.ok(script.includes('$previousProcess.ExecutablePath -eq $previousLauncherExecutable'));
   });
 
   it('keeps a replacement launcher PID file when an earlier launcher exits', () => {
@@ -237,6 +239,73 @@ describe('Windows registry engine-instance ownership', () => {
     });
 
     assert.ok(script.includes('$recordedPid -eq $proc.Id'));
+  });
+
+  it('tracks the listening child rather than cmd.exe for a Lite .cmd launcher', () => {
+    const script = generateEngineInstanceRunScript({
+      instance: LITE_INSTANCE,
+      headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd',
+    });
+
+    assert.match(script, /Start-Process -FilePath 'C:\\Users\\alice\\\.myelin\\bin\\headroom-lite\.cmd'/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 8790/);
+    assert.match(script, /\$ancestor\.ProcessId -eq \$proc\.Id/);
+    assert.match(script, /Set-Content -Path .* -Value \$managedProcess\.ProcessId/);
+    assert.match(script, /Wait-Process -Id \$managedProcess\.ProcessId/);
+    assert.doesNotMatch(script, /Set-Content -Path .* -Value \$proc\.Id/);
+    assert.match(script, /\$proc\.Refresh\(\)/);
+    assert.match(script, /while \(-not \$managedProcess -and -not \$proc\.HasExited\)/);
+    assert.doesNotMatch(script, /\$deadline/);
+  });
+
+  it('proves a previous descriptor using its recorded executable type before replacing it', () => {
+    const script = generateEngineInstanceRunScript({
+      instance: LITE_INSTANCE,
+      headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd',
+    });
+
+    assert.ok(script.includes("$previousIsBatch = $previousLauncherExecutable -match '\\.(?:cmd|bat)$'"));
+    assert.match(script, /\$previousLauncherArguments = \[regex\]::Match/);
+    assert.match(script, /if \(\$previousIsBatch\)/);
+    assert.match(script, /\$previousTrackedProcess =/);
+    assert.match(script, /\$previousTrackedMatches = \$false/);
+    assert.match(script, /Stop-Process -Id \$previousProcess\.ProcessId/);
+    assert.match(script, /\$previousProcess\.ExecutablePath -eq \$previousLauncherExecutable/);
+  });
+
+  it('uses the launcher port and proven cmd ancestry for .cmd listener status after a port transition', () => {
+    const statusCommands = [];
+    const transitionedInstance = { ...LITE_INSTANCE, port: 9790, healthUrl: 'http://127.0.0.1:9790/health' };
+    const launcherPath = 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary\\start-headroom_lite-primary.ps1';
+    const launcherScript = [
+      "$env:HEADROOM_LITE_PORT = '8790'",
+      "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd' -ArgumentList '' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary' -WindowStyle Hidden -PassThru",
+    ].join('\n');
+
+    const status = windowsEngineInstanceStatus(transitionedInstance, {
+      manager: 'registry',
+      runKeyStatusImpl: () => ({
+        registered: true,
+        raw: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${launcherPath}"`,
+      }),
+      existsSyncImpl: () => true,
+      readFileSyncImpl: (path) => String(path).endsWith('.pid') ? '4321\n' : launcherScript,
+      execSyncImpl: (command) => {
+        statusCommands.push(command);
+        return Buffer.from('Running\n');
+      },
+    });
+
+    assert.equal(status.running, true);
+    const statusCommand = statusCommands.at(-1);
+    assert.match(statusCommand, /\$launcherPort = 8790/);
+    assert.match(statusCommand, /Get-NetTCPConnection -State Listen -LocalPort \$launcherPort/);
+    assert.doesNotMatch(statusCommand, /\$launcherPort = 9790/);
+    assert.match(statusCommand, /\$trackedProcess =/);
+    assert.match(statusCommand, /\$trackedMatches = \$false/);
+    assert.match(statusCommand, /Name -ieq 'cmd\.exe'/);
+    assert.match(statusCommand, /\$commandMatches/);
+    assert.match(statusCommand, /ParentProcessId/);
   });
 });
 
@@ -279,6 +348,23 @@ describe('Windows engine descriptor migration ownership', () => {
     assert.doesNotMatch(script, /Get-NetTCPConnection -State Listen -LocalPort 9797/);
   });
 
+  it('removes a .cmd listener child only after proving cmd and launcher ancestry', () => {
+    const script = generateEngineInstanceRemovalScript({
+      instance: { ...COPILOT_INSTANCE, engine: 'headroom_lite', id: 'headroom_lite-copilot' },
+      home: HOME,
+    });
+
+    assert.match(script, /\$cmdLauncher = \$launcherExecutable -match '\\\.\(\?:cmd\|bat\)\$'/);
+    assert.match(script, /\$commandMatches/);
+    assert.match(script, /\$ancestor\.Name -ieq 'cmd\.exe'/);
+    assert.match(script, /\$ancestor\.CommandLine -match \[regex\]::Escape\(\$launcherExecutable\)/);
+    assert.match(script, /\$launcherMatches/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort \$launcherPort/);
+    assert.match(script, /\$ownedProcess = \$null/);
+    assert.match(script, /\$trackedMatches = \$false/);
+    assert.match(script, /Stop-Process -Id \$ownedProcess\.ProcessId/);
+  });
+
   it('uninstalls an owned WinSW descriptor whose verified configuration uses the old port', () => {
     const uninstalled = [];
     const oldPortConfig = [
@@ -303,6 +389,38 @@ describe('Windows engine descriptor migration ownership', () => {
     });
 
     assert.deepEqual(uninstalled, ['headroom-copilot']);
+  });
+
+  it('uninstalls an owned WinSW Lite descriptor configured with a .cmd executable', () => {
+    const uninstalled = [];
+    const cmdLiteInstance = {
+      ...COPILOT_INSTANCE,
+      engine: 'headroom_lite',
+      id: 'headroom_lite-copilot',
+      stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot',
+    };
+    const cmdConfig = [
+      '<service>',
+      '  <id>headroom_lite-copilot</id>',
+      '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd</executable>',
+      '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
+      '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
+      '</service>',
+    ].join('\n');
+
+    removeWindowsEngineInstance(cmdLiteInstance, {
+      manager: 'winsw',
+      home: HOME,
+      existsSyncImpl: (path) => path.includes('headroom_lite-copilot'),
+      readFileSyncImpl: () => cmdConfig,
+      uninstallWindowsWatchdogTaskImpl: () => {},
+      uninstallWinswServiceImpl: ({ id }) => {
+        uninstalled.push(id);
+        return true;
+      },
+    });
+
+    assert.deepEqual(uninstalled, ['headroom_lite-copilot']);
   });
 });
 

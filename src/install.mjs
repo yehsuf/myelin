@@ -292,6 +292,28 @@ export async function removeObsoleteOwnedInstances({
   }
 }
 
+async function removeDisabledOwnedCopilotInstance({
+  plan,
+  cfg = {},
+  winManager,
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  if (plan.instances.some((instance) => instance.role === 'copilot')) return false;
+  const instance = ownedEngineRoleInstance(plan.engine, 'copilot', home, cfg);
+  if (!instance) {
+    warnFn?.(`  ⚠ skipped ${plan.engine}-copilot cleanup: configured port is invalid`);
+    return false;
+  }
+  await removeEngineInstanceImpl(instance, {
+    manager: winManager,
+    home,
+    warn: warnFn,
+  });
+  return true;
+}
+
 function engineInstanceServiceEnv(instance, envVars = {}) {
   if (instance.role !== 'primary') return {};
   if (instance.engine === 'headroom') return envVars;
@@ -323,6 +345,14 @@ export async function applyServiceEngineInstallPlan({
 
   await removeObsoleteOwnedInstances({
     selectedEngine: resolvedPlan.engine,
+    cfg,
+    winManager,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+  });
+  await removeDisabledOwnedCopilotInstance({
+    plan: resolvedPlan,
     cfg,
     winManager,
     home,

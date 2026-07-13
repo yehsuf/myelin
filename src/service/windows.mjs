@@ -467,6 +467,12 @@ function parseLauncherStartProcess(script = '') {
   };
 }
 
+function launcherPortFromScript(script = '') {
+  const match = String(script ?? '').match(/(?:proxy\s+--port\s+|HEADROOM_LITE_PORT\s*=\s*')(\d+)/im);
+  const port = Number(match?.[1]);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
 function parseCopilotHeadroomRunKeyValue(runKeyValue = '') {
   const value = String(runKeyValue ?? '').trim();
   const launcherMatch = value.match(/-File\s+"([^"]*start-copilot-headroom\.ps1)"/i);
@@ -859,11 +865,12 @@ export function generateEngineInstanceRunScript({ instance, envVars = {}, ...opt
   const executable = normalizeWindowsFilesystemPath(command.executable);
   const logPath = normalizeWindowsFilesystemPath(instance.logPath);
   const args = command.arguments;
-  const executableName = escapePs(executable.split('\\').pop() ?? '');
   const launcherRegex = escapePs(escapePsRegex(paths.launcherPath));
-  const commandLineClause = args
-    ? ` -and $previousProcess.CommandLine -match '${escapePs(escapePsRegex(args))}$'`
-    : '';
+  const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(executable);
+  const listenerPort = Number(instance.port);
+  if (isBatchLauncher && (!Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535)) {
+    throw new Error('Batch engine instance launchers require a valid listener port');
+  }
   const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   const envLines = Object.entries(mergedEnv)
     .filter(([, value]) => value != null && String(value).length > 0)
@@ -872,34 +879,120 @@ export function generateEngineInstanceRunScript({ instance, envVars = {}, ...opt
       return `$env:${key} = '${escapedValue}'\n[System.Environment]::SetEnvironmentVariable('${escapePs(key)}', '${escapedValue}', 'Process')`;
     })
     .join('\n');
+  const childListenerTracking = isBatchLauncher
+    ? `
+$managedProcess = $null
+while (-not $managedProcess -and -not $proc.HasExited) {
+  foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort ${listenerPort} -ErrorAction SilentlyContinue)) {
+    $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+    $ancestor = $candidate
+    for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+      if ($ancestor.ProcessId -eq $proc.Id) {
+        $managedProcess = $candidate
+        break
+      }
+      if (-not $ancestor.ParentProcessId) { break }
+      $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+    }
+    if ($managedProcess) { break }
+  }
+  if (-not $managedProcess) {
+    Start-Sleep -Milliseconds 100
+    $proc.Refresh()
+  }
+}
+if (-not $managedProcess) {
+  return
+}`.trim()
+    : '$managedProcess = $proc';
+  const previousProcessCleanup = `
+$previousLauncherContent = if (Test-Path '${escapePs(paths.launcherPath)}') {
+  Get-Content -Path '${escapePs(paths.launcherPath)}' -Raw -ErrorAction SilentlyContinue
+} else {
+  ''
+}
+`.trim();
   const launcherContent = `
 $ErrorActionPreference = 'Stop'
 ${buildServiceEnvUnsetLines({ os: 'windows' })}
 ${envLines}
 try { Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue } catch {}
 $proc = Start-Process -FilePath '${escapePs(executable)}' -ArgumentList '${escapePs(args)}' -WorkingDirectory '${escapePs(paths.stateDir)}' -RedirectStandardOutput '${escapePs(logPath)}' -WindowStyle Hidden -PassThru
-Set-Content -Path '${escapePs(paths.pidPath)}' -Value $proc.Id -Encoding ASCII
-Wait-Process -Id $proc.Id
+${childListenerTracking}
+Set-Content -Path '${escapePs(paths.pidPath)}' -Value ${isBatchLauncher ? '$managedProcess.ProcessId' : '$proc.Id'} -Encoding ASCII
+Wait-Process -Id ${isBatchLauncher ? '$managedProcess.ProcessId' : '$proc.Id'}
 if (Test-Path '${escapePs(paths.pidPath)}') {
   $recordedPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($recordedPid -eq $proc.Id) {
+  if ($recordedPid -eq ${isBatchLauncher ? '$managedProcess.ProcessId' : '$proc.Id'}) {
     Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue
   }
 }
 `.trim();
+  const previousProcessStop = `
+    $previousPortMatch = [regex]::Match($previousLauncherContent, "(?m)(?:proxy\\s+--port\\s+|HEADROOM_LITE_PORT\\s*=\\s*')(\\d+)")
+    $previousLauncherPort = $null
+    if ($previousPortMatch.Success) {
+      $candidatePort = [int]$previousPortMatch.Groups[1].Value
+      if ($candidatePort -ge 1 -and $candidatePort -le 65535) {
+        $previousLauncherPort = $candidatePort
+      }
+    }
+    $previousLauncherExecutable = [regex]::Match($previousLauncherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+    $previousLauncherArguments = [regex]::Match($previousLauncherContent, "Start-Process -FilePath '(?:''|[^'])+' -ArgumentList '((?:''|[^'])*)'").Groups[1].Value.Replace("''", "'")
+    $previousIsBatch = $previousLauncherExecutable -match '\\.(?:cmd|bat)$'
+    $previousTrackedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $previousPid" -ErrorAction SilentlyContinue
+    $previousProcess = $null
+    $previousTrackedMatches = $false
+    if ($previousTrackedProcess -and $previousLauncherPort) {
+      foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $previousLauncherPort -ErrorAction SilentlyContinue)) {
+        $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+        $ancestor = $candidate
+        for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+          if ($ancestor.ProcessId -eq $previousTrackedProcess.ProcessId) {
+            $previousTrackedMatches = $true
+            break
+          }
+          if (-not $ancestor.ParentProcessId) { break }
+          $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+        }
+        if ($previousTrackedMatches) {
+          $previousProcess = $candidate
+          break
+        }
+      }
+    }
+    $previousOwnsPort = $previousProcess -ne $null
+    $previousLauncherMatches = $false
+    $previousCommandMatches = $false
+    $ancestor = $previousProcess
+    for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+      if ($ancestor.CommandLine -match '${launcherRegex}') { $previousLauncherMatches = $true }
+      if ($previousIsBatch) {
+        if ($ancestor.Name -ieq 'cmd.exe' -and $ancestor.CommandLine -match [regex]::Escape($previousLauncherExecutable)) {
+          $previousCommandMatches = $true
+        }
+      } elseif ($ancestor.ProcessId -eq $previousProcess.ProcessId -and $previousProcess.ExecutablePath -eq $previousLauncherExecutable) {
+        $previousArgumentsPattern = [regex]::Escape($previousLauncherArguments) + '$'
+        if (-not $previousLauncherArguments -or $previousProcess.CommandLine -match $previousArgumentsPattern) {
+          $previousCommandMatches = $true
+        }
+      }
+      if (-not $ancestor.ParentProcessId) { break }
+      $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+    }
+    if ($previousProcess -and $previousOwnsPort -and $previousLauncherMatches -and $previousCommandMatches -and $previousLauncherExecutable) {
+      Stop-Process -Id $previousProcess.ProcessId -Force -ErrorAction SilentlyContinue
+    }`.trim();
   return `
 New-Item -ItemType Directory -Force -Path '${escapePs(paths.stateDir)}' | Out-Null
+${previousProcessCleanup}
 Set-Content -Path '${escapePs(paths.launcherPath)}' -Value @'
 ${launcherContent}
 '@ -Encoding UTF8
 if (Test-Path '${escapePs(paths.pidPath)}') {
   $previousPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($previousPid -match '^[0-9]+$') {
-    $previousProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $previousPid" -ErrorAction SilentlyContinue
-    $previousParent = if ($previousProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($previousProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
-    if ($previousProcess -and $previousProcess.Name -ieq '${executableName}' -and $previousProcess.ExecutablePath -eq '${escapePs(executable)}'${commandLineClause} -and $previousParent -and $previousParent.CommandLine -match '${launcherRegex}') {
-      Stop-Process -Id $previousPid -Force -ErrorAction SilentlyContinue
-    }
+${previousProcessStop}
   }
 }
 Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File "${escapePs(paths.launcherPath)}"' -WindowStyle Hidden
@@ -982,28 +1075,70 @@ export function engineInstanceStatus(instance, {
     const argumentsRegex = escapePs(escapePsRegex(command.argStr ?? ''));
     const executableName = escapePs(executable.split('\\').pop() ?? '');
     const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+    const launcherPort = launcherPortFromScript(launcherScript);
+    const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(executable);
     const pidText = trimPowershellOutput(readWindowsFileText(paths.pidPath, {
       execSyncImpl,
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
     }));
-    const pidClause = /^[0-9]+$/u.test(pidText)
+    const hasManagedPid = /^[0-9]+$/u.test(pidText);
+    const pidClause = hasManagedPid
       ? `Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue`
       : `Get-CimInstance Win32_Process -Filter "Name = '${executableName}'" -ErrorAction SilentlyContinue | Select-Object -First 1`;
     const identityCheck = `$proc.Name -ieq '${executableName}' -and $proc.ExecutablePath -eq '${escapePs(executable)}' -and $proc.CommandLine -match '${argumentsRegex}$'`;
-    const script = [
-      `$managedPid = ${/^[0-9]+$/u.test(pidText) ? pidText : '$null'}`,
-      `$proc = ${pidClause}`,
-      launcherCommand
-        ? `if ($proc -and ${identityCheck}) {
+    const script = isBatchLauncher
+      ? [
+        `$managedPid = ${hasManagedPid ? pidText : '$null'}`,
+        `$launcherPort = ${launcherPort ?? '$null'}`,
+        `$trackedProcess = ${hasManagedPid ? pidClause : '$null'}`,
+        `$proc = $null`,
+        `if ($trackedProcess -and $launcherPort) {
+  $trackedMatches = $false
+  foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $launcherPort -ErrorAction SilentlyContinue)) {
+    $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+    $ancestor = $candidate
+    for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+      if ($ancestor.ProcessId -eq $trackedProcess.ProcessId) {
+        $trackedMatches = $true
+        break
+      }
+      if (-not $ancestor.ParentProcessId) { break }
+      $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+    }
+    if ($trackedMatches) {
+      $proc = $candidate
+      break
+    }
+  }
+}
+if ($proc) {
+  $launcherMatches = $false
+  $commandMatches = $false
+  $ancestor = $proc
+  for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+    if ($ancestor.CommandLine -match '${launcherRegex}') { $launcherMatches = $true }
+    if ($ancestor.Name -ieq 'cmd.exe' -and $ancestor.CommandLine -match '${escapePs(escapePsRegex(executable))}') { $commandMatches = $true }
+    if (-not $ancestor.ParentProcessId) { break }
+    $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+  }
+  if ($launcherMatches -and $commandMatches) { 'Running' } else { 'Stopped' }
+} else { 'Stopped' }`,
+      ].join('\n')
+      : [
+        `$managedPid = ${hasManagedPid ? pidText : '$null'}`,
+        `$proc = ${pidClause}`,
+        launcherCommand
+          ? `if ($proc -and ${identityCheck}) {
   $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
   if ($parent -and $parent.CommandLine -match '${launcherRegex}') { 'Running' } else { 'Stopped' }
 } else { 'Stopped' }`
-        : `if ($proc -and ${identityCheck}) { 'Running' } else { 'Stopped' }`,
-    ].join('\n').replace(/"/g, '\\"');
+          : `if ($proc -and ${identityCheck}) { 'Running' } else { 'Stopped' }`,
+      ].join('\n');
+    const escapedScript = script.replace(/"/g, '\\"');
     const raw = trimPowershellOutput(execSyncImpl(
-      withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe),
+      withPowerShell(`-NoProfile -Command "& { ${escapedScript} }"`, powershellExe),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString());
     return { ...parseManagedHeadroomStatus(raw), label: paths.id, healthUrl: instance.healthUrl };
@@ -1028,7 +1163,7 @@ function ownedWinswEngineInstance(instance, paths, {
   });
   const executable = config.match(/<executable>([^<]+)<\/executable>/iu)?.[1] ?? '';
   const expectedExecutable = instance.engine === 'headroom_lite'
-    ? /(?:^|[\\/])headroom-lite(?:\.exe)?$/iu
+    ? /(?:^|[\\/])headroom-lite(?:\.(?:exe|cmd|bat))?$/iu
     : /(?:^|[\\/])headroom(?:\.exe)?$/iu;
   const configuredPort = instance.engine === 'headroom_lite'
     ? config.match(/<env name="HEADROOM_LITE_PORT" value="(\d+)"\/>/iu)?.[1]
@@ -1052,20 +1187,55 @@ $stateDir = '${escapePs(paths.stateDir)}'
 $managedPid = if (Test-Path $pidPath) { Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $null }
 if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
   $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
-  $managedParent = if ($managedProcess -and $managedProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($managedProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
   $launcherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
   $launcherExecutable = [regex]::Match($launcherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
   $portMatch = [regex]::Match($launcherContent, "(?m)(?:proxy\\s+--port\\s+|HEADROOM_LITE_PORT\\s*=\\s*')(\\d+)")
   $launcherPort = $null
   if ($portMatch.Success) {
     $launcherPort = [int]$portMatch.Groups[1].Value
+    if ($launcherPort -lt 1 -or $launcherPort -gt 65535) { $launcherPort = $null }
   }
-  $ownsPort = $launcherPort -and @(Get-NetTCPConnection -State Listen -LocalPort $launcherPort -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq [int]$managedPid }).Count -gt 0
+  $ownedProcess = $null
+  $trackedMatches = $false
+  if ($managedProcess -and $launcherPort) {
+    foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $launcherPort -ErrorAction SilentlyContinue)) {
+      $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+      $ancestor = $candidate
+      for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+        if ($ancestor.ProcessId -eq $managedProcess.ProcessId) {
+          $trackedMatches = $true
+          break
+        }
+        if (-not $ancestor.ParentProcessId) { break }
+        $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+      }
+      if ($trackedMatches) {
+        $ownedProcess = $candidate
+        break
+      }
+    }
+  }
+  $ownsPort = $ownedProcess -ne $null
   $roleMatches = $launcherContent -match [regex]::Escape($stateDir)
   $portMatches = $launcherPort -ne $null
-  $launcherMatches = $managedParent -and $managedParent.CommandLine -match [regex]::Escape($launcherPath)
-  if ($managedProcess -and $launcherMatches -and $ownsPort -and $roleMatches -and $portMatches -and $launcherExecutable -and $managedProcess.ExecutablePath -eq $launcherExecutable) {
-    Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+  $cmdLauncher = $launcherExecutable -match '\\.(?:cmd|bat)$'
+  $launcherMatches = $false
+  $commandMatches = $false
+  $ancestor = $ownedProcess
+  for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+    if ($ancestor.CommandLine -match [regex]::Escape($launcherPath)) { $launcherMatches = $true }
+    if ($cmdLauncher) {
+      if ($ancestor.Name -ieq 'cmd.exe' -and $ancestor.CommandLine -match [regex]::Escape($launcherExecutable)) {
+        $commandMatches = $true
+      }
+    } elseif ($ancestor.ProcessId -eq $ownedProcess.ProcessId -and $ancestor.ExecutablePath -eq $launcherExecutable) {
+      $commandMatches = $true
+    }
+    if (-not $ancestor.ParentProcessId) { break }
+    $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+  }
+  if ($ownedProcess -and $launcherMatches -and $commandMatches -and $ownsPort -and $roleMatches -and $portMatches -and $launcherExecutable) {
+    Stop-Process -Id $ownedProcess.ProcessId -Force -ErrorAction SilentlyContinue
   }
   Remove-Item -Path $pidPath -ErrorAction SilentlyContinue
 }

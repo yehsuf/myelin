@@ -287,6 +287,7 @@ describe('applyServiceEngineInstallPlan', () => {
 
     assert.deepEqual(removed.map(({ engine, role }) => `${engine}:${role}`), [
       'headroom_lite:primary', 'headroom_lite:copilot',
+      'headroom:copilot',
     ]);
     assert.deepEqual(installCalls.map(({ instance }) => `${instance.engine}:${instance.role}`), ['headroom:primary']);
     assert.equal(installCalls[0].options.headroomBin, '/opt/myelin/headroom');
@@ -381,6 +382,41 @@ describe('applyServiceEngineInstallPlan', () => {
         ]);
       });
     }
+  }
+
+  for (const selectedEngine of ['headroom', 'headroom_lite']) {
+    it(`removes only the disabled ${selectedEngine} Copilot descriptor while retaining its primary`, async () => {
+      const removed = [];
+      const installed = [];
+      const obsoleteEngine = selectedEngine === 'headroom' ? 'headroom_lite' : 'headroom';
+
+      await applyServiceEngineInstallPlan({
+        cfg: {
+          proxy: {
+            engine: selectedEngine,
+            headroom: { port: 8787 },
+            headroom_lite: { port: 8790 },
+            copilot_headroom: { enabled: false, port: 8788 },
+          },
+        },
+        os: 'linux',
+        home: '/home/alice',
+        headroomBin: '/opt/myelin/headroom',
+        installEngineInstanceImpl: async (instance) => installed.push(instance),
+        removeEngineInstanceImpl: async (instance) => removed.push(instance),
+        detectToolImpl: async () => ({ installed: true, path: '/opt/myelin/headroom-lite' }),
+      });
+
+      assert.deepEqual(installed.map(({ id }) => id), [`${selectedEngine}-primary`]);
+      assert.deepEqual(removed.map(({ id }) => id), [
+        `${obsoleteEngine}-primary`,
+        `${obsoleteEngine}-copilot`,
+        `${selectedEngine}-copilot`,
+      ]);
+      assert.ok(!removed.some(({ id }) => id === `${selectedEngine}-primary`));
+      assert.ok(removed.every(({ engine, role }) =>
+        engine === obsoleteEngine || (engine === selectedEngine && role === 'copilot')));
+    });
   }
 });
 
