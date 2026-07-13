@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { existsSync } from 'node:fs';
+import { win32 as pathWin32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   applyServiceEngineInstallPlan,
   buildDownstreamProxyServiceInstallOptions,
@@ -10,7 +13,7 @@ import {
   shouldInstallPythonHeadroomPackage,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
-import { installWatchdog as installWindowsWatchdog } from '../src/service/windows.mjs';
+import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
 
 
 describe('shouldInstallPythonHeadroomPackage', () => {
@@ -324,7 +327,19 @@ describe('buildMitmServiceInstallOptions', () => {
 
     assert.equal(opts.home, 'C:\\Users\\alice');
     assert.equal(opts.mitmdumpBin, 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe');
-    assert.equal(opts.addonPath, 'C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py');
+    const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
+    const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
+    const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
+      || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
+    assert.equal(
+      opts.addonPath,
+      pathWin32.join(
+        useCanonicalRepo ? canonicalRepo : currentRepo,
+        'src',
+        'mitm',
+        'copilot_addon.py',
+      ),
+    );
     assert.equal(opts.logPath, 'C:\\Users\\alice\\.myelin\\mitmproxy.log');
     assert.equal(opts.envVars.REQUESTS_CA_BUNDLE, 'C:\\ProgramData\\Corp\\ca.pem');
     assert.equal(opts.envVars.MYELIN_VPN_DOMAINS_FILE, 'C:\\Users\\alice\\.myelin\\vpn-domains.txt');
