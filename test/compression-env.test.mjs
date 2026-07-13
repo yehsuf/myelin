@@ -10,20 +10,22 @@ test('compression enabled by default (kompress-base backend)', () => {
   assert.equal(r.MYELIN_COMPRESS, '1');
 });
 
-test('legacy top-level compression.backend=disabled turns compression off', () => {
+test('legacy top-level compression.backend=disabled is IGNORED (not a schema key)', () => {
+  // Regression: honoring this stale key silently disabled Copilot compression
+  // against the user's intent. The only real off-switch is headroom.enabled.
   const r = resolveMitmCompression({
     compression: { backend: 'disabled' },
     proxy: { headroom: { enabled: true, backend: 'kompress-base' } },
   });
-  assert.equal(r.compressEnabled, false);
-  assert.equal(r.MYELIN_COMPRESS, '0');
+  assert.equal(r.compressEnabled, true);
+  assert.equal(r.MYELIN_COMPRESS, '1');
 });
 
-test('migrated proxy.headroom.backend=disabled turns compression off', () => {
+test('undocumented proxy.headroom.backend=disabled does NOT disable (only enabled:false does)', () => {
   const r = resolveMitmCompression({
     proxy: { headroom: { enabled: true, backend: 'disabled' } },
   });
-  assert.equal(r.MYELIN_COMPRESS, '0');
+  assert.equal(r.MYELIN_COMPRESS, '1');
 });
 
 test('proxy.headroom.enabled=false turns compression off', () => {
@@ -58,9 +60,8 @@ test('copilot_headroom redirect suppressed under litellm (avoids double-compress
 
 test('copilot_headroom redirect suppressed when compression disabled', () => {
   const r = resolveMitmCompression({
-    compression: { backend: 'disabled' },
     proxy: {
-      headroom: { enabled: true },
+      headroom: { enabled: false },
       copilot_headroom: { enabled: true, port: 8788 },
     },
   });
