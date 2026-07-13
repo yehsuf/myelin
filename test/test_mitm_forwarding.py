@@ -491,6 +491,31 @@ def test_mitm_bails_when_no_messages_and_no_input():
     assert flow.request.content == original_body
 
 
+def test_mitm_responses_fails_open_unchanged_on_compression_failure():
+    """If the sidecar is unreachable / errors (ok=False), the Responses request
+    body must be forwarded BYTE-FOR-BYTE unchanged (true fail-open)."""
+    body = {
+        'model': 'gpt-4o',
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'x' * 2000},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+    }
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    original_body = flow.request.content
+
+    import urllib.error
+
+    def boom(req, *a, **k):
+        raise urllib.error.URLError('headroom down')
+
+    with patch('urllib.request.urlopen', side_effect=boom):
+        asyncio.run(MyelinAddon().request(flow))
+
+    # Body must be byte-identical to the original (no minify/re-encode on failure).
+    assert flow.request.content == original_body
+
+
 if __name__ == '__main__':
     for name, fn in list(globals().items()):
         if name.startswith('test_') and callable(fn):

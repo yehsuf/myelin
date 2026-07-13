@@ -986,6 +986,8 @@ class MyelinAddon:
                         _compress_responses, input_items, provider['fmt'], model)
                 except Rejected:
                     return  # breaker open / saturated → forward uncompressed
+                if not _ok:
+                    return  # compression failed → fail open, forward body unchanged
                 data['input'] = compressed
                 new_body = json.dumps(data, separators=(',', ':')).encode()
                 encoded_body = _encode_body(new_body, raw_encoding)
