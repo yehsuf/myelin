@@ -905,7 +905,7 @@ export function buildDownstreamProxyServiceInstallOptions({
       enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
       intervalMinutes: watchdogInterval,
       instances: resolvedEnginePlan.instances ?? buildEngineInstancePlan(cfg).instances,
-      headroomPort: resolvedEnginePlan.shouldRunManagedHeadroom ? resolvedEnginePlan.selectedPort : undefined,
+      headroomPort: resolvedEnginePlan.selectedPort,
       mitmPort: mitmCfg.port ?? 8888,
       ...(copilotHeadroomPort && mitmdumpBin ? {
         copilotHeadroomPort,

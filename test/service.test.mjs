@@ -449,6 +449,18 @@ describe('generateLaunchdWatchdogScript', () => {
 
     assert.ok(script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
   });
+
+  it('monitors primary at the headroom_lite port (*.headroom.plist glob matches both engines)', () => {
+    const script = generateLaunchdWatchdogScript({
+      home: '/Users/alice',
+      headroomPort: 8790,
+      mitmPort: 8888,
+    });
+
+    assert.ok(script.includes("check_and_revive 8790 headroom '*.headroom.plist'"),
+      'watchdog must check the headroom_lite primary port');
+    assert.ok(!script.includes('check_and_revive 8787'), 'must not include stale Python headroom port');
+  });
 });
 
 describe('launchd plist generator', () => {

@@ -950,7 +950,7 @@ export async function defaultRestartWatchdog({
       enabled: winManager === 'winsw' && (cfg?.proxy?.windows_service?.watchdog_enabled ?? false),
       intervalMinutes,
       instances: resolvedPlan.instances,
-      headroomPort: resolvedPlan.engine === 'headroom' ? primary?.port : undefined,
+      headroomPort: primary?.port,
       mitmPort: cfg?.proxy?.mitm?.port ?? 8888,
       ...(copilot ? {
         copilotHeadroomPort: copilot.port,

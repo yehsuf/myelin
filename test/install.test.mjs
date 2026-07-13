@@ -571,6 +571,39 @@ describe('buildDownstreamProxyServiceInstallOptions', () => {
     assert.deepEqual(installed.map(({ id }) => id), ['headroom-primary', 'headroom-copilot']);
     assert.ok(installed.every(({ id }) => id !== 'myelin-headroom'));
   });
+
+  it('sets watchdogOpts.headroomPort for headroom_lite so macOS launchd watchdog covers the primary', () => {
+    const options = buildDownstreamProxyServiceInstallOptions({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { port: 8790 },
+          mitm: { port: 8888 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      os: 'darwin',
+      home: '/Users/alice',
+      installPlan: {
+        enginePlan: {
+          engine: 'headroom_lite',
+          selectedPort: 8790,
+          shouldRunManagedHeadroom: false,
+          instances: [
+            {
+              id: 'headroom_lite-primary',
+              role: 'primary',
+              port: 8790,
+              healthUrl: 'http://127.0.0.1:8790/health',
+            },
+          ],
+        },
+      },
+    });
+
+    assert.equal(options.watchdogOpts.headroomPort, 8790,
+      'macOS launchd watchdog must receive the selected primary port for headroom_lite');
+  });
 });
 
 describe('buildManagedHeadroomRunKeyCleanupCommand', () => {

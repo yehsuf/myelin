@@ -1050,7 +1050,7 @@ describe('defaultRestartWatchdog', () => {
     assert.equal(installs[0].home, 'C:\\Users\\alice');
     assert.equal(installs[0].enabled, true);
     assert.equal(installs[0].intervalMinutes, 5);
-    assert.equal(installs[0].headroomPort, undefined);
+    assert.equal(installs[0].headroomPort, 8790); // primary port; Windows ignores this when instances is provided
     assert.equal(installs[0].mitmPort, 9888);
     assert.equal(installs[0].copilotHeadroomPort, 9788);
     assert.equal(installs[0].egressPort, 9889);
@@ -1058,6 +1058,36 @@ describe('defaultRestartWatchdog', () => {
       { id: 'headroom_lite-primary', role: 'primary', healthUrl: 'http://127.0.0.1:8790/health' },
       { id: 'headroom_lite-copilot', role: 'copilot', healthUrl: 'http://127.0.0.1:9788/health' },
     ]);
+  });
+
+  it('passes primary port to launchd watchdog for headroom_lite engine on macOS', async () => {
+    const installs = [];
+
+    await defaultRestartWatchdog({
+      os: 'darwin',
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { port: 8790 },
+          mitm: { port: 8888 },
+          copilot_headroom: { enabled: false },
+          windows_service: { manager: 'winsw', watchdog_enabled: false },
+        },
+      },
+      winManager: 'registry',
+      log: () => {},
+      warn: () => {},
+      homedirImpl: () => '/Users/alice',
+      installWatchdogImpl: async (opts) => {
+        installs.push(opts);
+        return true;
+      },
+    });
+
+    assert.equal(installs.length, 1);
+    assert.equal(installs[0].headroomPort, 8790,
+      'launchd watchdog must receive primary port for headroom_lite so it can revive the service');
+    assert.equal(installs[0].mitmPort, 8888);
   });
 });
 
