@@ -26,6 +26,14 @@ export function buildServiceEnginePlan(config = {}) {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+function normalizePort(value, label) {
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    throw new Error(`Invalid port for ${label}: ${JSON.stringify(value)} is not a valid port (1–65535)`);
+  }
+  return n;
+}
+
 function buildEngineInstance({ engine, role, port, egressPort, config }) {
   const id = `${engine}-${role}`;
   const stateDir = join(homedir(), '.myelin', 'state', id);
@@ -67,23 +75,31 @@ function assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPo
 
 export function buildEngineInstancePlan(config = {}) {
   const engine = selectedEngine(config);
-  const primaryPort = selectedEnginePort(config);
+
+  const rawPrimaryPort = selectedEnginePort(config);
   const copilot = config.proxy?.copilot_headroom ?? {};
-  const mitmPort = config?.proxy?.mitm?.port ?? 8888;
-  const egressPort = config?.proxy?.mitm?.egress_port ?? 8889;
+  const rawMitmPort = config?.proxy?.mitm?.port ?? 8888;
+  const rawEgressPort = config?.proxy?.mitm?.egress_port ?? 8889;
+
+  const primaryPort = normalizePort(rawPrimaryPort, 'primary');
+  const mitmPort = normalizePort(rawMitmPort, 'MITM ingress');
+  const egressPort = normalizePort(rawEgressPort, 'MITM egress');
 
   if (copilot.enabled === true) {
-    const copilotPort = copilot.port ?? 8788;
+    const rawCopilotPort = copilot.port ?? 8788;
+    const copilotPort = normalizePort(rawCopilotPort, 'copilot');
     assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
+
+    const instances = [
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config }),
+      buildEngineInstance({ engine, role: 'copilot', port: copilotPort, egressPort, config }),
+    ];
+    return { engine, instances };
   } else {
     assertNoPlanPortCollisions(primaryPort, null, mitmPort, egressPort);
+    const instances = [
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config }),
+    ];
+    return { engine, instances };
   }
-
-  const instances = [buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config })];
-  if (copilot.enabled === true) {
-    instances.push(buildEngineInstance({
-      engine, role: 'copilot', port: copilot.port ?? 8788, egressPort, config,
-    }));
-  }
-  return { engine, instances };
 }

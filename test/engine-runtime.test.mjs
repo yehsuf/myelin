@@ -285,3 +285,122 @@ describe('buildEngineInstancePlan — MITM ingress/egress collision and defaulte
     );
   });
 });
+
+describe('buildEngineInstancePlan — port normalization and validation', () => {
+  it('detects collision when primary port is string "8889" and MITM egress is numeric 8889', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: '8889' },
+          copilot_headroom: { enabled: false },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('detects collision when copilot port is string "8788" and primary port is numeric 8788', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8788 },
+          copilot_headroom: { enabled: true, port: '8788' },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('normalizes valid quoted port "8787" and produces descriptor with numeric port 8787', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: '8787' },
+        copilot_headroom: { enabled: false },
+        mitm: { port: 8888, egress_port: 8889 },
+      },
+    });
+    assert.strictEqual(plan.instances[0].port, 8787);
+  });
+
+  it('normalizes valid quoted MITM egress port "8889" and uses it in copilot env', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { port: 8888, egress_port: '8889' },
+      },
+    });
+    assert.strictEqual(plan.instances[1].env.HEADROOM_LITE_UPSTREAM, 'http://127.0.0.1:8889');
+  });
+
+  it('rejects a non-numeric port value', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 'abc' },
+          copilot_headroom: { enabled: false },
+        },
+      }),
+      /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+
+  it('rejects a fractional port value', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787.5 },
+          copilot_headroom: { enabled: false },
+        },
+      }),
+      /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+
+  it('rejects a port of 0', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 0 },
+          copilot_headroom: { enabled: false },
+        },
+      }),
+      /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+
+  it('rejects a port above 65535', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 99999 },
+          copilot_headroom: { enabled: false },
+        },
+      }),
+      /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+
+  it('rejects a negative port value', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: -1 },
+          copilot_headroom: { enabled: false },
+        },
+      }),
+      /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+});
