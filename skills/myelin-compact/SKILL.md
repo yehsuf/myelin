@@ -1,7 +1,7 @@
 ---
 name: myelin-compact
 description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
-argument-hint: "[prepare|resume]"
+argument-hint: "[prepare|resume] — prepare before /compact, resume after (post-compact)"
 ---
 
 # compact — generic /compact pipeline
