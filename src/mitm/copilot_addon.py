@@ -381,6 +381,25 @@ def _detect_provider(host: str, path: str) -> Optional[dict]:
     fmt = path_fmt if domain_fmt == 'auto' else domain_fmt
     return {'fmt': fmt, 'cache_fmt': _CACHE_FMT.get(fmt)}
 
+
+def _is_completion_path(host: str, path: str) -> bool:
+    """True if host+path is an LLM completion endpoint. Completion responses are
+    streaming (SSE) and non-idempotent, so they must NEVER be served from or
+    stored in the thrash cache — doing so returns a stored body tagged
+    application/json for a stream request, which the client's SSE parser rejects
+    with 'EOF while parsing a value at line 1 column 0'."""
+    return _detect_provider(host, path) is not None
+
+
+def _is_streaming_response(response) -> bool:
+    """Defense-in-depth: never cache a Server-Sent-Events response body
+    regardless of path."""
+    try:
+        ct = (response.headers.get('content-type', '') or '').lower()
+    except Exception:
+        return False
+    return 'text/event-stream' in ct
+
 # ---------------------------------------------------------------------------
 # Body codec
 # ---------------------------------------------------------------------------
@@ -734,8 +753,10 @@ class MyelinAddon:
         if flow.request.method != 'POST':
             return
 
-        if THRASH_CACHE:
-            # Thrash detection: return cached response for repeated identical requests
+        if THRASH_CACHE and not _is_completion_path(host, path):
+            # Thrash detection: return cached response for repeated identical
+            # requests. Completion (streaming/SSE) paths are excluded — caching
+            # and re-serving them breaks the client's stream parser.
             cache_key = _cache_key(host, path, flow.request.content or b'')
             flow.metadata['myelin_cache_key'] = cache_key
             cached = _cache_get(cache_key)
@@ -1032,6 +1053,8 @@ class MyelinAddon:
         if THRASH_CACHE and (
             not flow.metadata.get('myelin_cache_hit')
             and not flow.metadata.get('myelin_via_override')
+            and not _is_completion_path(host, flow.request.path)
+            and not _is_streaming_response(flow.response)
             and flow.response is not None
             and flow.response.status_code == 200
             and 'myelin_original_bytes' in flow.metadata
