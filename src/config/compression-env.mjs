@@ -2,13 +2,15 @@
  * Resolve the mitmproxy compression-related environment from config.
  *
  * Pure + side-effect-free so it can be unit-tested without running the
- * installer. Honors the user's intent to disable compression (the top-level
- * legacy `compression.backend: disabled`, the migrated
- * `proxy.headroom.backend: disabled`, or `proxy.headroom.enabled: false`) and
- * ensures MYELIN_COMPRESS is emitted EXPLICITLY ('0' or '1') so a stale value
- * never lingers in the service environment. When compression is disabled the
- * dedicated Copilot-Headroom redirect is suppressed too (it would otherwise run
- * the full pipeline despite "disabled").
+ * installer. Compression is controlled by the REAL schema field
+ * `proxy.headroom.enabled` (and suppressed when a LiteLLM front-end owns
+ * compression). It intentionally does NOT key off a top-level
+ * `compression.backend` value: that is a legacy/unknown key not present in the
+ * schema (`myelin config prune` removes it), and honoring a stale
+ * `compression.backend: disabled` would silently turn Copilot compression off
+ * against the user's intent. `MYELIN_COMPRESS` is emitted EXPLICITLY ('0'/'1')
+ * so a stale value never lingers in the service environment. When compression
+ * is disabled the dedicated Copilot-Headroom redirect is suppressed too.
  *
  * @param {object} cfg loaded config
  * @returns {{ compressEnabled: boolean, MYELIN_COMPRESS: '0'|'1', copilotHeadroomPort: number|undefined }}
@@ -17,10 +19,8 @@ export function resolveMitmCompression(cfg = {}) {
   const headroom = cfg.proxy?.headroom ?? {};
   const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
 
-  const disabled =
-    cfg.compression?.backend === 'disabled' ||
-    headroom.backend === 'disabled' ||
-    headroom.enabled === false;
+  // The only legitimate "off" switch is proxy.headroom.enabled === false.
+  const disabled = headroom.enabled === false;
 
   // LiteLLM front-end owns compression when enabled → the sidecar must not also
   // compress (preserves the existing behavior).
