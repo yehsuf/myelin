@@ -5,3 +5,4 @@ src/mitm/__pycache__/
 
 # Myelin: machine-specific Copilot CLI hook (requires Myelin installed)
 .github/hooks/copilot-serena-guard.json
+test/__pycache__/

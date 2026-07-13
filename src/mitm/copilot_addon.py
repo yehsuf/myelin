@@ -42,6 +42,7 @@ _ADDON_DIR = os.path.dirname(os.path.abspath(__file__))
 if _ADDON_DIR not in sys.path:
     sys.path.insert(0, _ADDON_DIR)
 
+import asyncio
 import collections
 import gzip
 import hashlib
@@ -61,6 +62,8 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from mitmproxy import ctx, http
+
+from async_offload import GuardedPool, Rejected, submit_guarded
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,31 @@ RAG_INJECT   = os.environ.get('MYELIN_RAG_INJECT',  '0') == '1'
 SERENA_CONTEXT = os.environ.get('MYELIN_SERENA_CONTEXT', '0') == '1'
 THRASH_CACHE = os.environ.get('MYELIN_THRASH_CACHE', '1') == '1'
 LOG_SAVINGS  = os.environ.get('MYELIN_LOG_SAVINGS', '1') == '1'
+
+# ---------------------------------------------------------------------------
+# Offload pools (see async_offload.py).
+#
+# mitmproxy runs sync hooks on its single event loop; blocking I/O there freezes
+# the whole proxy. The blocking compress call and the SOCKS5 block-bypass relay
+# are pushed onto DEDICATED thread pools (never asyncio's default executor,
+# which is shared with DNS getaddrinfo — a burst of slow relays there would
+# starve new CONNECTs and re-create the stall). Two pools so slow 15s relays
+# can't head-of-line-block fast 2s compress calls. Both are lazily created.
+# ---------------------------------------------------------------------------
+
+def _int_env(name: str, default: int, lo: int = 1, hi: int = 64) -> int:
+    try:
+        v = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(hi, v))
+
+SOCKS_WORKERS    = _int_env('MYELIN_SOCKS_WORKERS', 16, 1, 64)
+COMPRESS_WORKERS = _int_env('MYELIN_COMPRESS_WORKERS', 4, 1, 32)
+
+_SOCKS_POOL    = GuardedPool('socks', SOCKS_WORKERS, failure_threshold=3, cooldown=30.0)
+_COMPRESS_POOL = GuardedPool('compress', COMPRESS_WORKERS, failure_threshold=3, cooldown=30.0)
+
 
 # Block detection + override proxy routing (opt-in).
 #
@@ -424,7 +452,15 @@ def scrub_headers_for_log(headers) -> dict:
 # ---------------------------------------------------------------------------
 
 def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
-    """POST to Headroom /v1/compress. Returns (messages, tokens_before, tokens_after)."""
+    """
+    POST to Headroom /v1/compress. PURE + thread-safe: no mitmproxy types, no
+    ctx.log (runs in a worker thread). Returns
+    ``(messages, tokens_before, tokens_after, ok)`` where ``ok`` is True only on
+    a genuine successful compression response. A legitimate zero-token result is
+    still ``ok=True``; only transport/HTTP/parse failures are ``ok=False`` so the
+    circuit breaker counts real failures (a 4xx from headroom is a failure but
+    NOT "unreachable").
+    """
     payload = json.dumps({
         'messages': messages,
         'format': fmt,
@@ -439,14 +475,29 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
     try:
         with urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS) as resp:
             result = json.loads(resp.read())
-            compressed = result.get('messages')
-            if isinstance(compressed, list) and compressed:
-                return compressed, result.get('tokens_before', 0), result.get('tokens_after', 0)
+        compressed = result.get('messages')
+        if isinstance(compressed, list) and compressed:
+            return compressed, result.get('tokens_before', 0), result.get('tokens_after', 0), True
+        # Well-formed response but nothing usable — treat as a no-op success
+        # (don't trip the breaker; compression simply had nothing to do).
+        return messages, 0, 0, True
+    except urllib.error.HTTPError as e:
+        # Must be caught BEFORE URLError (HTTPError subclasses URLError): a 4xx/5xx
+        # from headroom is a real failure, not an "unreachable" transport error.
+        logger.warning(scrub_log_str(f'[myelin] compression HTTP {e.code} from headroom'))
     except urllib.error.URLError as e:
-        ctx.log.warn(scrub_log_str(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}'))
+        logger.warning(scrub_log_str(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}'))
     except Exception as e:
-        ctx.log.warn(scrub_log_str(f'[myelin] compression error: {e}'))
-    return messages, 0, 0
+        logger.warning(scrub_log_str(f'[myelin] compression error: {e}'))
+    return messages, 0, 0, False
+
+
+def _compress_success(exc, res) -> bool:
+    """Breaker predicate for the compress pool: success iff the worker returned
+    a result whose trailing ``ok`` flag is True and it did not raise."""
+    return exc is None and bool(res) and bool(res[-1])
+
+
 
 # cache_control is passed through untouched — the client manages its own breakpoints.
 
@@ -510,83 +561,112 @@ def _poll_reachable(hostname: str, timeout: float = 30.0, interval: float = 1.0)
 # mitmproxy's replay/via mechanism entirely for this one bypass path.
 # ---------------------------------------------------------------------------
 
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """Read exactly ``n`` bytes or raise ConnectionError (SOCKS replies are
+    short and fixed-length; a partial recv would desync the stream)."""
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError(f'SOCKS5 short read: got {len(buf)} of {n} bytes')
+        buf.extend(chunk)
+    return bytes(buf)
+
+
 def _socks5_handshake(sock: socket.socket, target_host: str, target_port: int) -> None:
     """Minimal no-auth SOCKS5 CONNECT handshake (RFC 1928) on an open socket."""
     sock.sendall(b'\x05\x01\x00')  # ver=5, 1 auth method offered, no-auth
-    reply = sock.recv(2)
-    if len(reply) != 2 or reply[0] != 0x05 or reply[1] != 0x00:
+    reply = _recv_exact(sock, 2)
+    if reply[0] != 0x05 or reply[1] != 0x00:
         raise ConnectionError(f'SOCKS5 method negotiation rejected: {reply!r}')
 
     addr = target_host.encode('ascii')
     req = b'\x05\x01\x00\x03' + bytes([len(addr)]) + addr + struct.pack('>H', target_port)
     sock.sendall(req)
 
-    header = sock.recv(4)
-    if len(header) != 4 or header[0] != 0x05:
+    header = _recv_exact(sock, 4)
+    if header[0] != 0x05:
         raise ConnectionError(f'SOCKS5 CONNECT reply malformed: {header!r}')
     if header[1] != 0x00:
         raise ConnectionError(f'SOCKS5 CONNECT failed, reply code {header[1]}')
 
     atype = header[3]
     if atype == 0x01:        # IPv4
-        sock.recv(4 + 2)
+        _recv_exact(sock, 4 + 2)
     elif atype == 0x03:      # domain name
-        n = sock.recv(1)[0]
-        sock.recv(n + 2)
+        n = _recv_exact(sock, 1)[0]
+        _recv_exact(sock, n + 2)
     elif atype == 0x04:      # IPv6
-        sock.recv(16 + 2)
+        _recv_exact(sock, 16 + 2)
     else:
         raise ConnectionError(f'SOCKS5 CONNECT unknown address type {atype}')
 
 
-def _replay_via_socks5(flow: http.HTTPFlow, proxy_host: str, proxy_port: int,
-                        timeout: float = 15.0) -> bool:
+# Result of a pure SOCKS5 relay: applied to flow.response ON the loop thread.
+ReplayResult = collections.namedtuple('ReplayResult', ('status', 'body', 'headers'))
+
+
+def _socks5_relay(host: str, port: int, method: str, path: str,
+                  headers: dict, body: bytes, proxy_host: str, proxy_port: int,
+                  connect_timeout: float = 8.0, total_timeout: float = 15.0
+                  ) -> Optional[ReplayResult]:
     """
-    Re-send flow.request directly through a SOCKS5 proxy and populate
-    flow.response on success. Returns True/False.
+    PURE worker (runs in a thread pool): re-send a request through a SOCKS5
+    proxy and RETURN the response as plain data — never touches a mitmproxy
+    flow or ctx.log. Returns a ReplayResult on success, or None on failure.
+
+    Enforces its own deadlines because mitmproxy's per-hook timeout watchdog is
+    DISABLED while a hook runs, and asyncio cannot interrupt a running thread.
+    Guarantees every socket is closed on every path.
     """
-    host = flow.request.pretty_host
-    port = flow.request.port or 443
     raw_sock: Optional[socket.socket] = None
+    tls_sock: Optional[ssl.SSLSocket] = None
+    deadline = time.monotonic() + total_timeout
     try:
-        raw_sock = socket.create_connection((proxy_host, proxy_port), timeout=timeout)
-        raw_sock.settimeout(timeout)
+        raw_sock = socket.create_connection((proxy_host, proxy_port), timeout=connect_timeout)
+        raw_sock.settimeout(connect_timeout)
         _socks5_handshake(raw_sock, host, port)
 
         ssl_ctx = ssl.create_default_context(cafile=os.environ.get('SSL_CERT_FILE') or None)
         tls_sock = ssl_ctx.wrap_socket(raw_sock, server_hostname=host)
-        raw_sock = None  # ownership transferred to tls_sock, avoid double-close
+        raw_sock = None  # ownership transferred to tls_sock
 
-        conn = http_client.HTTPSConnection(host, port, timeout=timeout)
+        # Bound the read/write phase by the remaining total budget.
+        remaining = max(0.1, deadline - time.monotonic())
+        tls_sock.settimeout(remaining)
+
+        conn = http_client.HTTPSConnection(host, port, timeout=remaining)
         conn.sock = tls_sock
 
-        # Note: duplicate header names (rare — e.g. multiple Cookie headers)
-        # collapse last-wins here; acceptable for a best-effort bypass retry.
+        # Duplicate header names (rare — e.g. multiple Cookie headers) collapse
+        # last-wins here; acceptable for a best-effort bypass retry.
         req_headers = {
-            k: v for k, v in flow.request.headers.items(multi=True)
+            k: v for k, v in headers.items()
             if k.lower() not in ('proxy-connection', 'connection')
         }
-
-        conn.request(
-            flow.request.method,
-            flow.request.path,
-            body=flow.request.content or b'',
-            headers=req_headers,
-        )
+        conn.request(method, path, body=body or b'', headers=req_headers)
         resp = conn.getresponse()
         resp_body = resp.read()
-        flow.response = http.Response.make(resp.status, resp_body, dict(resp.getheaders()))
-        conn.close()
-        return True
+        return ReplayResult(resp.status, resp_body, dict(resp.getheaders()))
     except Exception as e:
-        ctx.log.error(scrub_log_str(f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}'))
-        return False
+        logger.error(scrub_log_str(
+            f'[myelin] SOCKS5 override-proxy relay to {proxy_host}:{proxy_port} failed: {e}'))
+        return None
     finally:
-        if raw_sock is not None:
-            try:
-                raw_sock.close()
-            except OSError:
-                pass
+        for s in (tls_sock, raw_sock):
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
+def _socks_success(exc, res) -> bool:
+    """Breaker predicate for the SOCKS pool: a relay that raised, returned None,
+    or returned another 418 block page is a FAILURE (don't count it as a working
+    bypass)."""
+    return exc is None and res is not None and res.status != 418
+
 
 
 # ---------------------------------------------------------------------------
@@ -595,11 +675,16 @@ def _replay_via_socks5(flow: http.HTTPFlow, proxy_host: str, proxy_port: int,
 
 class MyelinAddon:
 
-    def request(self, flow: http.HTTPFlow):
+    async def request(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
         path = flow.request.path
 
         if flow.metadata.get('myelin_egress_restored'):
+            return
+
+        # Re-entry guard: an HTTP/VPN block-bypass replay (replay.client) re-runs
+        # the request hook on the SAME flow. Don't compress/inject a second time.
+        if flow.metadata.get('myelin_via_override'):
             return
 
         # Egress is the return leg from Copilot-Headroom back to mitmproxy.
@@ -747,10 +832,19 @@ class MyelinAddon:
             flow.request.headers['host'] = _host_header('127.0.0.1', 'http', COPILOT_HEADROOM_PORT)
             return
 
-        # 3. Compress messages (all roles including tool results)
+        # 3. Compress messages (all roles including tool results).
+        # Offloaded to the dedicated compress pool so the blocking urllib call
+        # never freezes the event loop. Fail-open: if the breaker is OPEN or the
+        # pool is saturated, skip compression and forward uncompressed.
+        tok_before = tok_after = 0
         if COMPRESS:
-            messages, tok_before, tok_after = _compress_messages(messages, provider['fmt'], model)
-            data['messages'] = messages
+            try:
+                messages, tok_before, tok_after, _ok = await submit_guarded(
+                    _COMPRESS_POOL, _compress_success,
+                    _compress_messages, messages, provider['fmt'], model)
+                data['messages'] = messages
+            except Rejected:
+                pass  # breaker open / saturated → forward uncompressed
 
         # cache_control: passed through untouched — Copilot CLI sets its own breakpoints
 
@@ -774,14 +868,15 @@ class MyelinAddon:
         flow.metadata['myelin_tok_before']     = tok_before
         flow.metadata['myelin_tok_after']      = tok_after
 
-    def response(self, flow: http.HTTPFlow):
+    async def response(self, flow: http.HTTPFlow):
         host = flow.request.pretty_host
 
         # Block bypass (opt-in: requires MYELIN_BLOCK_BYPASS=1 + MYELIN_OVERRIDE_PROXY)
         #
-        # On 418 block page: set flow.server_conn.via to route the replayed request
-        # directly through the override proxy (SOCKS5/HTTP VPN endpoint).
-        # No domain file, no polling daemon — mitmproxy switches the transport per-flow.
+        # On 418 block page: relay the request through the override proxy
+        # (SOCKS5 stdlib relay, or HTTP via mitmproxy's replay.client). The
+        # blocking relay / reachability poll are offloaded to a dedicated thread
+        # pool so they never freeze the event loop.
         if BLOCK_BYPASS and (OVERRIDE_PROXY or VPN_DOMAINS_FILE):
             body = flow.response.content or b''
             if _is_network_block(flow.response.status_code, body):
@@ -801,10 +896,29 @@ class MyelinAddon:
                         # mitmproxy's server_conn.via has no SOCKS5 upstream
                         # support (http/https/tls/tcp schemes only) — relay
                         # manually via a stdlib-only SOCKS5 client instead.
-                        if _replay_via_socks5(flow, parsed.hostname, parsed.port or 1080):
+                        # Snapshot request data ON the loop; the worker is pure.
+                        port = flow.request.port or 443
+                        method = flow.request.method
+                        path = flow.request.path
+                        req_headers = {k: v for k, v in flow.request.headers.items(multi=True)}
+                        try:
+                            result = await submit_guarded(
+                                _SOCKS_POOL, _socks_success,
+                                _socks5_relay, host, port, method, path,
+                                req_headers, flow.request.content or b'',
+                                parsed.hostname, parsed.port or 1080)
+                        except Rejected:
+                            result = None
+                            ctx.log.error(scrub_log_str(
+                                f'[myelin] {host} bypass skipped — SOCKS relay breaker open/saturated'))
+                        # Apply the result ON the loop thread.
+                        if result is not None and result.status != 418:
+                            flow.response = http.Response.make(
+                                result.status, result.body, result.headers)
                             ctx.log.info(f'[myelin] {host} served via SOCKS5 override proxy')
                         else:
-                            ctx.log.error(scrub_log_str(f'[myelin] {host} still blocked — SOCKS5 override relay failed'))
+                            ctx.log.error(scrub_log_str(
+                                f'[myelin] {host} still blocked — SOCKS5 override relay failed'))
                     else:
                         try:
                             from mitmproxy.net.server_spec import parse as parse_spec
@@ -814,9 +928,14 @@ class MyelinAddon:
                         except Exception as e:
                             ctx.log.error(scrub_log_str(f'[myelin] override proxy replay failed: {e}'))
                 elif VPN_DOMAINS_FILE:
-                    # Legacy: domain-file fallback
+                    # Legacy: domain-file fallback. Offload the blocking poll.
                     ctx.log.warn(scrub_log_str(f'[myelin] network block on {host} — adding to VPN routing file'))
-                    if _add_to_vpn_file(host) and _poll_reachable(host):
+                    reachable = False
+                    if _add_to_vpn_file(host):
+                        loop = asyncio.get_running_loop()
+                        reachable = await loop.run_in_executor(
+                            _SOCKS_POOL.executor(), _poll_reachable, host)
+                    if reachable:
                         ctx.log.info(f'[myelin] {host} reachable via VPN — replaying')
                         flow.metadata['myelin_via_override'] = True
                         ctx.master.commands.call('replay.client', [flow])
@@ -897,6 +1016,14 @@ class MyelinAddon:
                     flow.request.content or b'',
                 )
                 _cache_put(req_key, resp_body, meta)
+
+    def done(self):
+        """mitmproxy lifecycle: shut down the offload pools on reload/exit."""
+        for pool in (_SOCKS_POOL, _COMPRESS_POOL):
+            try:
+                pool.shutdown(wait=False)
+            except Exception:
+                pass
 
 
 # Hosts that must NOT be TLS-intercepted — client certificates (mTLS) won't survive CONNECT proxy.

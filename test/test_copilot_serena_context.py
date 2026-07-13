@@ -7,6 +7,7 @@ Verifies:
     (rag_injector.inject_rag_context NOT called when SERENA_CONTEXT is on)
 """
 import copy
+import asyncio
 import json
 import os
 import sys
@@ -113,7 +114,7 @@ def _run_request(monkeypatch, *, serena_on, rag_on,
     # Neutralize compression so we can inspect the final body directly.
     monkeypatch.setattr(
         copilot_addon, '_compress_messages',
-        lambda messages, fmt, model: (messages, 0, 0),
+        lambda messages, fmt, model: (messages, 0, 0, True),
     )
 
     calls = {'serena': 0, 'rag': 0, 'tool_filter_tools': None,
@@ -150,7 +151,7 @@ def _run_request(monkeypatch, *, serena_on, rag_on,
     flow = _FakeFlow('api.anthropic.com', '/v1/messages', body)
 
     addon = copilot_addon.MyelinAddon()
-    addon.request(flow)
+    asyncio.run(addon.request(flow))
 
     # Read back mutated request body if it was changed
     final_body = flow.request.content
@@ -280,7 +281,7 @@ def test_end_to_end_with_real_serena_context(monkeypatch, tmp_path):
     monkeypatch.setattr(copilot_addon, 'COPILOT_HEADROOM_PORT', None)
     monkeypatch.setattr(
         copilot_addon, '_compress_messages',
-        lambda messages, fmt, model: (messages, 0, 0),
+        lambda messages, fmt, model: (messages, 0, 0, True),
     )
 
     # Force serena_search to fail and fallback to return snippets.
@@ -293,7 +294,7 @@ def test_end_to_end_with_real_serena_context(monkeypatch, tmp_path):
 
     body = _make_body(_default_messages(), tools=_default_tools())
     flow = _FakeFlow('api.anthropic.com', '/v1/messages', body)
-    copilot_addon.MyelinAddon().request(flow)
+    asyncio.run(copilot_addon.MyelinAddon().request(flow))
 
     final = json.loads(flow.request.content)
     # tools[] unchanged

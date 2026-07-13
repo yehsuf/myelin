@@ -21,6 +21,7 @@ ANTHROPIC_BASE_URL was globally set, Copilot skipped mitmproxy entirely.
 This test proves the addon itself does the right thing when it IS given
 traffic, so ANY future breakage will come from routing/setup, not the addon.
 """
+import asyncio
 import json
 import os
 import sys
@@ -164,7 +165,7 @@ def test_mitm_preserves_copilot_destination():
     flow = _make_flow('api.githubcopilot.com', '/chat/completions')
     origin = (flow.request.host, flow.request.port, flow.request.scheme)
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin, (
         f'MITM rewrote destination: {origin} → '
         f'({flow.request.host}, {flow.request.port}, {flow.request.scheme})'
@@ -175,7 +176,7 @@ def test_mitm_preserves_business_copilot_destination():
     flow = _make_flow('api.business.githubcopilot.com', '/chat/completions')
     origin = (flow.request.host, flow.request.port, flow.request.scheme)
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
 
 
@@ -188,7 +189,7 @@ def test_copilot_headroom_redirect_carries_original_destination():
     try:
         copilot_addon.COPILOT_HEADROOM_PORT = 8788
         copilot_addon.EGRESS_PORT = 8889
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     finally:
         copilot_addon.COPILOT_HEADROOM_PORT = old_copilot
         copilot_addon.EGRESS_PORT = old_egress
@@ -219,7 +220,7 @@ def test_egress_listener_restores_original_destination_and_path():
     try:
         copilot_addon.EGRESS_PORT = 8889
         with patch('urllib.request.urlopen') as mock:
-            MyelinAddon().request(flow)
+            asyncio.run(MyelinAddon().request(flow))
     finally:
         copilot_addon.EGRESS_PORT = old_egress
 
@@ -251,7 +252,7 @@ def test_egress_listener_restores_original_destination_for_non_post():
     try:
         copilot_addon.EGRESS_PORT = 8889
         with patch('urllib.request.urlopen') as mock:
-            MyelinAddon().request(flow)
+            asyncio.run(MyelinAddon().request(flow))
     finally:
         copilot_addon.EGRESS_PORT = old_egress
 
@@ -272,7 +273,7 @@ def test_egress_listener_without_loopback_headers_fails_closed():
     try:
         copilot_addon.EGRESS_PORT = 8889
         with patch('urllib.request.urlopen') as mock:
-            MyelinAddon().request(flow)
+            asyncio.run(MyelinAddon().request(flow))
     finally:
         copilot_addon.EGRESS_PORT = old_egress
 
@@ -307,7 +308,7 @@ def test_egress_listener_with_partial_or_malformed_loopback_headers_fails_closed
             for key, value in headers.items():
                 flow.request.headers[key] = value
             with patch('urllib.request.urlopen') as mock:
-                MyelinAddon().request(flow)
+                asyncio.run(MyelinAddon().request(flow))
             assert mock.call_count == 0
             assert flow.response is not None, headers
             assert flow.response[0] == 502, headers
@@ -330,12 +331,12 @@ def test_egress_listener_reentry_after_restore_is_noop():
     try:
         copilot_addon.EGRESS_PORT = 8889
         copilot_addon.COPILOT_HEADROOM_PORT = 8788
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
         assert flow.metadata['myelin_egress_restored'] is True
 
         flow.client_conn.sockname = None
         with patch('urllib.request.urlopen') as mock:
-            MyelinAddon().request(flow)
+            asyncio.run(MyelinAddon().request(flow))
         assert mock.call_count == 0
     finally:
         copilot_addon.EGRESS_PORT = old_egress
@@ -355,7 +356,7 @@ def test_mitm_preserves_anthropic_destination():
     flow = _make_flow('api.anthropic.com', '/v1/messages')
     origin = (flow.request.host, flow.request.port, flow.request.scheme)
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
 
 
@@ -363,7 +364,7 @@ def test_mitm_preserves_openai_destination():
     flow = _make_flow('api.openai.com', '/v1/chat/completions')
     origin = (flow.request.host, flow.request.port, flow.request.scheme)
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
 
 
@@ -371,7 +372,7 @@ def test_mitm_replaces_body_with_compressed():
     """flow.request.content must be replaced with the compressed JSON body."""
     flow = _make_flow('api.githubcopilot.com', '/chat/completions')
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     body = json.loads(flow.request.content)
     assert body['messages'][0]['content'] == 'compressed-body', (
         f'Expected compressed body, got: {body}'
@@ -389,7 +390,7 @@ def test_mitm_calls_headroom_v1_compress_locally():
         return _mock_headroom_compress()
 
     with patch('urllib.request.urlopen', side_effect=fake_urlopen):
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
 
     assert any('/v1/compress' in u for u in captured), (
         f'MITM did not call headroom /v1/compress; got: {captured}'
@@ -412,7 +413,7 @@ def test_mitm_ignores_non_completion_paths():
     origin = (flow.request.host, flow.request.port, flow.request.scheme)
     original_body = flow.request.content
     with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()) as mock:
-        MyelinAddon().request(flow)
+        asyncio.run(MyelinAddon().request(flow))
     # No compression call for non-completion paths.
     assert mock.call_count == 0
     # Destination unchanged.
