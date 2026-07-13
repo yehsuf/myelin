@@ -22,7 +22,7 @@ describe('buildVerifyResults engine selection', () => {
         probes.push(`lite:${port}`);
         return { status: 'ok', mode: 'cache' };
       },
-      serviceStatusImpl: async () => ({ running: true, label: 'headroom' }),
+      engineInstanceStatusImpl: async () => ({ running: true, label: 'headroom' }),
       waitForHeadroomImpl: async () => true,
       detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
       detectRtkImpl: async () => ({ installed: false, version: null }),
@@ -37,7 +37,7 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(probes, []);
     assert.deepEqual(results.map(({ name }) => name), [
       'Headroom service',
-      'Headroom health (:8787)',
+      'Headroom health',
     ]);
   });
 
@@ -54,7 +54,7 @@ describe('buildVerifyResults engine selection', () => {
         },
       },
       probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'cache' }),
-      serviceStatusImpl: async () => ({ running: true, label: 'headroom' }),
+      engineInstanceStatusImpl: async () => ({ running: true, label: 'headroom' }),
       waitForHeadroomImpl: async (port) => {
         waits.push(port);
         return true;
@@ -71,7 +71,8 @@ describe('buildVerifyResults engine selection', () => {
 
     assert.deepEqual(waits, []);
     assert.deepEqual(results.map(({ name }) => name), [
-      'headroom-lite (:8790)',
+      'Headroom Lite service',
+      'Headroom Lite health',
     ]);
   });
 
@@ -82,7 +83,7 @@ describe('buildVerifyResults engine selection', () => {
           engine: 'headroom_lite',
           headroom: { enabled: false, port: 8787 },
           headroom_lite: { enabled: true, port: 8790 },
-          mitm: { enabled: false, port: 8888 },
+          mitm: { enabled: true, port: 8888 },
           copilot_headroom: { enabled: true, port: 8788 },
           windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 2 },
         },
@@ -94,9 +95,9 @@ describe('buildVerifyResults engine selection', () => {
       detectRtkImpl: async () => ({ installed: false, version: null }),
       detectSembleImpl: async () => ({ installed: false, version: null }),
       whichImpl: async () => '/usr/bin/mitmdump',
+      engineInstanceStatusImpl: async () => ({ running: true, label: 'copilot' }),
       includeToolChecks: false,
       includeMitmCheck: false,
-      copilotHeadroomServiceStatusImpl: async () => ({ running: true, label: 'copilot' }),
       includeCopilotHeadroomCheck: true,
       includeWatchdogChecks: true,
     });
@@ -105,36 +106,35 @@ describe('buildVerifyResults engine selection', () => {
     assert.equal(results.some(({ name }) => name === 'Myelin Copilot Headroom Watchdog'), true);
   });
 
-  it('passes the configured Copilot-Headroom port into the registry status probe', async () => {
+  it('passes the configured Copilot descriptor into the generic status probe', async () => {
     const calls = [];
     const results = await buildVerifyResults({
       config: {
         proxy: {
           headroom: { enabled: false, port: 8787 },
           headroom_lite: { enabled: false, port: 8790 },
-          mitm: { enabled: false, port: 8888 },
+          mitm: { enabled: true, port: 8888 },
           copilot_headroom: { enabled: true, port: 9797 },
           windows_service: { manager: 'registry' },
         },
       },
       platform: 'win32',
       waitForHeadroomImpl: async () => true,
-      copilotHeadroomServiceStatusImpl: async (opts) => {
-        calls.push(opts);
-        return { running: true, label: 'copilot' };
+      engineInstanceStatusImpl: async (instance, options) => {
+        calls.push({ role: instance.role, port: instance.port, options });
+        return { running: true, label: instance.role };
       },
-      detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
-      detectRtkImpl: async () => ({ installed: false, version: null }),
-      detectSembleImpl: async () => ({ installed: false, version: null }),
-      whichImpl: async () => '/usr/bin/mitmdump',
       includeToolChecks: false,
       includeMitmCheck: false,
       includeCopilotHeadroomCheck: true,
       includeWatchdogChecks: false,
     });
 
-    assert.deepEqual(calls, [{ manager: 'registry', port: 9797 }]);
-    assert.equal(results.some(({ name }) => name === 'Copilot-Headroom health (:9797)'), true);
+    assert.deepEqual(calls, [
+      { role: 'primary', port: 8787, options: { manager: 'registry' } },
+      { role: 'copilot', port: 9797, options: { manager: 'registry' } },
+    ]);
+    assert.equal(results.some(({ name }) => name === 'Copilot Headroom health'), true);
   });
 
   it('does not let an unrelated mitmdump probe make verify green', async () => {
@@ -150,7 +150,7 @@ describe('buildVerifyResults engine selection', () => {
         },
       },
       platform: 'win32',
-      serviceStatusImpl: async () => ({ running: true, label: 'headroom' }),
+      engineInstanceStatusImpl: async () => ({ running: true, label: 'headroom' }),
       waitForHeadroomImpl: async () => true,
       mitmServiceStatusImpl: async () => probe,
       detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
@@ -174,15 +174,16 @@ describe('buildVerifyResults engine selection', () => {
           engine: 'headroom',
           headroom: { enabled: true, port: 8787 },
           headroom_lite: { enabled: false, port: 8790 },
-          mitm: { enabled: false, port: 8888 },
+          mitm: { enabled: true, port: 8888 },
           copilot_headroom: { enabled: true, port: 8788 },
           windows_service: { manager: 'registry' },
         },
       },
       platform: 'win32',
-      serviceStatusImpl: async () => ({ running: false, state: 'Stopped' }),
+      engineInstanceStatusImpl: async (instance) => instance.role === 'primary'
+        ? { running: false, state: 'Stopped' }
+        : { running: true, label: 'copilot' },
       waitForHeadroomImpl: async (port) => port === 8788,
-      copilotHeadroomServiceStatusImpl: async () => ({ running: true, label: 'copilot' }),
       detectToolImpl: async () => ({ installed: true, version: '1.0.0' }),
       detectRtkImpl: async () => ({ installed: false, version: null }),
       detectSembleImpl: async () => ({ installed: false, version: null }),
@@ -194,11 +195,78 @@ describe('buildVerifyResults engine selection', () => {
     });
 
     const headroomService = results.find(({ name }) => name === 'Headroom service');
-    const headroomHealth = results.find(({ name }) => name === 'Headroom health (:8787)');
-    const copilotHealth = results.find(({ name }) => name === 'Copilot-Headroom health (:8788)');
+    const headroomHealth = results.find(({ name }) => name === 'Headroom health');
+    const copilotHealth = results.find(({ name }) => name === 'Copilot Headroom health');
     assert.equal(headroomService?.ok, false);
     assert.equal(headroomHealth?.ok, false);
     assert.equal(copilotHealth?.ok, true);
     assert.equal(results.every(({ ok }) => ok), false);
+  });
+
+  it('shows Lite primary and Lite Copilot rows, never Python Headroom', async () => {
+    const probes = [];
+    const statuses = [];
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { enabled: false, port: 8787 },
+          headroom_lite: { enabled: true, port: 8790 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      engineInstanceStatusImpl: async (instance) => {
+        statuses.push(`${instance.engine}:${instance.role}`);
+        return { running: true, label: instance.id };
+      },
+      probeHeadroomLiteImpl: async (port) => {
+        probes.push(port);
+        return { status: 'ok', mode: 'cache' };
+      },
+      waitForHeadroomImpl: () => assert.fail('Python Headroom must not be probed'),
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeWatchdogChecks: false,
+    });
+
+    assert.deepEqual(results.filter(({ name }) => /headroom/i.test(name)).map(({ name }) => name), [
+      'Headroom Lite service', 'Headroom Lite health',
+      'Copilot Headroom Lite service', 'Copilot Headroom Lite health',
+    ]);
+    assert.deepEqual(statuses, ['headroom_lite:primary', 'headroom_lite:copilot']);
+    assert.deepEqual(probes, [8790, 8788]);
+  });
+
+  it('does not status or probe a disabled Copilot descriptor', async () => {
+    const statuses = [];
+    const probes = [];
+    await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { enabled: false, port: 8787 },
+          headroom_lite: { enabled: true, port: 8790 },
+          mitm: { enabled: false, port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      engineInstanceStatusImpl: async (instance) => {
+        statuses.push(instance.role);
+        return { running: true };
+      },
+      probeHeadroomLiteImpl: async (port) => {
+        probes.push(port);
+        return { status: 'ok', mode: 'cache' };
+      },
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeWatchdogChecks: false,
+    });
+
+    assert.deepEqual(statuses, ['primary']);
+    assert.deepEqual(probes, [8790]);
   });
 });

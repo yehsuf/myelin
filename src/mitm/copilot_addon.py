@@ -199,15 +199,15 @@ VPN_DOMAINS_FILE: Optional[Path] = Path(_VPN_FILE_RAW) if _VPN_FILE_RAW else Non
 # destination in private headers; the egress leg restores host/port/scheme/path
 # before forwarding to the real provider.
 #
-# MYELIN_COPILOT_HEADROOM_PORT: local port of the dedicated instance.
-#   Unset/0 = feature disabled, falls back to the existing /v1/compress path.
+# MYELIN_COPILOT_ENGINE_URL: local URL of the selected Copilot descriptor.
+#   It must be a loopback HTTP URL; no provider destination is accepted here.
 # MYELIN_EGRESS_PORT: the arrival port that identifies a flow as the
-#   *egress* leg (Copilot-Headroom's loopback call back into mitmproxy).
+#   *egress* leg (the Copilot engine's loopback call back into mitmproxy).
 #   Flows arriving on this port are never compressed or redirected.
 # ---------------------------------------------------------------------------
 
-COPILOT_HEADROOM_PORT = int(os.environ.get('MYELIN_COPILOT_HEADROOM_PORT', '0')) or None
-EGRESS_PORT           = int(os.environ.get('MYELIN_EGRESS_PORT', '0')) or None
+COPILOT_ENGINE_URL = os.environ.get('MYELIN_COPILOT_ENGINE_URL') or None
+EGRESS_PORT        = int(os.environ.get('MYELIN_EGRESS_PORT', '0')) or None
 
 # ---------------------------------------------------------------------------
 # Thrash detection — cache repeated identical GET responses within a session
@@ -282,7 +282,33 @@ def _set_original_destination_headers(flow: http.HTTPFlow, host: str, path: str)
 
 def _host_header(host: str, scheme: str, port: int) -> str:
     default_port = 443 if scheme == 'https' else 80
-    return host if port == default_port else f'{host}:{port}'
+    authority = f'[{host}]' if ':' in host else host
+    return authority if port == default_port else f'{authority}:{port}'
+
+
+def _copilot_engine_destination() -> Optional[tuple[str, int]]:
+    """Return a valid local Copilot engine destination, never a provider URL."""
+    if not COPILOT_ENGINE_URL:
+        return None
+    try:
+        parsed = urlparse(COPILOT_ENGINE_URL)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != 'http'
+        or parsed.hostname not in ('127.0.0.1', '::1')
+        or port is None
+        or not 1 <= port <= 65535
+        or parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in ('', '/')
+    ):
+        return None
+    return parsed.hostname, port
 
 
 def _restore_original_destination(flow: http.HTTPFlow) -> bool:
@@ -1072,11 +1098,12 @@ class MyelinAddon:
         if not provider:
             return
 
-        # Eligible for full-pipeline redirect to a dedicated Copilot-Headroom
-        # instance instead of the stateless /v1/compress sidecar call.
+        # Eligible for full-pipeline redirect to the configured local Copilot
+        # engine instead of the stateless /v1/compress sidecar call.
+        copilot_engine = _copilot_engine_destination()
         redirect_eligible = (
             not is_egress_leg
-            and COPILOT_HEADROOM_PORT is not None
+            and copilot_engine is not None
             and _is_copilot_host(host)
         )
 
@@ -1207,10 +1234,11 @@ class MyelinAddon:
 
             flow.metadata['myelin_redirected'] = True
             _set_original_destination_headers(flow, host, path)
+            engine_host, engine_port = copilot_engine
             flow.request.scheme = 'http'
-            flow.request.host = '127.0.0.1'
-            flow.request.port = COPILOT_HEADROOM_PORT
-            flow.request.headers['host'] = _host_header('127.0.0.1', 'http', COPILOT_HEADROOM_PORT)
+            flow.request.host = engine_host
+            flow.request.port = engine_port
+            flow.request.headers['host'] = _host_header(engine_host, 'http', engine_port)
             return
 
         # 3. Compress messages (all roles including tool results).

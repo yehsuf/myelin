@@ -1,8 +1,8 @@
 import { loadConfig } from '../config/reader.mjs';
-import { selectedEngine } from '../config/engine-runtime.mjs';
+import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 import { waitForHeadroom, headroomHealthUrl } from '../tools/headroom.mjs';
 import { detectTool, detectRtk } from '../detect/tools.mjs';
-import { serviceStatus, mitmServiceStatus, copilotHeadroomServiceStatus } from '../service/index.mjs';
+import { engineInstanceStatus, mitmServiceStatus } from '../service/index.mjs';
 import { detectRtkHookArtifacts, formatRtkVersionDetail } from '../tools/rtk.mjs';
 import { which } from '../detect/which.mjs';
 import { ensureToolPath } from '../detect/tool-path.mjs';
@@ -23,13 +23,53 @@ export function printVerifyEnvironmentNote({ detectOSImpl = detectOS, log = cons
   }
 }
 
+function engineInstanceLabel({ engine, role }) {
+  const base = engine === 'headroom_lite' ? 'Headroom Lite' : 'Headroom';
+  return role === 'copilot' ? `Copilot ${base}` : base;
+}
+
+async function probeEngineInstance(instance, {
+  winManager,
+  engineInstanceStatusImpl,
+  waitForHeadroomImpl,
+  probeHeadroomLiteImpl,
+}) {
+  const label = engineInstanceLabel(instance);
+  const service = await engineInstanceStatusImpl(instance, { manager: winManager });
+  const results = [{
+    name: `${label} service`,
+    ok: service.running,
+    detail: service.running
+      ? `running${service.label ? ` (${service.label})` : ''}`
+      : 'not running — try: myelin diagnose',
+  }];
+
+  if (instance.engine === 'headroom_lite') {
+    const response = await probeHeadroomLiteImpl(instance.port);
+    const healthy = response?.status === 'ok';
+    results.push({
+      name: `${label} health`,
+      ok: healthy,
+      detail: healthy ? `running — mode: ${response.mode}` : 'not running — run: myelin restart',
+    });
+  } else {
+    const healthy = await waitForHeadroomImpl(instance.port, 3000);
+    results.push({
+      name: `${label} health`,
+      ok: healthy,
+      detail: healthy ? headroomHealthUrl(instance.port) : `no response on :${instance.port}`,
+    });
+  }
+
+  return results;
+}
+
 export async function buildVerifyResults({
   config,
   loadConfigImpl = loadConfig,
   waitForHeadroomImpl = waitForHeadroom,
-  serviceStatusImpl = serviceStatus,
+  engineInstanceStatusImpl = engineInstanceStatus,
   mitmServiceStatusImpl = mitmServiceStatus,
-  copilotHeadroomServiceStatusImpl = copilotHeadroomServiceStatus,
   detectToolImpl = detectTool,
   detectRtkImpl = detectRtk,
   detectSembleImpl,
@@ -42,33 +82,19 @@ export async function buildVerifyResults({
   platform = process.platform,
 } = {}) {
   const cfg = config ?? await loadConfigImpl();
-  const port = cfg.proxy.headroom.port;
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
+  const engineInstances = buildEngineInstancePlan(cfg).instances
+    .filter((instance) => instance.role !== 'copilot' || includeCopilotHeadroomCheck);
   const results = [];
 
-  if (selectedEngine(cfg) === 'headroom_lite') {
-    const hlPort = cfg?.proxy?.headroom_lite?.port ?? 8790;
-    const hlResp = await probeHeadroomLiteImpl(hlPort);
-    results.push({
-      name: `headroom-lite (:${hlPort})`,
-      ok: hlResp?.status === 'ok',
-      detail: hlResp?.status === 'ok' ? `running — mode: ${hlResp.mode}` : 'not running — run: myelin restart',
-    });
-  } else if (cfg.proxy?.headroom?.enabled) {
-    const svc = await serviceStatusImpl({ manager: winManager });
-    results.push({
-      name: 'Headroom service',
-      ok: svc.running,
-      detail: svc.running ? `running${svc.label ? ` (${svc.label})` : ''}` : 'not running — try: myelin diagnose',
-    });
-
-    const healthy = await waitForHeadroomImpl(port, 3000);
-    results.push({
-      name: `Headroom health (:${port})`,
-      ok: healthy,
-      detail: healthy ? headroomHealthUrl(port) : `no response on :${port}`,
-    });
+  for (const instance of engineInstances) {
+    results.push(...await probeEngineInstance(instance, {
+      winManager,
+      engineInstanceStatusImpl,
+      waitForHeadroomImpl,
+      probeHeadroomLiteImpl,
+    }));
   }
 
   if (includeMitmCheck && cfg.proxy?.mitm?.enabled) {
@@ -95,9 +121,11 @@ export async function buildVerifyResults({
   if (includeWatchdogChecks && platform === 'win32' && winManager === 'winsw' && cfg.proxy?.windows_service?.watchdog_enabled) {
     const { HEADROOM_SERVICE_ID, COPILOT_HEADROOM_SERVICE_ID, windowsWatchdogTaskName } = await import('../service/windows.mjs');
     const interval = Number(cfg.proxy.windows_service.watchdog_interval_minutes ?? 2) || 2;
+    const primary = engineInstances.find(({ role }) => role === 'primary');
+    const copilot = engineInstances.find(({ role }) => role === 'copilot');
     const taskNames = [
-      ...(selectedEngine(cfg) === 'headroom' ? [windowsWatchdogTaskName({ id: HEADROOM_SERVICE_ID })] : []),
-      ...(cfg.proxy?.copilot_headroom?.enabled ? [windowsWatchdogTaskName({ id: COPILOT_HEADROOM_SERVICE_ID })] : []),
+      ...(primary?.engine === 'headroom' ? [windowsWatchdogTaskName({ id: HEADROOM_SERVICE_ID })] : []),
+      ...(copilot ? [windowsWatchdogTaskName({ id: COPILOT_HEADROOM_SERVICE_ID })] : []),
     ];
     for (const taskName of taskNames) {
       try {
@@ -107,22 +135,6 @@ export async function buildVerifyResults({
         results.push({ name: taskName, ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
       }
     }
-  }
-
-  if (includeCopilotHeadroomCheck && cfg.proxy?.copilot_headroom?.enabled) {
-    const copilotHeadroomPort = cfg.proxy.copilot_headroom.port ?? 8788;
-    const chSvc = await copilotHeadroomServiceStatusImpl({ manager: winManager, port: copilotHeadroomPort });
-    results.push({
-      name: 'Copilot-Headroom service',
-      ok: chSvc.running,
-      detail: chSvc.running ? `running${chSvc.label ? ` (${chSvc.label})` : ''}` : 'not running — try: myelin diagnose',
-    });
-    const chHealthy = await waitForHeadroomImpl(copilotHeadroomPort, 3000);
-    results.push({
-      name: `Copilot-Headroom health (:${copilotHeadroomPort})`,
-      ok: chHealthy,
-      detail: chHealthy ? headroomHealthUrl(copilotHeadroomPort) : `no response on :${copilotHeadroomPort}`,
-    });
   }
 
   if (includeToolChecks) {

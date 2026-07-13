@@ -724,10 +724,15 @@ export function buildMitmServiceInstallOptions({
   corpProxy = cfg?.proxy?.headroom?.corporate_proxy ?? '',
   winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
   headroomPort = selectedEnginePort(cfg),
+  enginePlan = buildEngineInstancePlan(cfg),
 } = {}) {
   const mitmCfg = cfg?.proxy?.mitm ?? {};
   const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
-  const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
+  const copilotInstance = copilotHeadroomPort
+    ? enginePlan.instances?.find(({ role }) => role === 'copilot')
+    : undefined;
+  const copilotEngineUrl = copilotInstance ? `http://127.0.0.1:${copilotInstance.port}` : undefined;
+  const egressPort = copilotInstance ? (mitmCfg.egress_port ?? 8889) : undefined;
   const normalizedHomeCandidate = os === 'windows' ? normalizeWindowsFilesystemPath(home) : home;
   const effectiveHome = os === 'windows' && !/^(?:[a-z]:\\|\\\\)/i.test(normalizedHomeCandidate)
     ? defaultWindowsHome(home)
@@ -735,7 +740,7 @@ export function buildMitmServiceInstallOptions({
   const envVars = {
     MYELIN_HEADROOM_PORT: String(headroomPort),
     MYELIN_COMPRESS,
-    ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
+    ...(copilotEngineUrl ? { MYELIN_COPILOT_ENGINE_URL: copilotEngineUrl } : {}),
     ...(mitmCfg.block_bypass ? { MYELIN_BLOCK_BYPASS: '1' } : {}),
     ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
     ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
@@ -814,6 +819,7 @@ export function buildDownstreamProxyServiceInstallOptions({
       corpProxy,
       winManager,
       headroomPort: resolvedEnginePlan.selectedPort,
+      enginePlan: resolvedEnginePlan.instances ? resolvedEnginePlan : buildEngineInstancePlan(cfg),
     }) : null,
     watchdogOpts: {
       home,

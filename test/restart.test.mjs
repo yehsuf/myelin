@@ -1084,7 +1084,7 @@ describe('defaultRestartMitm', () => {
           : '/usr/local/bin/mitmdump',
       );
       assert.equal(installs[0].envVars.MYELIN_HEADROOM_PORT, '8790');
-      assert.equal(installs[0].envVars.MYELIN_COPILOT_HEADROOM_PORT, '8788');
+      assert.equal(installs[0].envVars.MYELIN_COPILOT_ENGINE_URL, 'http://127.0.0.1:8788');
       assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
       if (os === 'windows') {
         assert.equal(installs[0].home, 'C:\\Users\\alice');

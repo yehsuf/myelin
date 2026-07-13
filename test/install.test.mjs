@@ -288,6 +288,30 @@ describe('buildMitmServiceInstallOptions', () => {
     assert.equal(opts.upstreamProxy, 'http://corp-upstream:8888');
     assert.ok(!opts.envVars.HTTPS_PROXY.includes('\\'));
   });
+
+  it('wires only the selected Copilot descriptor loopback URL into MITM', () => {
+    const opts = buildMitmServiceInstallOptions({
+      os: 'linux',
+      home: '/home/alice',
+      mitmdumpBin: '/usr/local/bin/mitmdump',
+      enginePlan: {
+        instances: [
+          { engine: 'headroom_lite', role: 'primary', port: 8790 },
+          { engine: 'headroom_lite', role: 'copilot', port: 9797 },
+        ],
+      },
+      cfg: {
+        proxy: {
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { egress_port: 8889 },
+        },
+      },
+    });
+
+    assert.equal(opts.envVars.MYELIN_COPILOT_ENGINE_URL, 'http://127.0.0.1:9797');
+    assert.equal(opts.envVars.MYELIN_COPILOT_HEADROOM_PORT, undefined);
+
+  });
 });
 
 describe('buildManagedHeadroomRunKeyCleanupCommand', () => {

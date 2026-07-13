@@ -1009,13 +1009,13 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
       egressPort: 8889,
       envVars: {
         MYELIN_HEADROOM_PORT: '8790',
-        MYELIN_COPILOT_HEADROOM_PORT: '8788',
+        MYELIN_COPILOT_ENGINE_URL: 'http://127.0.0.1:8788',
         MYELIN_BLOCK_BYPASS: '1',
       },
     });
 
     const headroomIdx = script.indexOf("SetEnvironmentVariable('MYELIN_HEADROOM_PORT', '8790', 'Process')");
-    const copilotIdx = script.indexOf("SetEnvironmentVariable('MYELIN_COPILOT_HEADROOM_PORT', '8788', 'Process')");
+    const copilotIdx = script.indexOf("SetEnvironmentVariable('MYELIN_COPILOT_ENGINE_URL', 'http://127.0.0.1:8788', 'Process')");
     const bypassIdx = script.indexOf("SetEnvironmentVariable('MYELIN_BLOCK_BYPASS', '1', 'Process')");
     const startIdx = script.lastIndexOf('-WindowStyle Hidden -PassThru');
 
@@ -1033,6 +1033,7 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
       envVars: { MYELIN_HEADROOM_PORT: '8787' },
     });
 
+    assert.ok(script.includes("SetEnvironmentVariable('MYELIN_COPILOT_ENGINE_URL', $null, 'Process')"));
     assert.ok(script.includes("SetEnvironmentVariable('MYELIN_COPILOT_HEADROOM_PORT', $null, 'Process')"));
     assert.ok(script.includes("SetEnvironmentVariable('MYELIN_EGRESS_PORT', $null, 'Process')"));
     assert.ok(script.includes("SetEnvironmentVariable('MYELIN_BLOCK_BYPASS', $null, 'Process')"));
