@@ -6,7 +6,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -448,25 +448,39 @@ describe('clipboard mode', () => {
     assert.match(r.stdout, new RegExp(`${body.length}/4000 chars`));
   });
 
-  it('truncates hint > 4000 chars and warns', () => {
+  it('rejects hint at 4001 chars without copying or printing', () => {
     const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip3', {});
     const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
-    writeFileSync(hintFile, 'A'.repeat(4500));
+    const originalHint = 'A'.repeat(4001);
+    writeFileSync(hintFile, originalHint);
     const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
       env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
       cwd: gitRoot, encoding: 'utf8',
     });
-    assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    // warn printed to stderr
-    assert.match(r.stderr, /truncated/i);
-    // full command must not exceed /compact  + 4000 chars
-    const cmdLine = r.stdout.split('\n').find(l => l.startsWith('/compact '));
-    assert.ok(cmdLine, 'no /compact line in output');
-    assert.ok(cmdLine.length <= '/compact '.length + 4000,
-      `command line too long: ${cmdLine.length}`);
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /4001.*4000.*compact-hint\.txt/is);
+    assert.doesNotMatch(r.stdout, /\/compact /);
+    assert.doesNotMatch(r.stdout, /A{100}/);
+    assert.equal(readFileSync(hintFile, 'utf8'), originalHint);
   });
 
-  it('hint exactly at 4000 chars is not truncated', () => {
+  it('rejects hint at 4500 chars without copying or printing', () => {
+    const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip3b', {});
+    const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
+    const originalHint = 'A'.repeat(4500);
+    writeFileSync(hintFile, originalHint);
+    const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      cwd: gitRoot, encoding: 'utf8',
+    });
+    assert.equal(r.status, 2);
+    assert.match(r.stderr, /4500.*4000.*compact-hint\.txt/is);
+    assert.doesNotMatch(r.stdout, /\/compact /);
+    assert.doesNotMatch(r.stdout, /A{100}/);
+    assert.equal(readFileSync(hintFile, 'utf8'), originalHint);
+  });
+
+  it('hint exactly at 4000 chars is not truncated or rejected', () => {
     const { home, sid, sessionDir, gitRoot } = makeSession('sid-clip4', {});
     const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
     writeFileSync(hintFile, 'B'.repeat(4000));
@@ -475,6 +489,6 @@ describe('clipboard mode', () => {
       cwd: gitRoot, encoding: 'utf8',
     });
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
-    assert.doesNotMatch(r.stderr, /truncated/i, 'should not truncate at exactly 4000');
+    assert.doesNotMatch(r.stderr, /truncated|exceeded/i, 'should not truncate or reject at exactly 4000');
   });
 });

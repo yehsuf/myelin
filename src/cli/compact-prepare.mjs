@@ -553,10 +553,12 @@ function modeClipboard(hintFile) {
   // maximum length" abort. Cache original length before any truncation.
   const originalLength = hint.length;
   if (hint.length > MAX_HINT) {
-    const marker = '\n[TRUNCATED — hint exceeded 4000 chars; edit compact-hint.txt to fit]';
-    hint = hint.slice(0, MAX_HINT - marker.length) + marker;
-    console.warn(`⚠  Hint was ${originalLength} chars — truncated to ${MAX_HINT}.`);
-    console.warn('   Edit the hint file and re-run, or use a shorter hint.');
+    console.error(
+      `compact-prepare clipboard: hint is ${originalLength} chars; `
+      + `maximum is ${MAX_HINT}. Edit ${hintFile} and try again.`,
+    );
+    process.exitCode = 2;
+    return;
   }
 
   const fullCommand = `/compact ${hint}`;
