@@ -78,14 +78,28 @@ export function buildEngineInstancePlan(config = {}) {
 
   const rawPrimaryPort = selectedEnginePort(config);
   const copilot = config.proxy?.copilot_headroom ?? {};
-  const rawMitmPort = config?.proxy?.mitm?.port ?? 8888;
-  const rawEgressPort = config?.proxy?.mitm?.egress_port ?? 8889;
+  const mitmEnabled = config?.proxy?.mitm?.enabled !== false;
+  const copilotEnabled = copilot.enabled === true;
+
+  if (copilotEnabled && !mitmEnabled) {
+    throw new Error(
+      'Copilot headroom requires MITM to be enabled: the loopback egress route cannot exist when mitm.enabled is false',
+    );
+  }
 
   const primaryPort = normalizePort(rawPrimaryPort, 'primary');
-  const mitmPort = normalizePort(rawMitmPort, 'MITM ingress');
-  const egressPort = normalizePort(rawEgressPort, 'MITM egress');
 
-  if (copilot.enabled === true) {
+  // Active listeners only: MITM ingress when MITM is enabled
+  const mitmPort = mitmEnabled
+    ? normalizePort(config?.proxy?.mitm?.port ?? 8888, 'MITM ingress')
+    : null;
+
+  // Active listeners only: egress when both Copilot and MITM are enabled
+  const egressPort = (copilotEnabled && mitmEnabled)
+    ? normalizePort(config?.proxy?.mitm?.egress_port ?? 8889, 'MITM egress')
+    : null;
+
+  if (copilotEnabled) {
     const rawCopilotPort = copilot.port ?? 8788;
     const copilotPort = normalizePort(rawCopilotPort, 'copilot');
     assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
@@ -96,9 +110,9 @@ export function buildEngineInstancePlan(config = {}) {
     ];
     return { engine, instances };
   } else {
-    assertNoPlanPortCollisions(primaryPort, null, mitmPort, egressPort);
+    assertNoPlanPortCollisions(primaryPort, null, mitmPort, null);
     const instances = [
-      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config }),
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort: null, config }),
     ];
     return { engine, instances };
   }

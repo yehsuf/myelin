@@ -225,7 +225,7 @@ describe('buildEngineInstancePlan — port collision rejection', () => {
         proxy: {
           engine: 'headroom',
           headroom: { port: 8889 },
-          copilot_headroom: { enabled: false, port: 8788 },
+          copilot_headroom: { enabled: true, port: 8788 },
           mitm: { port: 8888, egress_port: 8889 },
         },
       }),
@@ -293,7 +293,7 @@ describe('buildEngineInstancePlan — port normalization and validation', () => 
         proxy: {
           engine: 'headroom',
           headroom: { port: '8889' },
-          copilot_headroom: { enabled: false },
+          copilot_headroom: { enabled: true, port: 8788 },
           mitm: { port: 8888, egress_port: 8889 },
         },
       }),
@@ -401,6 +401,51 @@ describe('buildEngineInstancePlan — port normalization and validation', () => 
         },
       }),
       /invalid port|out.of.range|not a.*port/i,
+    );
+  });
+});
+
+describe('buildEngineInstancePlan — active-listener-only collision detection', () => {
+  it('does not throw when Copilot is disabled and primary port matches MITM egress (egress is inactive)', () => {
+    // egress listener only exists when copilot_headroom.enabled === true
+    assert.doesNotThrow(() =>
+      buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8889 },
+          copilot_headroom: { enabled: false },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+    );
+  });
+
+  it('does not throw when MITM is disabled and primary port matches MITM ingress (ingress is inactive)', () => {
+    // MITM ingress listener only exists when mitm.enabled !== false
+    assert.doesNotThrow(() =>
+      buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8888 },
+          copilot_headroom: { enabled: false },
+          mitm: { enabled: false, port: 8888, egress_port: 8889 },
+        },
+      }),
+    );
+  });
+
+  it('throws with explicit error when Copilot is enabled but MITM is disabled', () => {
+    // Copilot headroom requires the MITM loopback egress route; no MITM means no route
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { enabled: false, port: 8888, egress_port: 8889 },
+        },
+      }),
+      /mitm|egress|loopback|route/i,
     );
   });
 });
