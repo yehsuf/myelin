@@ -17,6 +17,7 @@ import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
 import { isPortFree, findFreePort } from './detect/port.mjs';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
+import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
@@ -1048,14 +1049,18 @@ async function main() {
     if (mitmdumpBin) {
       const addonPath = mitmAddonPath(home, os);
       const mitmPort = mitmCfg.port ?? 8888;
-      const copilotHeadroomPort = copilotHeadroomCfg.enabled ? (copilotHeadroomCfg.port ?? 8788) : undefined;
+      // Honor compression.backend: disabled (and suppress the copilot_headroom
+      // redirect when disabled); emit MYELIN_COMPRESS explicitly so no stale
+      // value survives a config change.
+      const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
       const mitmEnv = {
         MYELIN_HEADROOM_PORT: String(port),
-        // When copilot_headroom is enabled, tell the addon to redirect Copilot
-        // traffic to the dedicated headroom instance so it gets the full pipeline
-        // (cache-mode, TOIN, stats) instead of the stateless /v1/compress sidecar.
+        MYELIN_COMPRESS,
+        // When copilot_headroom is enabled (and compression not disabled), tell
+        // the addon to redirect Copilot traffic to the dedicated headroom
+        // instance so it gets the full pipeline (cache-mode, TOIN, stats)
+        // instead of the stateless /v1/compress sidecar.
         ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
-        ...(cfg.budget_routing?.litellm ? { MYELIN_COMPRESS: '0' } : {}),
         ...(mitmCfg.block_bypass    ? { MYELIN_BLOCK_BYPASS:    '1'                      } : {}),
         ...(mitmCfg.block_marker    ? { MYELIN_BLOCK_MARKER:    mitmCfg.block_marker     } : {}),
         ...(mitmCfg.override_proxy  ? { MYELIN_OVERRIDE_PROXY:  mitmCfg.override_proxy   } : {}),
