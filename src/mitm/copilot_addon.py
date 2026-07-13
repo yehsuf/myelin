@@ -311,6 +311,8 @@ def _restore_original_destination(flow: http.HTTPFlow) -> bool:
 #   /v1/messages           → anthropic
 #   /chat/completions      → openai
 #   /v1/chat/completions   → openai
+#   /responses             → openai   (OpenAI Responses API — Copilot's current default)
+#   /v1/responses          → openai
 #
 # Static overrides can be added via MYELIN_EXTRA_PROVIDERS (JSON).
 # ---------------------------------------------------------------------------
@@ -330,6 +332,14 @@ _COMPLETION_PATHS = {
     '/v1/messages':          'anthropic',
     '/chat/completions':     'openai',
     '/v1/chat/completions':  'openai',
+    # OpenAI Responses API — GitHub Copilot's current streaming completion
+    # endpoint. Recognising it keeps its (SSE) responses out of the thrash
+    # cache; prefix matching also covers the /responses/{id} poll path. Its
+    # request body uses `input`, not `messages`, so the compression step no-ops
+    # safely (guarded by the messages check in the request hook) until
+    # headroom-lite gains Responses-API schema support.
+    '/responses':            'openai',
+    '/v1/responses':         'openai',
 }
 
 # Cache format per wire format
@@ -404,6 +414,91 @@ def _is_streaming_response(response) -> bool:
     except Exception:
         return False
     return 'text/event-stream' in ct
+
+
+# Robust cache-safety: the exact-path _COMPLETION_PATHS allowlist is fragile —
+# a new provider endpoint (e.g. the OpenAI Responses API) is silently unknown
+# until someone adds it, and meanwhile its POST bodies are thrash-cache-eligible
+# (a stored JSON body served for a stream => "EOF while parsing a value at line 1
+# column 0"). These predicates make ANY completion traffic non-cacheable without
+# a path entry: by known LLM host, or by completion-shaped request body.
+
+# Top-level JSON keys that mark a request as an LLM completion across providers.
+_COMPLETION_BODY_KEYS = ('messages', 'input', 'prompt', 'contents', 'instructions')
+# Never parse a multi-MB body just to classify it — completion markers are always
+# near the top of the object, but a huge body is a completion anyway; short-circuit.
+_MAX_BODY_SNIFF_BYTES = 2 * 1024 * 1024
+
+
+def _is_llm_host(host: str) -> bool:
+    """True if host is a known LLM provider (matches _DOMAIN_PATTERNS)."""
+    if not host:
+        return False
+    return any(pat.search(host) for pat, _fmt in _DOMAIN_PATTERNS)
+
+
+def _body_looks_like_completion(body: bytes) -> bool:
+    """Best-effort: True if the request body is a JSON object carrying a
+    completion marker key. Never raises; oversized/invalid/non-object => False."""
+    if not body or len(body) > _MAX_BODY_SNIFF_BYTES:
+        return False
+    try:
+        data = json.loads(body)
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    return any(k in data for k in _COMPLETION_BODY_KEYS)
+
+
+def _is_noncacheable_request(host: str, path: str, body: bytes) -> bool:
+    """Single cache-exclusion predicate: a request is non-cacheable if it is a
+    recognized completion path, is bound for a known LLM host, or carries a
+    completion-shaped body. Host check first so the body is only parsed for
+    unknown hosts (rare)."""
+    return (
+        _is_completion_path(host, path)
+        or _is_llm_host(host)
+        or _body_looks_like_completion(body)
+    )
+
+
+def _looks_like_id_segment(seg: str) -> bool:
+    """A path segment that varies per request (an id/token) rather than a static
+    route name: contains a digit, is a token like 'resp_...'/'call_...', or is
+    very long (uuid/hash)."""
+    return any(c.isdigit() for c in seg) or '_' in seg or len(seg) > 24
+
+
+def _normalize_endpoint_path(path: str) -> str:
+    """Collapse a path to its static route by stripping trailing id-like
+    segments so per-request ids don't defeat warn-once dedup:
+    '/responses/resp_abc123' -> '/responses'; '/v1/responses/resp_x' ->
+    '/v1/responses'. Always keeps at least the first segment."""
+    segs = [s for s in (path or '').split('?')[0].split('/') if s]
+    while len(segs) > 1 and _looks_like_id_segment(segs[-1]):
+        segs.pop()
+    return '/' + '/'.join(segs) if segs else '/'
+
+
+# Unknown streaming endpoints seen this process (host, normalized_path) — used to
+# warn ONCE per new endpoint so provider changes are visible without log spam.
+_UNKNOWN_COMPLETION_ENDPOINTS: set = set()
+
+
+def _note_unknown_streaming_endpoint(host: str, path: str) -> None:
+    """Warn once when a known LLM host serves a streaming response on a path we
+    don't recognize — the signal that a provider added a new completion endpoint."""
+    try:
+        key = (host, _normalize_endpoint_path(path))
+        if key in _UNKNOWN_COMPLETION_ENDPOINTS:
+            return
+        _UNKNOWN_COMPLETION_ENDPOINTS.add(key)
+        ctx.log.warn(scrub_log_str(
+            f'[myelin] ⚠ unrecognized streaming endpoint {host}{path} — not in '
+            f'_COMPLETION_PATHS; caching auto-disabled (safe). Consider adding it.'))
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Body codec
@@ -791,10 +886,12 @@ class MyelinAddon:
         if flow.request.method != 'POST':
             return
 
-        if THRASH_CACHE and not _is_completion_path(host, path):
+        if THRASH_CACHE and not _is_noncacheable_request(host, path, flow.request.content or b''):
             # Thrash detection: return cached response for repeated identical
             # requests. Completion (streaming/SSE) paths are excluded — caching
-            # and re-serving them breaks the client's stream parser.
+            # and re-serving them breaks the client's stream parser. The
+            # exclusion is by recognized path, known LLM host, OR completion-
+            # shaped body, so a new provider endpoint is safe without a path list.
             cache_key = _cache_key(host, path, flow.request.content or b'')
             flow.metadata['myelin_cache_key'] = cache_key
             cached = _cache_get(cache_key)
@@ -1092,10 +1189,23 @@ class MyelinAddon:
                     f' → HTTP {flow.response.status_code}'
                 )
 
+        # Detection: a known LLM host serving a streaming response on a path we
+        # don't recognize is almost certainly a new completion endpoint. Warn
+        # once so the provider change is visible (the safety net already made it
+        # cache-safe). Guarded internally; never affects request handling.
+        if (
+            flow.response is not None
+            and _is_llm_host(host)
+            and not _is_completion_path(host, flow.request.path)
+            and _is_streaming_response(flow.response)
+        ):
+            _note_unknown_streaming_endpoint(host, flow.request.path)
+
         if THRASH_CACHE and (
             not flow.metadata.get('myelin_cache_hit')
             and not flow.metadata.get('myelin_via_override')
             and not _is_completion_path(host, flow.request.path)
+            and not _is_llm_host(host)
             and not _is_streaming_response(flow.response)
             and flow.response is not None
             and flow.response.status_code == 200
