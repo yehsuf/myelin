@@ -4,38 +4,9 @@ import { detectTool, detectRtk } from '../detect/tools.mjs';
 import { serviceStatus, mitmServiceStatus, copilotHeadroomServiceStatus } from '../service/index.mjs';
 import { detectRtkHookArtifacts, formatRtkVersionDetail } from '../tools/rtk.mjs';
 import { which } from '../detect/which.mjs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { ensureToolPath } from '../detect/tool-path.mjs';
 import { detectOS } from '../detect/os.mjs';
 import { execSync } from 'node:child_process';
-
-function ensureWindowsPath() {
-  if (process.platform !== 'win32') return;
-  const home = homedir();
-  const extra = [
-    join(home, '.local', 'bin'),
-    join(home, '.myelin', 'bin'),
-    join(home, 'AppData', 'Roaming', 'uv', 'bin'),
-    join(home, 'AppData', 'Local', 'uv', 'bin'),
-    join(home, 'AppData', 'Roaming', 'npm'),           // npm global bin on Windows
-    join(home, 'AppData', 'Local', 'npm'),
-    ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Roaming', 'Python', `Python3${10+i}`, 'Scripts')),
-    ...[...Array(8)].map((_, i) => join(home, 'AppData', 'Local', 'Programs', 'Python', `Python3${10+i}`, 'Scripts')),
-  ];
-  // Also detect nvm/nvm4w managed node bin dirs dynamically
-  try {
-    const nvmDir = process.env.NVM_HOME || process.env.NVM_SYMLINK;
-    if (nvmDir) extra.push(nvmDir);
-    const nvm4w = process.env.NVM4W_HOME;
-    if (nvm4w) extra.push(join(nvm4w, 'nodejs'));
-    // Always include the directory where node.exe itself lives (covers nvm4w, nvm, portable)
-    const nodeDir = join(process.execPath, '..');
-    if (!extra.includes(nodeDir)) extra.push(nodeDir);
-  } catch {}
-  for (const p of extra) {
-    if (!process.env.PATH?.includes(p)) process.env.PATH = p + ';' + (process.env.PATH || '');
-  }
-}
 
 export function printVerifyEnvironmentNote({ detectOSImpl = detectOS, log = console.log } = {}) {
   if (detectOSImpl(true).wsl) {
@@ -44,7 +15,7 @@ export function printVerifyEnvironmentNote({ detectOSImpl = detectOS, log = cons
 }
 
 export async function runVerify() {
-  ensureWindowsPath();
+  ensureToolPath();
   const cfg = await loadConfig();
   const port = cfg.proxy.headroom.port;
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
