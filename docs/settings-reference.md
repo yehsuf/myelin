@@ -271,6 +271,8 @@ The Copilot instance has isolated cache, workspace, log, and telemetry state fro
 
 **When Lite is selected,** a missing Lite binary is reported as a Lite error — Myelin never starts Python Headroom as a substitute.
 
+**When `enabled: false` (the default):** No Copilot engine service is created, no watchdog probe is registered for the Copilot role, and no readiness or status endpoint is added for Copilot. MITM still runs; Copilot CLI traffic passes through MITM compression only, without an additional engine hop.
+
 ```bash
 myelin config set proxy.copilot_headroom.enabled true
 myelin install

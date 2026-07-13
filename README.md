@@ -180,6 +180,8 @@ Copilot CLI → MITM ingress (:8888) → selected-engine Copilot instance (:8788
 
 MITM is the sole real-network-egress owner; the engine instance targets only the loopback egress port.
 
+When `proxy.copilot_headroom.enabled` is `false` (the default), no Copilot engine service is created, no watchdog probe is registered for the Copilot role, and no readiness or status endpoint is added for Copilot.
+
 ---
 
 ## What gets compressed
@@ -282,7 +284,9 @@ rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
 rm ~/Library/LaunchAgents/com.myelin.headroom.plist
 
 # macOS (Headroom Lite — if proxy.engine was headroom_lite)
+launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
 launchctl bootout gui/$(id -u)/com.myelin.headroom-lite 2>/dev/null
+rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
 rm ~/Library/LaunchAgents/com.myelin.headroom-lite.plist
 
 # Linux (Python Headroom)
@@ -291,13 +295,16 @@ rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin
 systemctl --user daemon-reload
 
 # Linux (Headroom Lite — if proxy.engine was headroom_lite)
-systemctl --user disable --now myelin-headroom-lite.service
-rm ~/.config/systemd/user/myelin-headroom-lite.service
+systemctl --user disable --now myelin-mitmproxy.service myelin-headroom-lite.service
+rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom-lite.service
+systemctl --user daemon-reload
 
-# Windows
+# Windows (Python Headroom)
 Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
 Unregister-ScheduledTask -TaskName "MyelinHeadroom" -Confirm:$false
-# Headroom Lite (if proxy.engine was headroom_lite):
+
+# Windows (Headroom Lite — if proxy.engine was headroom_lite)
+Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
 Unregister-ScheduledTask -TaskName "MyelinHeadroomLite" -Confirm:$false
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
