@@ -306,7 +306,11 @@ async function initRepoConcurrent(root, availableTools, enabledTools) {
 export function copilotSerenaHooksConfig() {
   const hook = (event) => ({
     matcher: '',
-    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event} --target=copilot-cli`, timeoutSec: 10 }],
+    // Trailing `; exit 0` makes this fail-OPEN: Copilot preToolUse hooks are
+    // fail-CLOSED on a non-zero exit, so if `myelin` isn't resolvable on the
+    // hook-runner PATH this must still exit 0 rather than deny every tool call.
+    // Valid in both bash and PowerShell. serena-guard itself never exits 2.
+    hooks: [{ type: 'command', command: `myelin serena-guard --event=${event} --target=copilot-cli; exit 0`, timeoutSec: 10 }],
   });
   return JSON.stringify({
     version: 1,

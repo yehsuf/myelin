@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { hardenCopilotHookFile } from '../tools/hook-safety.mjs';
 
 const TOKEN_OPTIMIZER_REPO_URL = 'https://github.com/alexgreensh/token-optimizer';
 const TOKEN_OPTIMIZER_GIT_URL = `${TOKEN_OPTIMIZER_REPO_URL}.git`;
@@ -64,6 +65,28 @@ export function tokenOptimizerClaudeCodeInstructions() {
     '/plugin install token-optimizer@alexgreensh-token-optimizer',
     'Then run /token-optimizer once for the one-time hook setup.',
   ].join('\n');
+}
+
+/** Path to the Copilot hook file the token-optimizer installer writes. */
+export function copilotTokenOptimizerHookPath(home = homedir()) {
+  return join(home, '.copilot', 'hooks', 'token-optimizer.json');
+}
+
+/**
+ * Make token-optimizer's Copilot preToolUse hook fail-open. The external
+ * installer writes an unguarded python-bridge command, so a bridge crash or a
+ * missing python interpreter would fail-CLOSE every bash tool call. This wraps
+ * the preToolUse command so a crash becomes exit 0 while an intentional exit-2
+ * deny is preserved. No-op if the hook is absent or already hardened.
+ */
+export function hardenCopilotTokenOptimizerHook({ home = homedir(), fs } = {}) {
+  return hardenCopilotHookFile({
+    path: copilotTokenOptimizerHookPath(home),
+    events: ['preToolUse', 'PreToolUse'],
+    fields: ['bash'],
+    preserveDeny: true,
+    ...(fs ? { fs } : {}),
+  });
 }
 
 export function tokenOptimizerCopilotInstallSteps({

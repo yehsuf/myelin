@@ -22,6 +22,7 @@ import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import {
   installTokenOptimizerForCopilot,
+  hardenCopilotTokenOptimizerHook,
   tokenOptimizerClaudeCodeInstructions,
   tokenOptimizerLicenseNotice,
 } from './service/token-optimizer.mjs';
@@ -894,6 +895,14 @@ async function main() {
       log: (message = '') => console.log(`  ${message}`),
       warn,
     });
+    // The external installer writes an unguarded python-bridge preToolUse hook;
+    // make it fail-open so a bridge/python failure can't fail-CLOSE bash tool
+    // calls. See src/tools/hook-safety.mjs.
+    try {
+      if (hardenCopilotTokenOptimizerHook({ home }).action === 'hardened') {
+        ok('~/.copilot/hooks/token-optimizer.json (fail-open guard)');
+      }
+    } catch { /* never fail install over defensive hardening */ }
   } else if (tokenOptimizerEnabled && !copilot) {
     skip('token-optimizer Copilot install skipped (--claude-only)');
   }

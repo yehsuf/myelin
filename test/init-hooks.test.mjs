@@ -11,11 +11,16 @@ describe('copilotSerenaHooksConfig', () => {
     assert.equal(parsed.version, 1);
   });
 
-  it('wires all three events to the myelin serena-guard bridge command', () => {
+  it('wires all three events to the myelin serena-guard bridge command (fail-open)', () => {
     const parsed = JSON.parse(copilotSerenaHooksConfig());
-    assert.equal(parsed.hooks.PreToolUse[0].hooks[0].command, 'myelin serena-guard --event=preToolUse --target=copilot-cli');
-    assert.equal(parsed.hooks.SessionStart[0].hooks[0].command, 'myelin serena-guard --event=sessionStart --target=copilot-cli');
-    assert.equal(parsed.hooks.Stop[0].hooks[0].command, 'myelin serena-guard --event=stop --target=copilot-cli');
+    assert.equal(parsed.hooks.PreToolUse[0].hooks[0].command, 'myelin serena-guard --event=preToolUse --target=copilot-cli; exit 0');
+    assert.equal(parsed.hooks.SessionStart[0].hooks[0].command, 'myelin serena-guard --event=sessionStart --target=copilot-cli; exit 0');
+    assert.equal(parsed.hooks.Stop[0].hooks[0].command, 'myelin serena-guard --event=stop --target=copilot-cli; exit 0');
+  });
+
+  it('makes the preToolUse command fail-open (trailing `; exit 0`)', () => {
+    const parsed = JSON.parse(copilotSerenaHooksConfig());
+    assert.ok(parsed.hooks.PreToolUse[0].hooks[0].command.trimEnd().endsWith('; exit 0'));
   });
 
   it('uses PascalCase event keys (Claude/VS-Code-compatible matcher mode)', () => {
