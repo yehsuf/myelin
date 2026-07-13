@@ -208,6 +208,18 @@ export async function ensureManagedHeadroomService({
 
   if (shouldInstall) {
     if (alreadyHealthy && !registration?.registered) {
+      if (os === 'windows' && !registration?.needsMigration) {
+        const reason = `unmanaged Headroom process is already healthy on :${port}; leaving it untouched`;
+        warnFn(`  ⚠ ${reason}`);
+        return {
+          installed: false,
+          alreadyHealthy: true,
+          registeredBefore: false,
+          healthy: true,
+          conflict: true,
+          reason,
+        };
+      }
       await stopHealthyProcessImpl({ os, winManager, home, port, headroomBin });
     }
     await installServiceImpl({
@@ -280,6 +292,19 @@ export async function removeObsoleteOwnedInstances({
   }
 }
 
+function engineInstanceServiceEnv(instance, envVars = {}) {
+  if (instance.role !== 'primary') return {};
+  if (instance.engine === 'headroom') return envVars;
+  const {
+    HEADROOM_PORT: _headroomPort,
+    ANTHROPIC_TARGET_API_URL: _anthropicTarget,
+    OPENAI_TARGET_API_URL: _openaiTarget,
+    HEADROOM_MODE: _headroomMode,
+    ...connectionEnv
+  } = envVars;
+  return connectionEnv;
+}
+
 export async function applyServiceEngineInstallPlan({
   enginePlan,
   cfg = {},
@@ -320,7 +345,10 @@ export async function applyServiceEngineInstallPlan({
   }
 
   for (const instance of resolvedPlan.instances) {
-    await installEngineInstanceImpl(instance, platformOptions);
+    await installEngineInstanceImpl(instance, {
+      ...platformOptions,
+      envVars: engineInstanceServiceEnv(instance, envVars),
+    });
   }
 
   const servicePlan = buildServiceEnginePlan(cfg);
@@ -341,9 +369,8 @@ export async function applyServiceEngineInstallPlan({
 async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
   if (os === 'windows') {
     try {
-      const { stopManagedHeadroomProcess, stopHeadroomProcessByExecutablePath } = await import('./service/windows.mjs');
+      const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
       stopManagedHeadroomProcess({ port, home });
-      stopHeadroomProcessByExecutablePath({ port, executablePath: headroomBin });
     } catch {}
     return;
   }

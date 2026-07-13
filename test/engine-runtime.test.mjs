@@ -110,6 +110,35 @@ describe('buildEngineInstancePlan', () => {
     assert.equal(primary.healthUrl, `http://127.0.0.1:${primary.port}/health`);
     assert.equal(copilot.healthUrl, `http://127.0.0.1:${copilot.port}/health`);
   });
+
+  it('resolves WSL-selected Windows descriptors under the effective Windows home', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    }, {
+      home: '/home/alice',
+      os: 'windows',
+      defaultWindowsHomeImpl: (home) => {
+        assert.equal(home, '/home/alice');
+        return 'C:\\Users\\alice';
+      },
+    });
+
+    assert.deepEqual(plan.instances.map(({ stateDir, logPath }) => ({ stateDir, logPath })), [
+      {
+        stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+      },
+      {
+        stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-copilot.log',
+      },
+    ]);
+  });
 });
 
 describe('buildEngineInstancePlan — Python copilot env', () => {

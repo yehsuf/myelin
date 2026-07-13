@@ -22,6 +22,7 @@ import {
   copilotHeadroomServiceStatus,
   defaultWindowsHome,
   engineInstanceStatus as windowsEngineInstanceStatus,
+  generateEngineInstanceRemovalScript,
   generateEngineInstanceRunScript,
   generateEngineInstanceWinswConfig,
   generateCopilotHeadroomRunScript,
@@ -38,6 +39,7 @@ import {
   parseManagedMitmStatus,
   parseWinswServiceStatus,
   resolveWslWindowsHome,
+  removeEngineInstance as removeWindowsEngineInstance,
   serviceStatus,
   spawnDetachedService,
   stopManagedHeadroomProcess,
@@ -235,6 +237,72 @@ describe('Windows registry engine-instance ownership', () => {
     });
 
     assert.ok(script.includes('$recordedPid -eq $proc.Id'));
+  });
+});
+
+describe('Windows engine descriptor migration ownership', () => {
+  const COPILOT_INSTANCE = {
+    engine: 'headroom',
+    role: 'copilot',
+    port: 9797,
+    id: 'headroom-copilot',
+    stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-copilot',
+    logPath: 'C:\\Users\\alice\\.myelin\\headroom-copilot.log',
+    healthUrl: 'http://127.0.0.1:9797/health',
+    env: {},
+  };
+  const HOME = 'C:\\Users\\alice';
+
+  it('removes the verified legacy Copilot registration from its legacy launcher location', () => {
+    const scripts = [];
+
+    removeWindowsEngineInstance(COPILOT_INSTANCE, {
+      manager: 'registry',
+      home: HOME,
+      runPsFn: (script) => scripts.push(script),
+      uninstallWindowsWatchdogTaskImpl: () => {},
+    });
+
+    assert.equal(scripts.length, 2);
+    assert.ok(scripts[0].includes('state\\headroom-copilot\\start-headroom-copilot.ps1'));
+    assert.ok(scripts[1].includes('.myelin\\copilot-headroom\\start-copilot-headroom.ps1'));
+    assert.ok(scripts[1].includes("MyelinCopilotHeadroom"));
+    assert.ok(scripts[1].includes('ParentProcessId'));
+    assert.ok(scripts[1].includes('ExecutablePath -eq $launcherExecutable'));
+  });
+
+  it('discovers a registered launcher port instead of trusting a replacement descriptor port', () => {
+    const script = generateEngineInstanceRemovalScript({ instance: COPILOT_INSTANCE, home: HOME });
+
+    assert.match(script, /\$launcherPort = \[int\]\$portMatch\.Groups\[1\]\.Value/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort \$launcherPort/);
+    assert.doesNotMatch(script, /Get-NetTCPConnection -State Listen -LocalPort 9797/);
+  });
+
+  it('uninstalls an owned WinSW descriptor whose verified configuration uses the old port', () => {
+    const uninstalled = [];
+    const oldPortConfig = [
+      '<service>',
+      '  <id>headroom-copilot</id>',
+      '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom.exe</executable>',
+      '  <arguments>proxy --port 8788</arguments>',
+      '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom-copilot</workingdirectory>',
+      '</service>',
+    ].join('\n');
+
+    removeWindowsEngineInstance(COPILOT_INSTANCE, {
+      manager: 'winsw',
+      home: HOME,
+      existsSyncImpl: (path) => path.includes('headroom-copilot'),
+      readFileSyncImpl: () => oldPortConfig,
+      uninstallWindowsWatchdogTaskImpl: () => {},
+      uninstallWinswServiceImpl: ({ id }) => {
+        uninstalled.push(id);
+        return true;
+      },
+    });
+
+    assert.deepEqual(uninstalled, ['headroom-copilot']);
   });
 });
 

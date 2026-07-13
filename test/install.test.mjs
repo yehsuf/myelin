@@ -56,7 +56,10 @@ describe('ensureManagedHeadroomService', () => {
         port: 8787,
         envVars: { HEADROOM_PORT: '8787' },
         interceptToolResults: true,
-        registrationStatusImpl: async () => ({ registered: false }),
+        registrationStatusImpl: async () => ({
+          registered: false,
+          ...(os === 'windows' ? { needsMigration: true } : {}),
+        }),
         waitForHeadroomImpl: async (port, timeout) => {
           waitCalls.push({ port, timeout });
           return true;
@@ -122,7 +125,7 @@ describe('ensureManagedHeadroomService', () => {
   it('does not treat WinSW wrapper files alone as durable registration', async () => {
     const installCalls = [];
 
-    await ensureManagedHeadroomService({
+    const result = await ensureManagedHeadroomService({
       os: 'windows',
       winManager: 'winsw',
       home: 'C:\\Users\\alice',
@@ -139,7 +142,33 @@ describe('ensureManagedHeadroomService', () => {
       warnFn: () => {},
     });
 
-    assert.equal(installCalls.length, 1);
+    assert.equal(installCalls.length, 0);
+    assert.equal(result.conflict, true);
+  });
+
+  it('reports a Windows conflict without stopping a healthy unregistered Headroom process', async () => {
+    const warnings = [];
+
+    const result = await ensureManagedHeadroomService({
+      os: 'windows',
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      port: 8787,
+      registrationStatusImpl: async () => ({ registered: false, needsMigration: false }),
+      waitForHeadroomImpl: async () => true,
+      stopHealthyProcessImpl: () => assert.fail('an unmanaged process must not be stopped'),
+      installServiceImpl: () => assert.fail('an unmanaged process must not be replaced'),
+      logFn: () => {},
+      okFn: () => {},
+      warnFn: (message) => warnings.push(message),
+    });
+
+    assert.equal(result.conflict, true);
+    assert.equal(result.installed, false);
+    assert.match(result.reason, /unmanaged/i);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /unmanaged/i);
   });
 });
 
@@ -183,6 +212,59 @@ describe('applyServiceEngineInstallPlan', () => {
     ]);
     assert.equal(installCalls[0].options.headroomBin, undefined);
     assert.equal(installCalls[0].options.headroomLiteBin, '/usr/local/bin/headroom-lite');
+  });
+
+  it('keeps shared Python provider settings out of the Lite Copilot descriptor', async () => {
+    const installCalls = [];
+    const pythonPrimaryEnv = {
+      OPENAI_TARGET_API_URL: 'https://api.githubcopilot.com',
+      HEADROOM_MODE: 'cache',
+      REQUESTS_CA_BUNDLE: '/etc/ssl/corp.pem',
+    };
+
+    await applyServiceEngineInstallPlan({
+      cfg: liteCopilotConfig,
+      os: 'linux',
+      home: '/home/alice',
+      envVars: pythonPrimaryEnv,
+      installEngineInstanceImpl: async (instance, options) => installCalls.push({ instance, options }),
+      removeEngineInstanceImpl: async () => {},
+      detectToolImpl: async () => ({ installed: true, path: '/usr/local/bin/headroom-lite' }),
+    });
+
+    const copilot = installCalls.find(({ instance }) => instance.role === 'copilot');
+    assert.deepEqual(copilot.instance.env, {
+      HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+    });
+    assert.deepEqual(copilot.options.envVars, {});
+  });
+
+  it('keeps shared connection settings on Lite primary without its Python provider settings', async () => {
+    const installCalls = [];
+    const sharedEnv = {
+      HEADROOM_PORT: '8790',
+      OPENAI_TARGET_API_URL: 'https://api.githubcopilot.com',
+      HEADROOM_MODE: 'cache',
+      REQUESTS_CA_BUNDLE: '/etc/ssl/corp.pem',
+      HTTPS_PROXY: 'http://corp-proxy:8080',
+    };
+
+    await applyServiceEngineInstallPlan({
+      cfg: liteCopilotConfig,
+      os: 'linux',
+      home: '/home/alice',
+      envVars: sharedEnv,
+      installEngineInstanceImpl: async (instance, options) => installCalls.push({ instance, options }),
+      removeEngineInstanceImpl: async () => {},
+      detectToolImpl: async () => ({ installed: true, path: '/usr/local/bin/headroom-lite' }),
+    });
+
+    const primary = installCalls.find(({ instance }) => instance.role === 'primary');
+    assert.deepEqual(primary.options.envVars, {
+      REQUESTS_CA_BUNDLE: '/etc/ssl/corp.pem',
+      HTTPS_PROXY: 'http://corp-proxy:8080',
+    });
   });
 
   it('installs only the selected Python primary and does not detect Lite', async () => {

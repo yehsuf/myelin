@@ -695,15 +695,20 @@ describe('Windows descriptor watchdogs', () => {
       home: 'C:\\Users\\alice',
       existsSyncImpl: () => true,
       readFileSyncImpl: (path) => {
-        const id = String(path).includes('myelin-copilot-headroom')
-          ? 'myelin-copilot-headroom'
-          : 'headroom_lite-copilot';
+        const legacy = String(path).includes('myelin-copilot-headroom');
+        const id = legacy ? 'myelin-copilot-headroom' : 'headroom_lite-copilot';
         return [
           '<service>',
           `  <id>${id}</id>`,
-          '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
-          '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
-          '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe</executable>',
+          legacy
+            ? '  <workingdirectory>C:\\Users\\alice\\.myelin\\copilot-headroom</workingdirectory>'
+            : '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
+          legacy
+            ? '  <arguments>proxy --port 8788</arguments>'
+            : '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
+          legacy
+            ? '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom.exe</executable>'
+            : '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe</executable>',
           '</service>',
         ].join('\n');
       },

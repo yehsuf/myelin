@@ -1030,21 +1030,20 @@ function ownedWinswEngineInstance(instance, paths, {
   const expectedExecutable = instance.engine === 'headroom_lite'
     ? /(?:^|[\\/])headroom-lite(?:\.exe)?$/iu
     : /(?:^|[\\/])headroom(?:\.exe)?$/iu;
-  const portIdentity = instance.engine === 'headroom_lite'
-    ? `<env name="HEADROOM_LITE_PORT" value="${instance.port}"/>`
-    : `<arguments>proxy --port ${instance.port}</arguments>`;
+  const configuredPort = instance.engine === 'headroom_lite'
+    ? config.match(/<env name="HEADROOM_LITE_PORT" value="(\d+)"\/>/iu)?.[1]
+    : config.match(/<arguments>proxy --port (\d+)(?:\s|<)/iu)?.[1];
+  const hasValidConfiguredPort = Number.isInteger(Number(configuredPort)) &&
+    Number(configuredPort) >= 1 &&
+    Number(configuredPort) <= 65535;
   return config.includes(`<id>${paths.id}</id>`) &&
     config.includes(`<workingdirectory>${xmlEscape(paths.stateDir)}</workingdirectory>`) &&
-    config.includes(portIdentity) &&
+    hasValidConfiguredPort &&
     expectedExecutable.test(executable);
 }
 
 export function generateEngineInstanceRemovalScript({ instance, home } = {}) {
   const paths = engineInstancePaths(instance);
-  const port = Number(instance.port);
-  const launcherPortPattern = instance.engine === 'headroom_lite'
-    ? `HEADROOM_LITE_PORT = '${port}'`
-    : `proxy --port ${port}`;
   return `
 $pidPath = '${escapePs(paths.pidPath)}'
 $launcherPath = '${escapePs(paths.launcherPath)}'
@@ -1056,9 +1055,14 @@ if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
   $managedParent = if ($managedProcess -and $managedProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($managedProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
   $launcherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
   $launcherExecutable = [regex]::Match($launcherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
-  $ownsPort = @(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq [int]$managedPid }).Count -gt 0
+  $portMatch = [regex]::Match($launcherContent, "(?m)(?:proxy\\s+--port\\s+|HEADROOM_LITE_PORT\\s*=\\s*')(\\d+)")
+  $launcherPort = $null
+  if ($portMatch.Success) {
+    $launcherPort = [int]$portMatch.Groups[1].Value
+  }
+  $ownsPort = $launcherPort -and @(Get-NetTCPConnection -State Listen -LocalPort $launcherPort -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq [int]$managedPid }).Count -gt 0
   $roleMatches = $launcherContent -match [regex]::Escape($stateDir)
-  $portMatches = $launcherContent -match [regex]::Escape('${escapePs(launcherPortPattern)}')
+  $portMatches = $launcherPort -ne $null
   $launcherMatches = $managedParent -and $managedParent.CommandLine -match [regex]::Escape($launcherPath)
   if ($managedProcess -and $launcherMatches -and $ownsPort -and $roleMatches -and $portMatches -and $launcherExecutable -and $managedProcess.ExecutablePath -eq $launcherExecutable) {
     Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
@@ -1084,7 +1088,15 @@ export function removeEngineInstance(instance, {
   runPsFn = runPs,
 } = {}) {
   const paths = engineInstancePaths(instance);
-  const legacyInstance = { ...instance, legacy: true };
+  const legacyInstance = instance.legacy
+    ? instance
+    : legacyEngineInstance({
+        engine: 'headroom',
+        role: instance.role,
+        port: instance.port,
+        envVars: instance.env,
+        home,
+      });
   const legacyPaths = engineInstancePaths(legacyInstance);
   const identities = paths.id === legacyPaths.id
     ? [{ instance, paths }]
