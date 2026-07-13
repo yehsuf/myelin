@@ -7,13 +7,16 @@ NetFree-style filter) had ZERO test coverage before the async-offload refactor.
 These tests drive the async `response` hook with a fake pure relay and assert:
 
   * a successful relay replaces flow.response and marks myelin_via_override
-  * a relay that returns another 418 is treated as FAILURE (block preserved)
-  * a relay failure (None) preserves the original 418 (fail-path contract)
-  * the re-entry guard stops a second relay on an already-bypassed flow
+  * a relay that returns another 418 is treated as FAILURE and fails gracefully
+    (clean 503 + parseable JSON error, never the raw block page)
+  * a relay failure (None) fails gracefully the same way
+  * the re-entry guard stops a second relay on an already-bypassed flow and
+    still returns the graceful error
   * when the circuit breaker is OPEN, the hook is not offloaded and the client
-    still sees the upstream 418 (documented fail-path contract)
+    gets the graceful error instead of the unparseable block page
 """
 import asyncio
+import json
 import os
 import sys
 import types
@@ -108,23 +111,40 @@ def test_successful_relay_replaces_response_and_marks_override(monkeypatch):
     assert flow.metadata.get('myelin_via_override') is True
 
 
-def test_relay_returning_418_is_failure_block_preserved(monkeypatch):
+def _assert_graceful_block_error(resp, reason=None):
+    """The new fail-path contract: an unrecoverable 418 becomes a clean,
+    PARSEABLE JSON error + 503/Retry-After (never the raw block page that made
+    streaming clients fail with 'EOF while parsing a value at line 1 column 0')."""
+    assert resp.status_code == 503
+    assert resp.headers.get('content-type') == 'application/json'
+    assert resp.headers.get('retry-after')
+    assert resp.headers.get('x-myelin-upstream-status') == '418'
+    payload = json.loads(resp.content)  # must parse — that is the whole point
+    assert payload['type'] == 'error'
+    assert payload['error']['upstream_status'] == 418  # original block surfaced
+    assert 'HTTP 418' in payload['error']['message']
+    assert 'blocked by a network filter' in payload['error']['message']
+    if reason is not None:
+        assert resp.headers.get('x-myelin-block-bypass') == reason
+
+
+def test_relay_returning_418_fails_gracefully(monkeypatch):
     _reset_breaker()
     monkeypatch.setattr(copilot_addon, '_socks5_relay',
                         lambda *a, **k: ReplayResult(418, b'still-blocked', {}))
     flow = _Flow('api.business.githubcopilot.com')
     asyncio.run(MyelinAddon().response(flow))
-    # Original 418 preserved (relay 418 not applied as a success).
-    assert flow.response.status_code == 418
-    assert flow.response.content == b'blocked'
+    # Relay 418 is not a success; the block fails gracefully rather than handing
+    # the raw block page to the client.
+    _assert_graceful_block_error(flow.response, 'socks5-relay-failed')
 
 
-def test_relay_failure_preserves_original_418(monkeypatch):
+def test_relay_failure_fails_gracefully(monkeypatch):
     _reset_breaker()
     monkeypatch.setattr(copilot_addon, '_socks5_relay', lambda *a, **k: None)
     flow = _Flow('api.business.githubcopilot.com')
     asyncio.run(MyelinAddon().response(flow))
-    assert flow.response.status_code == 418
+    _assert_graceful_block_error(flow.response, 'socks5-relay-failed')
 
 
 def test_reentry_guard_no_second_relay(monkeypatch):
@@ -140,10 +160,10 @@ def test_reentry_guard_no_second_relay(monkeypatch):
     flow.metadata['myelin_via_override'] = True  # already bypassed once
     asyncio.run(MyelinAddon().response(flow))
     assert calls['n'] == 0  # gave up, no relay attempted
-    assert flow.response.status_code == 418
+    _assert_graceful_block_error(flow.response, 'exhausted-after-override')
 
 
-def test_breaker_open_skips_offload_and_preserves_418(monkeypatch):
+def test_breaker_open_skips_offload_and_fails_gracefully(monkeypatch):
     _reset_breaker()
     # Force the breaker OPEN so admit() returns None -> Rejected.
     pool = copilot_addon._SOCKS_POOL
@@ -155,7 +175,7 @@ def test_breaker_open_skips_offload_and_preserves_418(monkeypatch):
     monkeypatch.setattr(copilot_addon, '_socks5_relay', _relay)
     flow = _Flow('api.business.githubcopilot.com')
     asyncio.run(MyelinAddon().response(flow))
-    assert flow.response.status_code == 418  # client still sees the block
+    _assert_graceful_block_error(flow.response, 'socks5-relay-failed')  # clean error, not the block page
 
 
 def test_socks_relay_enforces_total_deadline_across_trickle_read():

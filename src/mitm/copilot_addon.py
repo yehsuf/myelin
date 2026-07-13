@@ -144,6 +144,11 @@ OVERRIDE_PROXY: Optional[str] = _OVERRIDE_PROXY_RAW if _OVERRIDE_PROXY_RAW else 
 
 BLOCK_BYPASS = os.environ.get('MYELIN_BLOCK_BYPASS', '0') == '1'
 
+# Retry-After (seconds) advertised on the graceful 503 returned when a 418
+# network block can't be recovered — short enough that a transient block clears
+# fast, long enough not to invite a retry hammer.
+BLOCK_RETRY_AFTER = _int_env('MYELIN_BLOCK_RETRY_AFTER', 15, 1, 300)
+
 _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', 'netfree')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MARKER_RAW else None
 
@@ -715,6 +720,39 @@ def _socks_success(exc, res) -> bool:
     return exc is None and res is not None and res.status != 418
 
 
+def _serve_graceful_block_error(flow, host: str, reason: str) -> None:
+    """Replace an unrecoverable 418 network-block response with a clean,
+    parseable JSON error + 503/Retry-After.
+
+    A 418 from a corporate network filter carries an HTML block *page*. The
+    override proxy is a best-effort *second chance*; when it can't recover the
+    request, handing that block page back to a streaming (SSE) client makes its
+    parser fail with 'EOF while parsing a value at line 1 column 0' and then
+    retry aggressively. The request was going to fail anyway (the host is
+    blocked), so fail it *legibly*: a JSON error body the client can parse, with
+    503 + Retry-After signalling an honest, retryable-later outage. Uses the
+    Anthropic error envelope (the dominant /v1/messages traffic); a parseable
+    JSON body is what avoids the EOF regardless of the exact provider shape."""
+    upstream_status = getattr(flow.response, 'status_code', 418)  # the original block (418)
+    msg = (f'myelin: upstream host {host} is blocked by a network filter '
+           f'(HTTP {upstream_status}) and the override proxy could not recover '
+           f'the request ({reason}).')
+    body = json.dumps({
+        'type': 'error',
+        'error': {
+            'type': 'api_error',
+            'message': msg,
+            'upstream_status': upstream_status,
+        },
+    }).encode()
+    flow.response = http.Response.make(
+        503, body,
+        {'content-type': 'application/json',
+         'retry-after': str(BLOCK_RETRY_AFTER),
+         'x-myelin-block-bypass': reason,
+         'x-myelin-upstream-status': str(upstream_status)})
+
+
 
 # ---------------------------------------------------------------------------
 # mitmproxy addon
@@ -932,6 +970,7 @@ class MyelinAddon:
                 # Don't retry a flow that already went through the override proxy
                 if flow.metadata.get('myelin_via_override'):
                     ctx.log.error(scrub_log_str(f'[myelin] {host} still blocked via override proxy — giving up'))
+                    _serve_graceful_block_error(flow, host, 'exhausted-after-override')
                     return
 
                 if OVERRIDE_PROXY:
@@ -968,6 +1007,7 @@ class MyelinAddon:
                         else:
                             ctx.log.error(scrub_log_str(
                                 f'[myelin] {host} still blocked — SOCKS5 override relay failed'))
+                            _serve_graceful_block_error(flow, host, 'socks5-relay-failed')
                     else:
                         try:
                             from mitmproxy.net.server_spec import parse as parse_spec
@@ -976,6 +1016,7 @@ class MyelinAddon:
                             ctx.master.commands.call('replay.client', [flow])
                         except Exception as e:
                             ctx.log.error(scrub_log_str(f'[myelin] override proxy replay failed: {e}'))
+                            _serve_graceful_block_error(flow, host, 'http-replay-failed')
                 elif VPN_DOMAINS_FILE:
                     # Legacy: domain-file fallback. Offload the blocking poll
                     # through the guarded pool so it respects the admission cap
@@ -996,6 +1037,7 @@ class MyelinAddon:
                         ctx.master.commands.call('replay.client', [flow])
                     else:
                         ctx.log.error(scrub_log_str(f'[myelin] VPN routing failed for {host}'))
+                        _serve_graceful_block_error(flow, host, 'vpn-route-failed')
                 return
 
         if LOG_SAVINGS and 'myelin_original_bytes' in flow.metadata:
