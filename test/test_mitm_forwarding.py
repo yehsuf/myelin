@@ -467,11 +467,14 @@ def test_mitm_compresses_responses_input_array():
     # Called the local sidecar with kind=responses and the `input` array.
     assert '/v1/compress' in captured['url']
     assert captured['payload']['kind'] == 'responses'
+    assert captured['payload']['format'] == 'openai'
     assert isinstance(captured['payload']['input'], list)
     assert 'messages' not in captured['payload']
     # Body was replaced with the compressed `input`.
     new_body = json.loads(flow.request.content)
     assert new_body['input'][0]['output'] == 'COMPRESSED'
+    # content-length header matches the new (compressed) body.
+    assert flow.request.headers['content-length'] == str(len(flow.request.content))
     # Destination never rewritten (MITM invariant).
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
 
