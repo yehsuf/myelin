@@ -13,6 +13,10 @@ import {
   runRestart,
   stopManagedHeadroomLite,
 } from '../src/cli/restart.mjs';
+import {
+  installWatchdog as installWindowsWatchdog,
+  removeEngineInstance as removeWindowsEngineInstance,
+} from '../src/service/windows.mjs';
 
 describe('buildCopilotHeadroomTaskEnv', () => {
   it('points Copilot-Headroom at the local mitm egress listener', () => {
@@ -272,16 +276,18 @@ describe('runRestart engine selection', () => {
     await runRestart({
       config: { ...baseConfig, proxy: { ...baseConfig.proxy, engine: 'headroom' } },
       detectOSImpl: () => 'linux',
-      stopObsoleteEngineImpl: async ({ engine }) => calls.push(`stop:${engine}`),
-      restartHeadroomLiteImpl: async () => calls.push('lite'),
-      restartManagedHeadroomImpl: async () => calls.push('headroom'),
+      stopObsoleteOwnedInstancesImpl: async ({ instances }) => {
+        calls.push(...instances.map((instance) => `stop:${instance.id}`));
+      },
+      removeDisabledCopilotInstanceImpl: async () => {},
+      restartEngineInstanceImpl: async (instance) => calls.push(instance.id),
       restartMitmImpl: async () => calls.push('mitm'),
-      waitForSelectedEngineImpl: async () => true,
+      restartWatchdogImpl: async () => {},
       log: () => {},
       warn: () => {},
     });
 
-    assert.deepEqual(calls, ['stop:headroom_lite', 'headroom', 'mitm']);
+    assert.deepEqual(calls, ['stop:headroom_lite-primary', 'stop:headroom_lite-copilot', 'headroom-primary', 'mitm']);
   });
 
   it('does not start Python headroom when headroom-lite is selected', async () => {
@@ -298,19 +304,21 @@ describe('runRestart engine selection', () => {
         },
       },
       detectOSImpl: () => 'linux',
-      stopObsoleteEngineImpl: async ({ engine }) => calls.push(`stop:${engine}`),
-      restartHeadroomLiteImpl: async () => {
-        calls.push('lite');
+      stopObsoleteOwnedInstancesImpl: async ({ instances }) => {
+        calls.push(...instances.map((instance) => `stop:${instance.id}`));
+      },
+      removeDisabledCopilotInstanceImpl: async () => {},
+      restartEngineInstanceImpl: async (instance) => {
+        calls.push(instance.id);
         return true;
       },
-      restartManagedHeadroomImpl: async () => calls.push('headroom'),
       restartMitmImpl: async () => calls.push('mitm'),
-      waitForSelectedEngineImpl: async () => true,
+      restartWatchdogImpl: async () => {},
       log: () => {},
       warn: () => {},
     });
 
-    assert.deepEqual(calls, ['stop:headroom', 'lite', 'mitm']);
+    assert.deepEqual(calls, ['stop:headroom-primary', 'stop:headroom-copilot', 'headroom_lite-primary', 'mitm']);
   });
 
   it('keeps Python Headroom disabled when headroom-lite fails to start and still refreshes downstream services', async () => {
@@ -330,22 +338,277 @@ describe('runRestart engine selection', () => {
         },
       },
       detectOSImpl: () => 'linux',
-      stopObsoleteEngineImpl: async ({ engine }) => calls.push(`stop:${engine}`),
-      restartHeadroomLiteImpl: async () => {
-        calls.push('lite');
+      stopObsoleteOwnedInstancesImpl: async ({ instances }) => {
+        calls.push(...instances.map((instance) => `stop:${instance.id}`));
+      },
+      restartEngineInstanceImpl: async (instance) => {
+        calls.push(`lite:${instance.role}`);
         return false;
       },
-      restartManagedHeadroomImpl: async () => calls.push('headroom'),
-      restartCopilotHeadroomImpl: async () => calls.push('copilot'),
       restartMitmImpl: async () => calls.push('mitm'),
       restartWatchdogImpl: async () => calls.push('watchdog'),
-      waitForSelectedEngineImpl: async () => true,
       log: () => {},
       warn: (message) => warnings.push(message),
     });
 
-    assert.deepEqual(calls, ['stop:headroom', 'lite', 'copilot', 'mitm', 'watchdog']);
-    assert.deepEqual(warnings, ['  ⚠ headroom-lite did not start; Python Headroom remains disabled']);
+    assert.deepEqual(calls, [
+      'stop:headroom-primary',
+      'stop:headroom-copilot',
+      'lite:primary',
+      'lite:copilot',
+      'mitm',
+      'watchdog',
+    ]);
+    assert.deepEqual(warnings, []);
+  });
+});
+
+describe('runRestart descriptor plan', () => {
+  it('restarts selected Lite instances before MITM without reviving Python', async () => {
+    const order = [];
+
+    await runRestart({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+          mitm: { enabled: true, port: 8888, egress_port: 8889 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      detectOSImpl: () => 'linux',
+      stopObsoleteEngineImpl: () => assert.fail('legacy engine stop must not run'),
+      restartHeadroomLiteImpl: () => assert.fail('Lite must restart through its descriptor'),
+      restartManagedHeadroomImpl: () => assert.fail('Python must not restart'),
+      restartCopilotHeadroomImpl: () => assert.fail('Copilot must restart through its descriptor'),
+      stopObsoleteOwnedInstancesImpl: async ({ instances }) => {
+        order.push(...instances.map((instance) => `stop:${instance.role}`));
+      },
+      restartEngineInstanceImpl: async (instance) => {
+        order.push(instance.role);
+        return true;
+      },
+      restartMitmImpl: async () => order.push('mitm'),
+      restartWatchdogImpl: async () => {},
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(order, ['stop:primary', 'stop:copilot', 'primary', 'copilot', 'mitm']);
+  });
+
+  it('installs and waits on every descriptor health URL through generic adapters', async () => {
+    const calls = [];
+
+    await runRestart({
+      config: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 9787 },
+          mitm: { enabled: true, port: 9888 },
+          copilot_headroom: { enabled: false, port: 9788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      detectOSImpl: () => 'linux',
+      stopObsoleteEngineImpl: () => assert.fail('legacy engine stop must not run'),
+      stopObsoleteOwnedInstancesImpl: async () => {},
+      removeDisabledCopilotInstanceImpl: async () => {},
+      removeEngineInstanceImpl: async (instance) => {
+        calls.push(`remove:${instance.id}`);
+      },
+      installEngineInstanceImpl: async (instance, options) => {
+        calls.push(`install:${instance.id}:${options.headroomBin}`);
+      },
+      headroomBinPathImpl: () => '/opt/myelin/headroom',
+      waitForHealthUrlImpl: async (healthUrl) => {
+        calls.push(`health:${healthUrl}`);
+        return true;
+      },
+      restartMitmImpl: async () => calls.push('mitm'),
+      restartWatchdogImpl: async () => {},
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(calls, [
+      'remove:headroom-primary',
+      'install:headroom-primary:/opt/myelin/headroom',
+      'health:http://127.0.0.1:9787/health',
+      'mitm',
+    ]);
+  });
+
+  it('removes the disabled same-engine Copilot role through the generic owner', async () => {
+    const removed = [];
+
+    await runRestart({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          windows_service: { manager: 'winsw' },
+        },
+      },
+      detectOSImpl: () => 'windows',
+      stopObsoleteOwnedInstancesImpl: async () => {},
+      removeEngineInstanceImpl: async (instance, options) => removed.push({ instance, options }),
+      restartEngineInstanceImpl: async () => true,
+      restartMitmImpl: async () => {},
+      restartWatchdogImpl: async () => {},
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(removed.map(({ instance, options }) => ({
+      id: instance.id,
+      engine: instance.engine,
+      role: instance.role,
+      manager: options.manager,
+    })), [{
+      id: 'headroom_lite-copilot',
+      engine: 'headroom_lite',
+      role: 'copilot',
+      manager: 'winsw',
+    }]);
+  });
+});
+
+describe('Windows descriptor watchdogs', () => {
+  const instances = [
+    {
+      engine: 'headroom_lite',
+      role: 'primary',
+      id: 'headroom_lite-primary',
+      port: 8790,
+      stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+      healthUrl: 'http://127.0.0.1:8790/health',
+      env: {},
+    },
+    {
+      engine: 'headroom_lite',
+      role: 'copilot',
+      id: 'headroom_lite-copilot',
+      port: 8788,
+      stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-copilot.log',
+      healthUrl: 'http://127.0.0.1:8788/health',
+      env: {},
+    },
+  ];
+
+  it('installs a watchdog for each selected descriptor ID', () => {
+    const installed = [];
+
+    installWindowsWatchdog({
+      home: 'C:\\Users\\alice',
+      enabled: true,
+      instances,
+      intervalMinutes: 5,
+      installWindowsWatchdogTaskImpl: (options) => {
+        installed.push(options);
+        return options;
+      },
+      uninstallWindowsWatchdogTaskImpl: () => assert.fail('selected roles must not be removed'),
+    });
+
+    assert.deepEqual(installed.map(({ id, healthUrl }) => ({ id, healthUrl })), [
+      { id: 'headroom_lite-primary', healthUrl: 'http://127.0.0.1:8790/health' },
+      { id: 'headroom_lite-copilot', healthUrl: 'http://127.0.0.1:8788/health' },
+    ]);
+  });
+
+  it('removes every selected descriptor watchdog when disabled', () => {
+    const removed = [];
+
+    installWindowsWatchdog({
+      home: 'C:\\Users\\alice',
+      enabled: false,
+      instances,
+      uninstallWindowsWatchdogTaskImpl: (options) => removed.push(options),
+    });
+
+    assert.deepEqual(removed.map(({ id }) => id), [
+      'headroom_lite-primary',
+      'headroom_lite-copilot',
+    ]);
+  });
+
+  it('removes a matching descriptor-owned WinSW service and watchdog by descriptor ID', () => {
+    const removedServices = [];
+    const removedWatchdogs = [];
+    const instance = instances[1];
+
+    const removed = removeWindowsEngineInstance(instance, {
+      manager: 'winsw',
+      home: 'C:\\Users\\alice',
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => [
+        '<service>',
+        '  <id>headroom_lite-copilot</id>',
+        '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
+        '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
+        '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe</executable>',
+        '</service>',
+      ].join('\n'),
+      uninstallWinswServiceImpl: (options) => {
+        removedServices.push(options);
+        return true;
+      },
+      uninstallWindowsWatchdogTaskImpl: (options) => removedWatchdogs.push(options),
+    });
+
+    assert.equal(removed, true);
+    assert.deepEqual(removedServices, [{ id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' }]);
+    assert.deepEqual(removedWatchdogs, [
+      { id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' },
+      { id: 'myelin-copilot-headroom', home: 'C:\\Users\\alice' },
+    ]);
+  });
+
+  it('removes the owned legacy role registration and watchdog during descriptor migration', () => {
+    const removedServices = [];
+    const removedWatchdogs = [];
+    const instance = instances[1];
+
+    removeWindowsEngineInstance(instance, {
+      manager: 'winsw',
+      home: 'C:\\Users\\alice',
+      existsSyncImpl: () => true,
+      readFileSyncImpl: (path) => {
+        const id = String(path).includes('myelin-copilot-headroom')
+          ? 'myelin-copilot-headroom'
+          : 'headroom_lite-copilot';
+        return [
+          '<service>',
+          `  <id>${id}</id>`,
+          '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
+          '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
+          '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe</executable>',
+          '</service>',
+        ].join('\n');
+      },
+      uninstallWinswServiceImpl: (options) => {
+        removedServices.push(options);
+        return true;
+      },
+      uninstallWindowsWatchdogTaskImpl: (options) => removedWatchdogs.push(options),
+    });
+
+    assert.deepEqual(removedServices.map(({ id }) => id), [
+      'headroom_lite-copilot',
+      'myelin-copilot-headroom',
+    ]);
+    assert.deepEqual(removedWatchdogs.map(({ id }) => id), [
+      'headroom_lite-copilot',
+      'myelin-copilot-headroom',
+    ]);
   });
 });
 
@@ -661,15 +924,18 @@ describe('defaultRestartWatchdog', () => {
       },
     });
 
-    assert.deepEqual(installs, [{
-      home: 'C:\\Users\\alice',
-      enabled: true,
-      intervalMinutes: 5,
-      headroomPort: undefined,
-      mitmPort: 9888,
-      copilotHeadroomPort: 9788,
-      egressPort: 9889,
-    }]);
+    assert.equal(installs.length, 1);
+    assert.equal(installs[0].home, 'C:\\Users\\alice');
+    assert.equal(installs[0].enabled, true);
+    assert.equal(installs[0].intervalMinutes, 5);
+    assert.equal(installs[0].headroomPort, undefined);
+    assert.equal(installs[0].mitmPort, 9888);
+    assert.equal(installs[0].copilotHeadroomPort, 9788);
+    assert.equal(installs[0].egressPort, 9889);
+    assert.deepEqual(installs[0].instances.map(({ id, role, healthUrl }) => ({ id, role, healthUrl })), [
+      { id: 'headroom_lite-primary', role: 'primary', healthUrl: 'http://127.0.0.1:8790/health' },
+      { id: 'headroom_lite-copilot', role: 'copilot', healthUrl: 'http://127.0.0.1:9788/health' },
+    ]);
   });
 });
 

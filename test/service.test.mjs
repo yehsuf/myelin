@@ -85,6 +85,10 @@ describe('engine instance service generators', () => {
       const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
       const expectedLabel = role === 'primary' ? 'com.myelin.headroom' : 'com.myelin.copilot-headroom';
       const expectedServiceId = role === 'primary' ? 'myelin-headroom' : 'myelin-copilot-headroom';
+      const expectedWindowsServiceId = instance.id;
+      const expectedWindowsRunKey = `Myelin${instance.id.split(/[-_]/u)
+        .map((part) => part[0].toUpperCase() + part.slice(1))
+        .join('')}`;
 
       it(`generates a ${engine} ${role} launchd service from its descriptor`, () => {
         const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
@@ -116,7 +120,7 @@ describe('engine instance service generators', () => {
 
       it(`generates a ${engine} ${role} registry service from its descriptor`, () => {
         const script = generateEngineInstanceRunScript({ instance, ...ENGINE_BINS });
-        assert.match(script, new RegExp(expectedServiceId === HEADROOM_SERVICE_ID ? 'MyelinHeadroom' : 'MyelinCopilotHeadroom'));
+        assert.match(script, new RegExp(expectedWindowsRunKey));
         assert.ok(script.includes(instance.stateDir.replace(/\//g, '\\')));
         if (engine === 'headroom_lite') {
           assert.match(script, /HEADROOM_LITE_PORT/);
@@ -128,7 +132,7 @@ describe('engine instance service generators', () => {
 
       it(`generates a ${engine} ${role} WinSW service from its descriptor`, () => {
         const xml = generateEngineInstanceWinswConfig({ instance, ...ENGINE_BINS });
-        assert.match(xml, new RegExp(`<id>${expectedServiceId}</id>`));
+        assert.match(xml, new RegExp(`<id>${expectedWindowsServiceId}</id>`));
         assert.ok(xml.includes(expectedBinary.replace(/\//g, '\\')));
         assert.ok(xml.includes(instance.stateDir.replace(/\//g, '\\')));
         assert.ok(xml.includes(instance.logPath.replace(/\//g, '\\')));
@@ -193,15 +197,15 @@ describe('Windows registry engine-instance ownership', () => {
       manager: 'registry',
       execSyncImpl: (command) => {
         commands.push(command);
-        if (command.includes('Get-Content -Path') && command.includes('start-headroom.ps1')) {
+        if (command.includes('Get-Content -Path') && command.includes('start-headroom_lite-primary.ps1')) {
           return Buffer.from("Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe' -ArgumentList '' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary' -WindowStyle Hidden -PassThru");
         }
-        if (command.includes('headroom.pid')) return Buffer.from('4321\n');
+        if (command.includes('headroom_lite-primary.pid')) return Buffer.from('4321\n');
         return Buffer.from('Running\n');
       },
       runKeyStatusImpl: () => ({
         registered: true,
-        raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary\\start-headroom.ps1"',
+        raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary\\start-headroom_lite-primary.ps1"',
       }),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {

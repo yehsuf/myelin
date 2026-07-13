@@ -22,27 +22,45 @@ export const MITM_SERVICE_ID = 'myelin-mitmproxy';
 export const COPILOT_HEADROOM_SERVICE_ID = 'myelin-copilot-headroom';
 
 function engineInstanceIdentity(instance = {}) {
-  if (instance.role === 'primary') {
-    return {
-      id: HEADROOM_SERVICE_ID,
-      runKey: HEADROOM_KEY,
-      name: 'Myelin Headroom',
-      description: 'Myelin token-efficiency proxy',
-      launcherName: 'start-headroom.ps1',
-      pidName: 'headroom.pid',
-    };
+  const { engine, role } = instance;
+  if (!['headroom', 'headroom_lite'].includes(engine) || !['primary', 'copilot'].includes(role)) {
+    throw new Error(`Unsupported engine instance: ${engine}-${role}`);
   }
-  if (instance.role === 'copilot') {
-    return {
-      id: COPILOT_HEADROOM_SERVICE_ID,
-      runKey: COPILOT_HEADROOM_KEY,
-      name: 'Myelin Copilot Headroom',
-      description: 'Myelin dedicated Copilot CLI proxy',
-      launcherName: 'start-copilot-headroom.ps1',
-      pidName: 'copilot-headroom.pid',
-    };
+  if (instance.legacy) {
+    return role === 'primary'
+      ? {
+          id: HEADROOM_SERVICE_ID,
+          runKey: HEADROOM_KEY,
+          name: 'Myelin Headroom',
+          description: 'Myelin token-efficiency proxy',
+          launcherName: 'start-headroom.ps1',
+          pidName: 'headroom.pid',
+        }
+      : {
+          id: COPILOT_HEADROOM_SERVICE_ID,
+          runKey: COPILOT_HEADROOM_KEY,
+          name: 'Myelin Copilot Headroom',
+          description: 'Myelin dedicated Copilot CLI proxy',
+          launcherName: 'start-copilot-headroom.ps1',
+          pidName: 'copilot-headroom.pid',
+        };
   }
-  throw new Error(`Unsupported engine instance role: ${instance.role}`);
+  const id = `${engine}-${role}`;
+  if (instance.id !== id) {
+    throw new Error(`Engine instance id must be ${id}`);
+  }
+  const title = id
+    .split(/[-_]/u)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ');
+  return {
+    id,
+    runKey: `Myelin${id.split(/[-_]/u).map((part) => part[0].toUpperCase() + part.slice(1)).join('')}`,
+    name: `Myelin ${title}`,
+    description: `Myelin ${title} proxy`,
+    launcherName: `start-${id}.ps1`,
+    pidName: `${id}.pid`,
+  };
 }
 
 function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } = {}) {
@@ -85,6 +103,7 @@ function legacyEngineInstance({
     role,
     port,
     id,
+    legacy: true,
     stateDir,
     logPath: logPath ?? pathWin32.join(winHome, '.myelin', `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
@@ -560,7 +579,13 @@ export function winswConfigPath({ id, home } = {}) {
 
 export function windowsWatchdogTaskName({ id }) {
   if (id === COPILOT_HEADROOM_SERVICE_ID) return 'Myelin Copilot Headroom Watchdog';
-  return 'Myelin Headroom Watchdog';
+  if (id === HEADROOM_SERVICE_ID) return 'Myelin Headroom Watchdog';
+  const title = String(id ?? '')
+    .split(/[-_]/u)
+    .filter(Boolean)
+    .map((part) => part[0].toUpperCase() + part.slice(1))
+    .join(' ');
+  return `Myelin ${title} Watchdog`;
 }
 
 function winswWatchdogScriptPath({ id, home } = {}) {
@@ -987,23 +1012,104 @@ export function engineInstanceStatus(instance, {
   }
 }
 
-export function removeEngineInstance(instance, { manager = 'registry', home } = {}) {
-  const paths = engineInstancePaths(instance);
-  if (manager === 'winsw') return uninstallWinswService({ id: paths.id, home });
-  runPs(`
-if (Test-Path '${escapePs(paths.pidPath)}') {
-  $managedPid = Get-Content -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue | Select-Object -First 1
-  if ($managedPid -match '^[0-9]+$') {
-    $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
-    $managedParent = if ($managedProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($managedProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
-    if ($managedParent -and $managedParent.CommandLine -match '${escapePs(escapePsRegex(paths.launcherPath))}') {
-      Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
-    }
-  }
-  Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue
+function ownedWinswEngineInstance(instance, paths, {
+  home,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
+} = {}) {
+  const configPath = winswConfigPath({ id: paths.id, home });
+  const config = readWindowsFileText(configPath, {
+    existsSyncImpl,
+    readFileSyncImpl,
+    execSyncImpl,
+    powershellExe,
+  });
+  const executable = config.match(/<executable>([^<]+)<\/executable>/iu)?.[1] ?? '';
+  const expectedExecutable = instance.engine === 'headroom_lite'
+    ? /(?:^|[\\/])headroom-lite(?:\.exe)?$/iu
+    : /(?:^|[\\/])headroom(?:\.exe)?$/iu;
+  const portIdentity = instance.engine === 'headroom_lite'
+    ? `<env name="HEADROOM_LITE_PORT" value="${instance.port}"/>`
+    : `<arguments>proxy --port ${instance.port}</arguments>`;
+  return config.includes(`<id>${paths.id}</id>`) &&
+    config.includes(`<workingdirectory>${xmlEscape(paths.stateDir)}</workingdirectory>`) &&
+    config.includes(portIdentity) &&
+    expectedExecutable.test(executable);
 }
-Remove-ItemProperty -Path '${REG_RUN}' -Name '${paths.runKey}' -ErrorAction SilentlyContinue
-`);
+
+export function generateEngineInstanceRemovalScript({ instance, home } = {}) {
+  const paths = engineInstancePaths(instance);
+  const port = Number(instance.port);
+  const launcherPortPattern = instance.engine === 'headroom_lite'
+    ? `HEADROOM_LITE_PORT = '${port}'`
+    : `proxy --port ${port}`;
+  return `
+$pidPath = '${escapePs(paths.pidPath)}'
+$launcherPath = '${escapePs(paths.launcherPath)}'
+$runKey = '${escapePs(paths.runKey)}'
+$stateDir = '${escapePs(paths.stateDir)}'
+$managedPid = if (Test-Path $pidPath) { Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $null }
+if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
+  $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
+  $managedParent = if ($managedProcess -and $managedProcess.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($managedProcess.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+  $launcherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
+  $launcherExecutable = [regex]::Match($launcherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+  $ownsPort = @(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -eq [int]$managedPid }).Count -gt 0
+  $roleMatches = $launcherContent -match [regex]::Escape($stateDir)
+  $portMatches = $launcherContent -match [regex]::Escape('${escapePs(launcherPortPattern)}')
+  $launcherMatches = $managedParent -and $managedParent.CommandLine -match [regex]::Escape($launcherPath)
+  if ($managedProcess -and $launcherMatches -and $ownsPort -and $roleMatches -and $portMatches -and $launcherExecutable -and $managedProcess.ExecutablePath -eq $launcherExecutable) {
+    Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+  }
+  Remove-Item -Path $pidPath -ErrorAction SilentlyContinue
+}
+$registeredLauncher = (Get-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue).$runKey
+if ($registeredLauncher -and $registeredLauncher -match [regex]::Escape($launcherPath)) {
+  Remove-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue
+}
+`;
+}
+
+export function removeEngineInstance(instance, {
+  manager = 'registry',
+  home,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
+  uninstallWinswServiceImpl = uninstallWinswService,
+  uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
+  runPsFn = runPs,
+} = {}) {
+  const paths = engineInstancePaths(instance);
+  const legacyInstance = { ...instance, legacy: true };
+  const legacyPaths = engineInstancePaths(legacyInstance);
+  const identities = paths.id === legacyPaths.id
+    ? [{ instance, paths }]
+    : [{ instance, paths }, { instance: legacyInstance, paths: legacyPaths }];
+  for (const { paths: ownedPaths } of identities) {
+    uninstallWindowsWatchdogTaskImpl({ id: ownedPaths.id, home });
+  }
+  if (manager === 'winsw') {
+    let removed = false;
+    for (const { instance: ownedInstance, paths: ownedPaths } of identities) {
+      if (ownedWinswEngineInstance(ownedInstance, ownedPaths, {
+        home,
+        existsSyncImpl,
+        readFileSyncImpl,
+        execSyncImpl,
+        powershellExe,
+      })) {
+        removed = uninstallWinswServiceImpl({ id: ownedPaths.id, home }) || removed;
+      }
+    }
+    return removed;
+  }
+  for (const { instance: ownedInstance } of identities) {
+    runPsFn(generateEngineInstanceRemovalScript({ instance: ownedInstance, home }));
+  }
   return true;
 }
 
@@ -1384,6 +1490,7 @@ export function generateCopilotHeadroomRunScript(opts = {}) {
       role: 'copilot',
       port: opts.port,
       id: `${selectedEngine}-copilot`,
+      legacy: true,
       stateDir,
       logPath: pathWin32.join(stateDir ?? '', 'copilot-headroom.log'),
       healthUrl: `http://127.0.0.1:${opts.port}/health`,
@@ -1647,12 +1754,28 @@ export function installWindowsWatchdogTask({
 export function installWatchdog({
   home,
   enabled = false,
+  instances,
   headroomPort,
   copilotHeadroomPort,
   intervalMinutes = 2,
   installWindowsWatchdogTaskImpl = installWindowsWatchdogTask,
   uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
 } = {}) {
+  if (Array.isArray(instances)) {
+    if (!enabled) {
+      for (const instance of instances) {
+        uninstallWindowsWatchdogTaskImpl({ id: instance.id, home });
+      }
+      return null;
+    }
+    return instances.map((instance) => installWindowsWatchdogTaskImpl({
+      id: instance.id,
+      serviceName: `Myelin ${instance.id}`,
+      healthUrl: instance.healthUrl,
+      intervalMinutes,
+      home,
+    }));
+  }
   if (!enabled) {
     uninstallWindowsWatchdogTaskImpl({ id: HEADROOM_SERVICE_ID, home });
     return null;

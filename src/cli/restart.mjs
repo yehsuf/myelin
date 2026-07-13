@@ -3,12 +3,19 @@ import { homedir } from 'node:os';
 import { join, win32 as pathWin32 } from 'node:path';
 import { chmodSync, mkdirSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { detectOS, powerShellExecutable } from '../detect/os.mjs';
-import { selectedEngine } from '../config/engine-runtime.mjs';
-import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
+import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
+import { headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
 import { defaultWindowsHome, normalizeWindowsFilesystemPath } from '../service/windows.mjs';
-import { installCopilotHeadroomService, installMitmService, installService, installWatchdog } from '../service/index.mjs';
+import {
+  installCopilotHeadroomService,
+  installEngineInstance,
+  installMitmService,
+  installService,
+  installWatchdog,
+  removeEngineInstance,
+} from '../service/index.mjs';
 import {
   buildCopilotHeadroomServiceInstallOptions,
   buildMitmServiceInstallOptions,
@@ -925,6 +932,7 @@ export async function defaultRestartMitm({
 export async function defaultRestartWatchdog({
   os,
   cfg,
+  plan,
   winManager,
   log,
   warn,
@@ -933,15 +941,19 @@ export async function defaultRestartWatchdog({
 } = {}) {
   try {
     const home = homedirImpl();
+    const resolvedPlan = plan ?? buildEngineInstancePlan(cfg);
+    const primary = resolvedPlan.instances.find((instance) => instance.role === 'primary');
+    const copilot = resolvedPlan.instances.find((instance) => instance.role === 'copilot');
     const intervalMinutes = Number(cfg?.proxy?.windows_service?.watchdog_interval_minutes ?? 2) || 2;
     const installed = await installWatchdogImpl({
       home,
       enabled: winManager === 'winsw' && (cfg?.proxy?.windows_service?.watchdog_enabled ?? false),
       intervalMinutes,
-      headroomPort: selectedEngine(cfg) === 'headroom' ? (cfg?.proxy?.headroom?.port ?? 8787) : undefined,
+      instances: resolvedPlan.instances,
+      headroomPort: resolvedPlan.engine === 'headroom' ? primary?.port : undefined,
       mitmPort: cfg?.proxy?.mitm?.port ?? 8888,
-      ...(cfg?.proxy?.copilot_headroom?.enabled ? {
-        copilotHeadroomPort: cfg?.proxy?.copilot_headroom?.port ?? 8788,
+      ...(copilot ? {
+        copilotHeadroomPort: copilot.port,
         egressPort: cfg?.proxy?.mitm?.egress_port ?? 8889,
       } : {}),
     });
@@ -951,83 +963,176 @@ export async function defaultRestartWatchdog({
   }
 }
 
-async function defaultWaitForSelectedEngine({ engine, cfg }) {
-  if (engine === 'headroom_lite') return waitForHeadroomLite(cfg?.proxy?.headroom_lite?.port ?? 8790, 5000);
-  return waitForHeadroom(cfg?.proxy?.headroom?.port ?? 8787, 20000);
+function ownedEngineRoleInstance(engine, role, home) {
+  const id = `${engine}-${role}`;
+  return {
+    engine,
+    role,
+    id,
+    stateDir: join(home, '.myelin', 'state', id),
+    logPath: join(home, '.myelin', `${id}.log`),
+  };
+}
+
+export async function stopObsoleteOwnedInstances({
+  selectedEngine,
+  winManager,
+  home = homedir(),
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+  instances,
+} = {}) {
+  const obsoleteEngine = selectedEngine === 'headroom' ? 'headroom_lite' : 'headroom';
+  const ownedInstances = instances ?? ['primary', 'copilot']
+    .map((role) => ownedEngineRoleInstance(obsoleteEngine, role, home));
+  for (const instance of ownedInstances) {
+    await removeEngineInstanceImpl(instance, {
+      manager: winManager,
+      home,
+      warn: warnFn,
+    });
+  }
+  return ownedInstances;
+}
+
+export async function removeDisabledCopilotInstance({
+  plan,
+  winManager,
+  home = homedir(),
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  if (plan.instances.some((instance) => instance.role === 'copilot')) return false;
+  await removeEngineInstanceImpl(ownedEngineRoleInstance(plan.engine, 'copilot', home), {
+    manager: winManager,
+    home,
+    warn: warnFn,
+  });
+  return true;
+}
+
+export async function waitForHealthUrl(healthUrl, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(500) });
+      if (response.ok) return true;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return false;
+}
+
+export async function restartEngineInstance(instance, {
+  cfg,
+  winManager,
+  home = homedir(),
+  log = console.log,
+  warn = console.warn,
+  removeEngineInstanceImpl = removeEngineInstance,
+  installEngineInstanceImpl = installEngineInstance,
+  headroomBinPathImpl = headroomBinPath,
+  detectToolImpl,
+  waitForHealthUrlImpl = waitForHealthUrl,
+} = {}) {
+  try {
+    const options = { manager: winManager, home };
+    await removeEngineInstanceImpl(instance, {
+      manager: winManager,
+      home,
+      warn,
+    });
+    if (instance.engine === 'headroom') {
+      options.headroomBin = headroomBinPathImpl();
+      options.envVars = buildManagedHeadroomEnv(cfg);
+    } else if (instance.engine === 'headroom_lite') {
+      const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
+      const headroomLite = await detectTool('headroom-lite', '--version');
+      if (!headroomLite.installed || !headroomLite.path) {
+        throw new Error('headroom-lite selected but not installed');
+      }
+      options.headroomLiteBin = headroomLite.path;
+    } else {
+      throw new Error(`Unsupported engine: ${instance.engine}`);
+    }
+
+    await installEngineInstanceImpl(instance, options);
+    const healthy = await waitForHealthUrlImpl(instance.healthUrl);
+    log(healthy
+      ? `  ✓ ${instance.id} healthy (${instance.healthUrl})`
+      : `  ↷ ${instance.id} still starting — run: myelin verify to confirm`);
+    return healthy;
+  } catch (error) {
+    warn(`  ⚠ ${instance.id} restart failed: ${error.message?.split('\n')[0] ?? error}`);
+    return false;
+  }
 }
 
 export async function runRestart({
   config,
   loadConfigImpl = loadConfig,
   detectOSImpl = detectOS,
-  stopObsoleteEngineImpl = stopObsoleteEngine,
-  restartHeadroomLiteImpl = (port, os) => restartHeadroomLite(port, os),
-  restartManagedHeadroomImpl = defaultRestartManagedHeadroom,
-  restartCopilotHeadroomImpl = defaultRestartCopilotHeadroom,
+  buildEngineInstancePlanImpl = buildEngineInstancePlan,
+  stopObsoleteOwnedInstancesImpl = stopObsoleteOwnedInstances,
+  removeDisabledCopilotInstanceImpl = removeDisabledCopilotInstance,
+  restartEngineInstanceImpl = restartEngineInstance,
   restartMitmImpl = defaultRestartMitm,
   restartWatchdogImpl = defaultRestartWatchdog,
-  waitForSelectedEngineImpl = defaultWaitForSelectedEngine,
+  removeEngineInstanceImpl = removeEngineInstance,
+  installEngineInstanceImpl = installEngineInstance,
+  headroomBinPathImpl = headroomBinPath,
+  detectToolImpl,
+  waitForHealthUrlImpl = waitForHealthUrl,
   log = console.log,
   warn = console.warn,
 } = {}) {
   const os = detectOSImpl();
   const cfg = config ?? await loadConfigImpl();
-  const engine = selectedEngine(cfg);
   const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
-  const obsolete = engine === 'headroom' ? 'headroom_lite' : 'headroom';
   const home = homedir();
+  const plan = buildEngineInstancePlanImpl(cfg);
   log('\n🔄 Restarting Myelin services...');
-  let selectedEngineStarted = true;
 
-  const startSelected = async () => {
-    if (engine === 'headroom_lite') {
-      return restartHeadroomLiteImpl(cfg?.proxy?.headroom_lite?.port ?? 8790, os, cfg);
-    }
-    await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager, home, warn });
-    await restartManagedHeadroomImpl({ os, cfg, winManager, log, warn });
-    return true;
-  };
+  const obsoleteEngine = plan.engine === 'headroom' ? 'headroom_lite' : 'headroom';
+  const obsoleteInstances = ['primary', 'copilot']
+    .map((role) => ownedEngineRoleInstance(obsoleteEngine, role, home));
+  await stopObsoleteOwnedInstancesImpl({
+    selectedEngine: plan.engine,
+    instances: obsoleteInstances,
+    os,
+    cfg,
+    winManager,
+    home,
+    warn,
+    removeEngineInstanceImpl,
+  });
+  await removeDisabledCopilotInstanceImpl({
+    plan,
+    os,
+    cfg,
+    winManager,
+    home,
+    warn,
+    removeEngineInstanceImpl,
+  });
 
-  if (os === 'windows' && winManager !== 'winsw' && cfg?.proxy?.copilot_headroom?.enabled && engine === 'headroom') {
-    await restartCopilotHeadroomImpl({ os, cfg, winManager, log, warn });
-    const copilotPort = cfg?.proxy?.copilot_headroom?.port ?? 8788;
-    const cpHealthy = await waitForHeadroom(copilotPort, 90000);
-    if (cpHealthy) {
-      log(`  ✓ copilot-headroom healthy on :${copilotPort}`);
-    } else {
-      log('  ↷ copilot-headroom still starting — proceeding to headroom');
-    }
-    await startSelected();
-  } else {
-    if (engine === 'headroom_lite') {
-      await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager, home, warn });
-      selectedEngineStarted = await startSelected();
-      if (!selectedEngineStarted) {
-        warn('  ⚠ headroom-lite did not start; Python Headroom remains disabled');
-      }
-    } else {
-      await startSelected();
-    }
-    await restartCopilotHeadroomImpl({ os, cfg, winManager, log, warn });
+  for (const instance of plan.instances) {
+    await restartEngineInstanceImpl(instance, {
+      os,
+      cfg,
+      winManager,
+      home,
+      log,
+      warn,
+      removeEngineInstanceImpl,
+      installEngineInstanceImpl,
+      headroomBinPathImpl,
+      detectToolImpl,
+      waitForHealthUrlImpl,
+    });
   }
 
   await restartMitmImpl({ os, cfg, winManager, log, warn });
-  await restartWatchdogImpl({ os, cfg, winManager, log, warn });
-
-  if (engine === 'headroom_lite' && !selectedEngineStarted) {
-    log();
-    return;
-  }
-
-  const healthy = await waitForSelectedEngineImpl({ engine, cfg, os });
-  if (engine === 'headroom_lite') {
-    log(healthy
-      ? `  ✓ headroom-lite healthy on :${cfg?.proxy?.headroom_lite?.port ?? 8790}`
-      : '  ↷ headroom-lite still starting — run: myelin verify to confirm');
-  } else {
-    log(healthy
-      ? `  ✓ headroom healthy on :${cfg?.proxy?.headroom?.port ?? 8787}`
-      : '  ↷ headroom starting in background — run: myelin verify to confirm');
-  }
+  await restartWatchdogImpl({ os, cfg, plan, winManager, home, log, warn });
   log();
 }
