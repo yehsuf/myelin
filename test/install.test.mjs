@@ -10,6 +10,7 @@ import {
   shouldInstallPythonHeadroomPackage,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
+import { installWatchdog as installWindowsWatchdog } from '../src/service/windows.mjs';
 
 
 describe('shouldInstallPythonHeadroomPackage', () => {
@@ -253,6 +254,49 @@ describe('applyServiceEngineInstallPlan', () => {
 
     assert.deepEqual(installed.map(({ engine, role }) => `${engine}:${role}`), ['headroom_lite:primary']);
   });
+
+  for (const manager of ['registry', 'winsw']) {
+    for (const [selectedEngine, obsoleteEngine] of [
+      ['headroom_lite', 'headroom'],
+      ['headroom', 'headroom_lite'],
+    ]) {
+      it(`passes port-bearing ${obsoleteEngine} descriptors to ${manager} cleanup when installing ${selectedEngine}`, async () => {
+        const removed = [];
+
+        await applyServiceEngineInstallPlan({
+          cfg: {
+            proxy: {
+              engine: selectedEngine,
+              headroom: { port: 8787 },
+              headroom_lite: { port: 8790 },
+              copilot_headroom: { enabled: true, port: 8788 },
+              windows_service: { manager },
+            },
+          },
+          os: 'windows',
+          home: 'C:\\Users\\alice',
+          headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+          installEngineInstanceImpl: async () => {},
+          removeEngineInstanceImpl: async (instance) => removed.push(instance),
+          detectToolImpl: async () => ({ installed: true, path: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe' }),
+        });
+
+        const obsoletePort = obsoleteEngine === 'headroom' ? 8787 : 8790;
+        assert.deepEqual(removed.map(({ id, port, healthUrl }) => ({ id, port, healthUrl })), [
+          {
+            id: `${obsoleteEngine}-primary`,
+            port: obsoletePort,
+            healthUrl: `http://127.0.0.1:${obsoletePort}/health`,
+          },
+          {
+            id: `${obsoleteEngine}-copilot`,
+            port: 8788,
+            healthUrl: 'http://127.0.0.1:8788/health',
+          },
+        ]);
+      });
+    }
+  }
 });
 
 describe('buildMitmServiceInstallOptions', () => {
@@ -311,6 +355,55 @@ describe('buildMitmServiceInstallOptions', () => {
     assert.equal(opts.envVars.MYELIN_COPILOT_ENGINE_URL, 'http://127.0.0.1:9797');
     assert.equal(opts.envVars.MYELIN_COPILOT_HEADROOM_PORT, undefined);
 
+  });
+});
+
+describe('buildDownstreamProxyServiceInstallOptions', () => {
+  it('passes selected descriptor IDs to a WinSW install watchdog instead of legacy service IDs', () => {
+    const instances = [
+      {
+        id: 'headroom-primary',
+        role: 'primary',
+        port: 8787,
+        healthUrl: 'http://127.0.0.1:8787/health',
+      },
+      {
+        id: 'headroom-copilot',
+        role: 'copilot',
+        port: 9788,
+        healthUrl: 'http://127.0.0.1:9788/health',
+      },
+    ];
+    const installed = [];
+    const options = buildDownstreamProxyServiceInstallOptions({
+      cfg: {
+        proxy: {
+          mitm: { port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true },
+        },
+      },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      winManager: 'winsw',
+      installPlan: {
+        enginePlan: {
+          engine: 'headroom',
+          selectedPort: 8787,
+          shouldRunManagedHeadroom: true,
+          instances,
+        },
+      },
+    });
+
+    assert.deepEqual(options.watchdogOpts.instances, instances);
+    installWindowsWatchdog({
+      ...options.watchdogOpts,
+      installWindowsWatchdogTaskImpl: (task) => installed.push(task),
+      uninstallWindowsWatchdogTaskImpl: () => assert.fail('enabled descriptor watchdog must not uninstall'),
+    });
+
+    assert.deepEqual(installed.map(({ id }) => id), ['headroom-primary', 'headroom-copilot']);
+    assert.ok(installed.every(({ id }) => id !== 'myelin-headroom'));
   });
 });
 

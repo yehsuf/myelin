@@ -231,19 +231,35 @@ export async function ensureManagedHeadroomService({
   return { installed: false, alreadyHealthy: true, registeredBefore: true, healthy: true };
 }
 
-function ownedEngineRoleInstance(engine, role) {
+function cleanupPort(engine, role, cfg = {}) {
+  const rawPort = role === 'primary'
+    ? (engine === 'headroom_lite'
+      ? cfg?.proxy?.headroom_lite?.port ?? 8790
+      : cfg?.proxy?.headroom?.port ?? 8787)
+    : cfg?.proxy?.copilot_headroom?.port ?? 8788;
+  const port = typeof rawPort === 'string' ? Number(rawPort) : rawPort;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port;
+}
+
+function ownedEngineRoleInstance(engine, role, home = homedir(), cfg = {}) {
   const id = `${engine}-${role}`;
+  const port = cleanupPort(engine, role, cfg);
+  if (port == null) return null;
   return {
     engine,
     role,
     id,
-    stateDir: join(homedir(), '.myelin', 'state', id),
-    logPath: join(homedir(), '.myelin', `${id}.log`),
+    port,
+    stateDir: join(home, '.myelin', 'state', id),
+    logPath: join(home, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }
 
 export async function removeObsoleteOwnedInstances({
   selectedEngine,
+  cfg = {},
   winManager,
   home,
   warn: warnFn,
@@ -251,7 +267,12 @@ export async function removeObsoleteOwnedInstances({
 } = {}) {
   const obsoleteEngine = selectedEngine === 'headroom' ? 'headroom_lite' : 'headroom';
   for (const role of ['primary', 'copilot']) {
-    await removeEngineInstanceImpl(ownedEngineRoleInstance(obsoleteEngine, role), {
+    const instance = ownedEngineRoleInstance(obsoleteEngine, role, home, cfg);
+    if (!instance) {
+      warnFn?.(`  ⚠ skipped ${obsoleteEngine}-${role} cleanup: configured port is invalid`);
+      continue;
+    }
+    await removeEngineInstanceImpl(instance, {
       manager: winManager,
       home,
       warn: warnFn,
@@ -277,6 +298,7 @@ export async function applyServiceEngineInstallPlan({
 
   await removeObsoleteOwnedInstances({
     selectedEngine: resolvedPlan.engine,
+    cfg,
     winManager,
     home,
     warn: warnFn,
@@ -825,6 +847,7 @@ export function buildDownstreamProxyServiceInstallOptions({
       home,
       enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
       intervalMinutes: watchdogInterval,
+      instances: resolvedEnginePlan.instances ?? buildEngineInstancePlan(cfg).instances,
       headroomPort: resolvedEnginePlan.shouldRunManagedHeadroom ? resolvedEnginePlan.selectedPort : undefined,
       mitmPort: mitmCfg.port ?? 8888,
       ...(copilotHeadroomPort && mitmdumpBin ? {
