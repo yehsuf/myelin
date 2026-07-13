@@ -422,6 +422,100 @@ def test_mitm_ignores_non_completion_paths():
     assert flow.request.content == original_body
 
 
+# -----------------------------------------------------------------------------
+# Responses API (`input` array) compression
+# -----------------------------------------------------------------------------
+
+def _mock_headroom_responses_compress():
+    """Mock headroom /v1/compress returning a compressed Responses `input` array."""
+    fake = MagicMock()
+    fake.read.return_value = json.dumps({
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'COMPRESSED'},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+        'tokens_before': 100,
+        'tokens_after': 30,
+    }).encode()
+    fake.__enter__ = MagicMock(return_value=fake)
+    fake.__exit__ = MagicMock(return_value=False)
+    return fake
+
+
+def test_mitm_compresses_responses_input_array():
+    """A /responses request whose body has `input` (not `messages`) must be
+    compressed via kind:'responses' and its body replaced."""
+    body = {
+        'model': 'gpt-4o',
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'x' * 2000},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+    }
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    origin = (flow.request.host, flow.request.port, flow.request.scheme)
+    captured = {}
+
+    def fake_urlopen(req, *a, **k):
+        captured['url'] = req.full_url
+        captured['payload'] = json.loads(req.data)
+        return _mock_headroom_responses_compress()
+
+    with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        asyncio.run(MyelinAddon().request(flow))
+
+    # Called the local sidecar with kind=responses and the `input` array.
+    assert '/v1/compress' in captured['url']
+    assert captured['payload']['kind'] == 'responses'
+    assert captured['payload']['format'] == 'openai'
+    assert isinstance(captured['payload']['input'], list)
+    assert 'messages' not in captured['payload']
+    # Body was replaced with the compressed `input`.
+    new_body = json.loads(flow.request.content)
+    assert new_body['input'][0]['output'] == 'COMPRESSED'
+    # content-length header matches the new (compressed) body.
+    assert flow.request.headers['content-length'] == str(len(flow.request.content))
+    # Destination never rewritten (MITM invariant).
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
+
+
+def test_mitm_bails_when_no_messages_and_no_input():
+    """A completion POST with neither `messages` nor `input` must forward
+    unchanged (no compression call)."""
+    body = {'model': 'gpt-4o', 'something_else': True}
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    original_body = flow.request.content
+    with patch('urllib.request.urlopen', return_value=_mock_headroom_compress()) as mock:
+        asyncio.run(MyelinAddon().request(flow))
+    assert mock.call_count == 0
+    assert flow.request.content == original_body
+
+
+def test_mitm_responses_fails_open_unchanged_on_compression_failure():
+    """If the sidecar is unreachable / errors (ok=False), the Responses request
+    body must be forwarded BYTE-FOR-BYTE unchanged (true fail-open)."""
+    body = {
+        'model': 'gpt-4o',
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'x' * 2000},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+    }
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    original_body = flow.request.content
+
+    import urllib.error
+
+    def boom(req, *a, **k):
+        raise urllib.error.URLError('headroom down')
+
+    with patch('urllib.request.urlopen', side_effect=boom):
+        asyncio.run(MyelinAddon().request(flow))
+
+    # Body must be byte-identical to the original (no minify/re-encode on failure).
+    assert flow.request.content == original_body
+
+
 if __name__ == '__main__':
     for name, fn in list(globals().items()):
         if name.startswith('test_') and callable(fn):
