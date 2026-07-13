@@ -168,11 +168,16 @@ class GuardedPool:
         if token.probe:
             self._half_open_probe_inflight = False
 
-        stale = token.gen != self._gen
+        # A result from an older generation only adjusts the bookkeeping above
+        # (in-flight / probe flag); it must NOT touch the failure counter or drive
+        # a state transition — otherwise a slow task straddling an OPEN/CLOSE
+        # transition could mask or fabricate failures for the current generation.
+        if token.gen != self._gen:
+            return
 
         if success:
             self._consecutive_failures = 0
-            if not stale and (token.probe or self._open_until):
+            if token.probe or self._open_until:
                 # A successful probe (or any success while the breaker was open)
                 # closes the breaker.
                 self._open_until = 0.0
@@ -181,8 +186,6 @@ class GuardedPool:
 
         # failure
         self._consecutive_failures += 1
-        if stale:
-            return
         if token.probe:
             # Probe failed → straight back to OPEN.
             self._open_until = now + self._cooldown
@@ -216,7 +219,13 @@ async def submit_guarded(
     if token is None:
         raise Rejected(f'{pool.name}: not admitted (state={pool.state()}, inflight={pool.inflight})')
 
-    cf: Future = pool.executor().submit(fn, *args)
+    try:
+        cf: Future = pool.executor().submit(fn, *args)
+    except Exception:
+        # Executor rejected the task (e.g. shut down) — release the admission
+        # lease we just took so it doesn't leak (and un-wedge a HALF_OPEN probe).
+        pool.settle(token, False)
+        raise
 
     def _on_done(f: Future) -> None:
         # Runs in the worker thread — marshal state mutation onto the loop.
@@ -230,7 +239,12 @@ async def submit_guarded(
             ok = success_of(exc, res)
         except BaseException:  # pragma: no cover - predicate must not throw
             ok = False
-        loop.call_soon_threadsafe(pool.settle, token, ok)
+        try:
+            loop.call_soon_threadsafe(pool.settle, token, ok)
+        except RuntimeError:
+            # The event loop is already closed (shutdown/reload, or asyncio.run
+            # finished in a test) — nothing left to settle.
+            pass
 
     cf.add_done_callback(_on_done)
     # shield: if the awaiting hook is cancelled, cf keeps running and _on_done

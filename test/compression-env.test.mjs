@@ -44,6 +44,18 @@ test('MYELIN_COMPRESS is always explicit (never undefined)', () => {
   assert.ok(r.MYELIN_COMPRESS === '0' || r.MYELIN_COMPRESS === '1');
 });
 
+test('copilot_headroom redirect suppressed under litellm (avoids double-compress)', () => {
+  const r = resolveMitmCompression({
+    proxy: {
+      headroom: { enabled: true, backend: 'kompress-base' },
+      copilot_headroom: { enabled: true, port: 8788 },
+    },
+    budget_routing: { litellm: true },
+  });
+  assert.equal(r.MYELIN_COMPRESS, '0');
+  assert.equal(r.copilotHeadroomPort, undefined);
+});
+
 test('copilot_headroom redirect suppressed when compression disabled', () => {
   const r = resolveMitmCompression({
     compression: { backend: 'disabled' },

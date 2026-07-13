@@ -1071,7 +1071,11 @@ async function main() {
       try {
         // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
         const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
-        const egressPort = copilotHeadroomCfg.enabled ? (mitmCfg.egress_port ?? 8889) : undefined;
+        // Egress + copilot-headroom are only meaningful when the redirect is
+        // actually active. Gate on the RESOLVED copilotHeadroomPort (undefined
+        // when compression/redirect is disabled) — not raw config — so we never
+        // generate a service with `--port undefined`.
+        const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
         await installMitmService({
           mitmdumpBin,
           port: mitmPort,
@@ -1090,7 +1094,7 @@ async function main() {
         // gets. Its upstream target is the local mitmproxy egress listener,
         // not a Copilot provider URL; mitmproxy restores the original
         // destination from private loopback headers.
-        if (copilotHeadroomCfg.enabled) {
+        if (copilotHeadroomPort) {
           const loopbackTarget = `http://127.0.0.1:${egressPort}`;
           try {
             await installCopilotHeadroomService({
