@@ -246,3 +246,42 @@ describe('buildEngineInstancePlan — port collision rejection', () => {
     );
   });
 });
+
+describe('buildEngineInstancePlan — MITM ingress/egress collision and defaulted ports', () => {
+  it('throws when MITM ingress and egress share a port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { port: 8888, egress_port: 8888 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('throws when copilot port collides with defaulted MITM egress port', () => {
+    // partial config — no mitm block; effective egress defaults to 8889
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          copilot_headroom: { enabled: true, port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('does not throw for valid partial config with copilot enabled at non-colliding port', () => {
+    // partial config — no mitm block; effective ports 8888/8889, copilot at 8788
+    assert.doesNotThrow(() =>
+      buildEngineInstancePlan({
+        proxy: {
+          copilot_headroom: { enabled: true, port: 8788 },
+        },
+      }),
+    );
+  });
+});
