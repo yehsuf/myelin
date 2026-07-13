@@ -617,6 +617,42 @@ def _compress_success(exc, res) -> bool:
     return exc is None and bool(res) and bool(res[-1])
 
 
+def _compress_responses(input_items: list, fmt: str, model: str = '') -> tuple:
+    """
+    POST an OpenAI Responses API ``input`` array to Headroom /v1/compress with
+    ``kind: 'responses'``. PURE + thread-safe (mirrors ``_compress_messages``:
+    no mitmproxy types, no ctx.log). Returns
+    ``(input_items, tokens_before, tokens_after, ok)`` where ``ok`` is True only
+    on a genuine successful compression response.
+    """
+    payload = json.dumps({
+        'input': input_items,
+        'kind': 'responses',
+        'format': fmt,
+        'model': model or 'default',
+    }).encode()
+    req = urllib.request.Request(
+        f'{HEADROOM_BASE}/v1/compress',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS) as resp:
+            result = json.loads(resp.read())
+        compressed = result.get('input')
+        if isinstance(compressed, list) and compressed:
+            return compressed, result.get('tokens_before', 0), result.get('tokens_after', 0), True
+        return input_items, 0, 0, True
+    except urllib.error.HTTPError as e:
+        logger.warning(scrub_log_str(f'[myelin] responses compression HTTP {e.code} from headroom'))
+    except urllib.error.URLError as e:
+        logger.warning(scrub_log_str(f'[myelin] headroom unreachable ({HEADROOM_PORT}): {e}'))
+    except Exception as e:
+        logger.warning(scrub_log_str(f'[myelin] responses compression error: {e}'))
+    return input_items, 0, 0, False
+
+
 
 # cache_control is passed through untouched — the client manages its own breakpoints.
 
@@ -933,6 +969,42 @@ class MyelinAddon:
 
         messages = data.get('messages')
         if not isinstance(messages, list) or not messages:
+            # OpenAI Responses API: the body carries an `input` array of typed
+            # items ({type: function_call_output/message/reasoning/...}), not a
+            # `messages` array. Compress it via the sidecar's kind:"responses"
+            # path (which preserves OpenAI's server-side prompt cache by only
+            # touching the live zone). Everything else in the request hook is
+            # messages-specific, so this path is self-contained and returns.
+            input_items = data.get('input')
+            if COMPRESS and isinstance(input_items, list) and input_items:
+                model = data.get('model', '')
+                flow.metadata['myelin_model'] = model
+                original_size = len(body)
+                try:
+                    compressed, tok_before, tok_after, _ok = await submit_guarded(
+                        _COMPRESS_POOL, _compress_success,
+                        _compress_responses, input_items, provider['fmt'], model)
+                except Rejected:
+                    return  # breaker open / saturated → forward uncompressed
+                data['input'] = compressed
+                new_body = json.dumps(data, separators=(',', ':')).encode()
+                encoded_body = _encode_body(new_body, raw_encoding)
+                if 'gzip' not in raw_encoding and 'br' not in raw_encoding:
+                    flow.request.headers.pop('content-encoding', None)
+                flow.request.content = encoded_body
+                flow.request.headers['content-length'] = str(len(encoded_body))
+                compressed_size = len(new_body)
+                if LOG_SAVINGS and original_size and compressed_size < original_size:
+                    pct = (original_size - compressed_size) / original_size * 100
+                    tok_pct = (tok_before - tok_after) / tok_before * 100 if tok_before else 0
+                    ctx.log.info(
+                        f'[myelin] ✓ {host} (responses) {original_size}→{compressed_size}B '
+                        f'({pct:.1f}%) tokens {tok_before}→{tok_after} ({tok_pct:.1f}%)')
+                flow.metadata['myelin_host']           = host
+                flow.metadata['myelin_original_bytes'] = original_size
+                flow.metadata['myelin_final_bytes']    = compressed_size
+                flow.metadata['myelin_tok_before']     = tok_before
+                flow.metadata['myelin_tok_after']      = tok_after
             return
 
         # Extract model from request body (forwarded unchanged; used for compression hints)
