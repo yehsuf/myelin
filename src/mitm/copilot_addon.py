@@ -463,11 +463,22 @@ def _is_noncacheable_request(host: str, path: str, body: bytes) -> bool:
     )
 
 
+def _looks_like_id_segment(seg: str) -> bool:
+    """A path segment that varies per request (an id/token) rather than a static
+    route name: contains a digit, is a token like 'resp_...'/'call_...', or is
+    very long (uuid/hash)."""
+    return any(c.isdigit() for c in seg) or '_' in seg or len(seg) > 24
+
+
 def _normalize_endpoint_path(path: str) -> str:
-    """Collapse a path to its first two segments so per-request ids don't defeat
-    dedup: '/responses/resp_abc123' -> '/responses'."""
+    """Collapse a path to its static route by stripping trailing id-like
+    segments so per-request ids don't defeat warn-once dedup:
+    '/responses/resp_abc123' -> '/responses'; '/v1/responses/resp_x' ->
+    '/v1/responses'. Always keeps at least the first segment."""
     segs = [s for s in (path or '').split('?')[0].split('/') if s]
-    return '/' + '/'.join(segs[:2]) if segs else '/'
+    while len(segs) > 1 and _looks_like_id_segment(segs[-1]):
+        segs.pop()
+    return '/' + '/'.join(segs) if segs else '/'
 
 
 # Unknown streaming endpoints seen this process (host, normalized_path) — used to

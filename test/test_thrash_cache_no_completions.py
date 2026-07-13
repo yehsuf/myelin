@@ -226,9 +226,8 @@ def test_nonstreaming_response_on_unknown_llm_path_not_stored():
 def test_detects_unrecognized_streaming_endpoint_once():
     copilot_addon._UNKNOWN_COMPLETION_ENDPOINTS.clear()
     host = 'api.business.githubcopilot.com'
-    path = '/some-future-endpoint/id-123'
 
-    def _mk():
+    def _mk(path):
         flow = _flow(host=host, path=path)
         flow.response = types.SimpleNamespace(
             status_code=200,
@@ -240,15 +239,27 @@ def test_detects_unrecognized_streaming_endpoint_once():
     orig_warn = copilot_addon.ctx.log.warn
     copilot_addon.ctx.log.warn = lambda *a, **k: warnings.append(a[0] if a else '')
     try:
-        asyncio.run(MyelinAddon().response(_mk()))
-        asyncio.run(MyelinAddon().response(_mk()))
+        # Same base route, DIFFERENT per-request ids — must warn only ONCE.
+        asyncio.run(MyelinAddon().response(_mk('/some-future-endpoint/id-123')))
+        asyncio.run(MyelinAddon().response(_mk('/some-future-endpoint/id-999')))
+        asyncio.run(MyelinAddon().response(_mk('/some-future-endpoint/resp_abcdef')))
     finally:
         copilot_addon.ctx.log.warn = orig_warn
 
-    # Recorded once (deduped by host + normalized path), logged once.
+    # Recorded once (deduped by host + normalized static route), logged once.
     recorded = [e for e in copilot_addon._UNKNOWN_COMPLETION_ENDPOINTS if e[0] == host]
     assert len(recorded) == 1, recorded
+    assert recorded[0][1] == '/some-future-endpoint', recorded
     assert sum('unrecognized streaming endpoint' in str(w) for w in warnings) == 1
+
+
+def test_normalize_endpoint_path_strips_ids():
+    n = copilot_addon._normalize_endpoint_path
+    assert n('/responses/resp_abc123') == '/responses'
+    assert n('/v1/responses/resp_x9') == '/v1/responses'
+    assert n('/some-future-endpoint/id-123') == '/some-future-endpoint'
+    assert n('/v1/embeddings') == '/v1/embeddings'  # static route kept
+    assert n('/responses') == '/responses'
 
 
 def test_known_streaming_endpoint_not_flagged():
