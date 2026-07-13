@@ -41,3 +41,73 @@ describe('buildServiceEnginePlan', () => {
     });
   });
 });
+
+import { buildEngineInstancePlan } from '../src/config/engine-runtime.mjs';
+
+describe('buildEngineInstancePlan', () => {
+  it('creates two Lite descriptors without a Python service', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    assert.deepEqual(plan.instances.map(({ engine, role, port }) => ({ engine, role, port })), [
+      { engine: 'headroom_lite', role: 'primary', port: 8790 },
+      { engine: 'headroom_lite', role: 'copilot', port: 8788 },
+    ]);
+    assert.deepEqual(plan.instances[1].env, {
+      HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+    });
+  });
+
+  it('creates one Python descriptor when copilot is disabled', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: false, port: 8788 },
+      },
+    });
+    assert.equal(plan.engine, 'headroom');
+    assert.equal(plan.instances.length, 1);
+    assert.equal(plan.instances[0].role, 'primary');
+    assert.equal(plan.instances[0].engine, 'headroom');
+    assert.equal(plan.instances[0].port, 8787);
+  });
+
+  it('creates two Python descriptors when copilot is enabled', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    assert.deepEqual(plan.instances.map(({ engine, role, port }) => ({ engine, role, port })), [
+      { engine: 'headroom', role: 'primary', port: 8787 },
+      { engine: 'headroom', role: 'copilot', port: 8788 },
+    ]);
+  });
+
+  it('gives each role a unique id, stateDir, logPath, and healthUrl', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    const [primary, copilot] = plan.instances;
+    assert.notEqual(primary.id, copilot.id);
+    assert.notEqual(primary.stateDir, copilot.stateDir);
+    assert.notEqual(primary.logPath, copilot.logPath);
+    assert.equal(primary.healthUrl, `http://127.0.0.1:${primary.port}/health`);
+    assert.equal(copilot.healthUrl, `http://127.0.0.1:${copilot.port}/health`);
+  });
+});
