@@ -39,9 +39,15 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH, warn = consol
   }
 
   const engine = normalizeCompressionEngine(userConfig, warn);
+  const legacyCompressionDisabled =
+    userConfig.proxy?.compression?.enabled === undefined &&
+    userConfig.proxy?.headroom?.enabled === false &&
+    userConfig.proxy?.engine !== 'headroom_lite' &&
+    userConfig.proxy?.headroom_lite?.enabled !== true;
   merged = mergeDeep(merged, {
     proxy: {
       engine,
+      ...(legacyCompressionDisabled ? { compression: { enabled: false } } : {}),
       headroom: { enabled: engine === 'headroom' },
       headroom_lite: { enabled: engine === 'headroom_lite' },
     },

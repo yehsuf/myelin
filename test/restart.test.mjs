@@ -1065,8 +1065,9 @@ describe('defaultRestartMitm', () => {
         cfg: {
           proxy: {
             engine: 'headroom_lite',
-            headroom: { port: 8787, corporate_proxy: 'http://corp-proxy:8080' },
-            headroom_lite: { port: 8790 },
+            compression: { enabled: true },
+            headroom: { enabled: false, port: 8787, corporate_proxy: 'http://corp-proxy:8080' },
+            headroom_lite: { enabled: true, port: 8790 },
             mitm: { port: 8888, egress_port: 8889, block_bypass: true },
             copilot_headroom: { enabled: true, port: 8788 },
             windows_service: { manager: 'registry' },
@@ -1093,6 +1094,7 @@ describe('defaultRestartMitm', () => {
           : '/usr/local/bin/mitmdump',
       );
       assert.equal(installs[0].envVars.MYELIN_HEADROOM_PORT, '8790');
+      assert.equal(installs[0].envVars.MYELIN_COMPRESS, '1');
       assert.equal(installs[0].envVars.MYELIN_COPILOT_ENGINE_URL, 'http://127.0.0.1:8788');
       assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
       if (os === 'windows') {
@@ -1113,6 +1115,36 @@ describe('defaultRestartMitm', () => {
       }
     });
   }
+
+  it('does not wire Lite Copilot egress when compression is explicitly disabled', async () => {
+    const installs = [];
+
+    await defaultRestartMitm({
+      os: 'linux',
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: false },
+          headroom: { enabled: true, port: 8787 },
+          headroom_lite: { enabled: true, port: 8790 },
+          mitm: { port: 8888, egress_port: 8889 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      winManager: 'registry',
+      homedirImpl: () => '/Users/alice',
+      detectMitmdumpImpl: () => '/usr/local/bin/mitmdump',
+      installMitmServiceImpl: async (opts) => installs.push(opts),
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(installs.length, 1);
+    assert.equal(installs[0].envVars.MYELIN_COMPRESS, '0');
+    assert.equal(installs[0].envVars.MYELIN_COPILOT_ENGINE_URL, undefined);
+    assert.equal(installs[0].egressPort, undefined);
+  });
 });
 
 describe('restartHeadroomLite WSL Windows paths', () => {

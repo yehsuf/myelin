@@ -37,6 +37,9 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.engine = headroom', () => {
     assert.equal(DEFAULT_CONFIG.proxy.engine, 'headroom');
   });
+  it('DEFAULT_CONFIG keeps compression enabled independently of engine selection', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.compression.enabled, true);
+  });
   it('DEFAULT_CONFIG has proxy.headroom.backend = kompress-base', () => {
     assert.equal(DEFAULT_CONFIG.proxy.headroom.backend, 'kompress-base');
   });
@@ -241,11 +244,32 @@ describe('config reader', () => {
 
   it('migrates an explicit legacy Lite enablement only when engine is absent', async () => {
     const cfgPath = join(TEST_DIR, 'legacy-lite.yaml');
-    writeFileSync(cfgPath, 'proxy:\n  headroom_lite:\n    enabled: true\n');
+    writeFileSync(cfgPath, 'proxy:\n  headroom:\n    enabled: false\n  headroom_lite:\n    enabled: true\n  copilot_headroom:\n    enabled: true\n');
     const cfg = await loadConfig(cfgPath);
     assert.equal(cfg.proxy.engine, 'headroom_lite');
     assert.equal(cfg.proxy.headroom.enabled, false);
     assert.equal(cfg.proxy.headroom_lite.enabled, true);
+    assert.equal(cfg.proxy.compression.enabled, true);
+    assert.equal(cfg.proxy.copilot_headroom.enabled, true);
+  });
+
+  it('keeps explicit compression disable independent of selected Lite and Copilot', async () => {
+    const cfgPath = join(TEST_DIR, 'lite-compression-disabled.yaml');
+    writeFileSync(cfgPath, 'proxy:\n  engine: headroom_lite\n  compression:\n    enabled: false\n  copilot_headroom:\n    enabled: true\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.proxy.engine, 'headroom_lite');
+    assert.equal(cfg.proxy.headroom.enabled, false);
+    assert.equal(cfg.proxy.compression.enabled, false);
+    assert.equal(cfg.proxy.copilot_headroom.enabled, true);
+  });
+
+  it('migrates legacy headroom disable into the explicit compression opt-out', async () => {
+    const cfgPath = join(TEST_DIR, 'legacy-compression-disabled.yaml');
+    writeFileSync(cfgPath, 'proxy:\n  headroom:\n    enabled: false\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.proxy.engine, 'headroom');
+    assert.equal(cfg.proxy.headroom.enabled, true);
+    assert.equal(cfg.proxy.compression.enabled, false);
   });
 
   it('keeps explicit engine selection when legacy Lite enablement is also present', async () => {

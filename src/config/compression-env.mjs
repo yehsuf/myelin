@@ -2,9 +2,10 @@
  * Resolve the mitmproxy compression-related environment from config.
  *
  * Pure + side-effect-free so it can be unit-tested without running the
- * installer. Compression is controlled by the REAL schema field
- * `proxy.headroom.enabled` (and suppressed when a LiteLLM front-end owns
- * compression). It intentionally does NOT key off a top-level
+ * installer. Compression is controlled by the schema field
+ * `proxy.compression.enabled` (and suppressed when a LiteLLM front-end owns
+ * compression). Engine selection does not affect it. It intentionally does NOT
+ * key off a top-level
  * `compression.backend` value: that is a legacy/unknown key not present in the
  * schema (`myelin config prune` removes it), and honoring a stale
  * `compression.backend: disabled` would silently turn Copilot compression off
@@ -16,11 +17,10 @@
  * @returns {{ compressEnabled: boolean, MYELIN_COMPRESS: '0'|'1', copilotHeadroomPort: number|undefined }}
  */
 export function resolveMitmCompression(cfg = {}) {
-  const headroom = cfg.proxy?.headroom ?? {};
+  const compression = cfg.proxy?.compression ?? {};
   const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
 
-  // The only legitimate "off" switch is proxy.headroom.enabled === false.
-  const disabled = headroom.enabled === false;
+  const disabled = compression.enabled === false;
 
   // LiteLLM front-end owns compression when enabled → the sidecar must not also
   // compress (preserves the existing behavior).

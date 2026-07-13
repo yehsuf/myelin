@@ -80,11 +80,13 @@ export async function buildVerifyResults({
   includeCopilotHeadroomCheck = true,
   includeWatchdogChecks = true,
   platform = process.platform,
+  execSyncImpl = execSync,
 } = {}) {
   const cfg = config ?? await loadConfigImpl();
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
-  const engineInstances = buildEngineInstancePlan(cfg).instances
+  const plannedEngineInstances = buildEngineInstancePlan(cfg).instances;
+  const engineInstances = plannedEngineInstances
     .filter((instance) => instance.role !== 'copilot' || includeCopilotHeadroomCheck);
   const results = [];
 
@@ -111,7 +113,7 @@ export async function buildVerifyResults({
 
   if (includeWatchdogChecks && platform === 'darwin') {
     try {
-      execSync('launchctl list com.myelin.watchdog', { stdio: 'ignore' });
+      execSyncImpl('launchctl list com.myelin.watchdog', { stdio: 'ignore' });
       results.push({ name: 'Watchdog', ok: true, detail: 'active — checks every 90s' });
     } catch {
       results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
@@ -119,17 +121,12 @@ export async function buildVerifyResults({
   }
 
   if (includeWatchdogChecks && platform === 'win32' && winManager === 'winsw' && cfg.proxy?.windows_service?.watchdog_enabled) {
-    const { HEADROOM_SERVICE_ID, COPILOT_HEADROOM_SERVICE_ID, windowsWatchdogTaskName } = await import('../service/windows.mjs');
+    const { windowsWatchdogTaskName } = await import('../service/windows.mjs');
     const interval = Number(cfg.proxy.windows_service.watchdog_interval_minutes ?? 2) || 2;
-    const primary = engineInstances.find(({ role }) => role === 'primary');
-    const copilot = engineInstances.find(({ role }) => role === 'copilot');
-    const taskNames = [
-      ...(primary?.engine === 'headroom' ? [windowsWatchdogTaskName({ id: HEADROOM_SERVICE_ID })] : []),
-      ...(copilot ? [windowsWatchdogTaskName({ id: COPILOT_HEADROOM_SERVICE_ID })] : []),
-    ];
+    const taskNames = plannedEngineInstances.map(({ id }) => windowsWatchdogTaskName({ id }));
     for (const taskName of taskNames) {
       try {
-        execSync(`schtasks /query /tn "${taskName}"`, { stdio: 'ignore' });
+        execSyncImpl(`schtasks /query /tn "${taskName}"`, { stdio: 'ignore' });
         results.push({ name: taskName, ok: true, detail: `scheduled — checks every ${interval} minute${interval === 1 ? '' : 's'}` });
       } catch {
         results.push({ name: taskName, ok: false, detail: 'not registered — run: myelin update (or reinstall)' });

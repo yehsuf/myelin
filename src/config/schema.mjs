@@ -2,6 +2,12 @@ export const DEFAULT_CONFIG = {
   version: '1.0',
   proxy: {
     engine: 'headroom',
+    // Compression delivery is independent of the selected engine. Disable all
+    // MITM compression and dedicated Copilot redirection explicitly with this
+    // setting; engine selection only determines which service is installed.
+    compression: {
+      enabled: true,
+    },
     headroom: {
       enabled: true,
       port: 8787,

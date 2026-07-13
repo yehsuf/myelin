@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { buildVerifyResults } from '../src/cli/verify.mjs';
-import { parseManagedMitmStatus } from '../src/service/windows.mjs';
+import { parseManagedMitmStatus, windowsWatchdogTaskName } from '../src/service/windows.mjs';
 
 describe('buildVerifyResults engine selection', () => {
   const baseConfig = {
@@ -76,7 +76,7 @@ describe('buildVerifyResults engine selection', () => {
     ]);
   });
 
-  it('skips the managed headroom watchdog check on WinSW headroom-lite installs', async () => {
+  it('reports watchdogs for the selected Lite descriptor IDs on WinSW', async () => {
     const results = await buildVerifyResults({
       config: {
         proxy: {
@@ -102,8 +102,77 @@ describe('buildVerifyResults engine selection', () => {
       includeWatchdogChecks: true,
     });
 
-    assert.equal(results.some(({ name }) => name === 'Myelin Headroom Watchdog'), false);
-    assert.equal(results.some(({ name }) => name === 'Myelin Copilot Headroom Watchdog'), true);
+    assert.equal(results.some(({ name }) => name === 'Myelin Headroom Lite Primary Watchdog'), true);
+    assert.equal(results.some(({ name }) => name === 'Myelin Headroom Lite Copilot Watchdog'), true);
+  });
+
+  for (const engine of ['headroom', 'headroom_lite']) {
+    for (const copilotEnabled of [false, true]) {
+      it(`queries WinSW watchdogs by resolved ${engine} descriptor IDs${copilotEnabled ? ' with Copilot' : ''}`, async () => {
+        const commands = [];
+        const config = {
+          proxy: {
+            engine,
+            headroom: { enabled: engine === 'headroom', port: 8787 },
+            headroom_lite: { enabled: engine === 'headroom_lite', port: 8790 },
+            mitm: { enabled: true, port: 8888 },
+            copilot_headroom: { enabled: copilotEnabled, port: 8788 },
+            windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 2 },
+          },
+        };
+        const descriptorIds = [
+          `${engine}-primary`,
+          ...(copilotEnabled ? [`${engine}-copilot`] : []),
+        ];
+        const taskNames = descriptorIds.map((id) => windowsWatchdogTaskName({ id }));
+
+        const results = await buildVerifyResults({
+          config,
+          platform: 'win32',
+          engineInstanceStatusImpl: async () => ({ running: true }),
+          waitForHeadroomImpl: async () => true,
+          probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'cache' }),
+          execSyncImpl: (command) => commands.push(command),
+          includeToolChecks: false,
+          includeMitmCheck: false,
+          includeWatchdogChecks: true,
+        });
+
+        assert.deepEqual(commands, taskNames.map((taskName) => `schtasks /query /tn "${taskName}"`));
+        assert.deepEqual(
+          results.filter(({ name }) => name.endsWith('Watchdog')).map(({ name }) => name),
+          taskNames,
+        );
+      });
+    }
+  }
+
+  it('queries an enabled Copilot watchdog even when its service probe is omitted', async () => {
+    const commands = [];
+    await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { enabled: false, port: 8787 },
+          headroom_lite: { enabled: true, port: 8790 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 2 },
+        },
+      },
+      platform: 'win32',
+      engineInstanceStatusImpl: async () => ({ running: true }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'cache' }),
+      execSyncImpl: (command) => commands.push(command),
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeCopilotHeadroomCheck: false,
+    });
+
+    assert.deepEqual(commands, [
+      'schtasks /query /tn "Myelin Headroom Lite Primary Watchdog"',
+      'schtasks /query /tn "Myelin Headroom Lite Copilot Watchdog"',
+    ]);
   });
 
   it('passes the configured Copilot descriptor into the generic status probe', async () => {

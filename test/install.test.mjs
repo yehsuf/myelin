@@ -333,7 +333,7 @@ describe('buildMitmServiceInstallOptions', () => {
     assert.ok(!opts.envVars.HTTPS_PROXY.includes('\\'));
   });
 
-  it('wires only the selected Copilot descriptor loopback URL into MITM', () => {
+  it('wires Lite plus Copilot into MITM even though Python Headroom is unselected', () => {
     const opts = buildMitmServiceInstallOptions({
       os: 'linux',
       home: '/home/alice',
@@ -346,15 +346,48 @@ describe('buildMitmServiceInstallOptions', () => {
       },
       cfg: {
         proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: true },
+          headroom: { enabled: false },
+          headroom_lite: { enabled: true, port: 8790 },
           copilot_headroom: { enabled: true, port: 8788 },
           mitm: { egress_port: 8889 },
         },
       },
     });
 
+    assert.equal(opts.envVars.MYELIN_COMPRESS, '1');
     assert.equal(opts.envVars.MYELIN_COPILOT_ENGINE_URL, 'http://127.0.0.1:9797');
     assert.equal(opts.envVars.MYELIN_COPILOT_HEADROOM_PORT, undefined);
+    assert.equal(opts.egressPort, 8889);
+  });
 
+  it('does not add the Copilot redirect or egress listener when compression is disabled', () => {
+    const opts = buildMitmServiceInstallOptions({
+      os: 'linux',
+      home: '/home/alice',
+      mitmdumpBin: '/usr/local/bin/mitmdump',
+      enginePlan: {
+        instances: [
+          { engine: 'headroom_lite', role: 'primary', port: 8790 },
+          { engine: 'headroom_lite', role: 'copilot', port: 9797 },
+        ],
+      },
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: false },
+          headroom: { enabled: true },
+          headroom_lite: { enabled: true, port: 8790 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { egress_port: 8889 },
+        },
+      },
+    });
+
+    assert.equal(opts.envVars.MYELIN_COMPRESS, '0');
+    assert.equal(opts.envVars.MYELIN_COPILOT_ENGINE_URL, undefined);
+    assert.equal(opts.egressPort, undefined);
   });
 });
 
