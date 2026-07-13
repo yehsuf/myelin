@@ -252,6 +252,10 @@ export async function applyServiceEngineInstallPlan({
 } = {}) {
   const resolvedPlan = { ...(enginePlan ?? buildServiceEnginePlan(cfg)) };
 
+  if (resolvedPlan.selectedEngine === 'headroom_lite' && resolvedPlan.shouldRemoveManagedHeadroom) {
+    await removeManagedHeadroomRegistrationImpl({ os, winManager, home, headroomPort: resolvedPlan.headroomPort });
+  }
+
   if (resolvedPlan.selectedEngine === 'headroom_lite') {
     const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
     const headroomLite = await detectTool('headroom-lite', '--version');
@@ -288,7 +292,7 @@ export async function applyServiceEngineInstallPlan({
       okFn,
       warnFn,
     });
-  } else if (resolvedPlan.shouldRemoveManagedHeadroom) {
+  } else if (resolvedPlan.shouldRemoveManagedHeadroom && resolvedPlan.selectedEngine !== 'headroom_lite') {
     await removeManagedHeadroomRegistrationImpl({ os, winManager, home, headroomPort: resolvedPlan.headroomPort });
   }
 

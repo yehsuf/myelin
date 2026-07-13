@@ -192,6 +192,60 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(calls[1].opts.headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
   });
 
+  it('removes managed Python Headroom before probing or starting healthy Lite transitions', async () => {
+    const calls = [];
+
+    const result = await applyServiceEngineInstallPlan({
+      enginePlan: {
+        selectedEngine: 'headroom_lite',
+        selectedPort: 8790,
+        headroomPort: 8787,
+        shouldRunManagedHeadroom: false,
+        shouldRemoveManagedHeadroom: true,
+      },
+      os: 'windows',
+      cfg: {
+        proxy: {
+          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
+          headroom_lite: { port: 8790 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      winManager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      port: 8787,
+      envVars: { HEADROOM_PORT: '8787', HEADROOM_MODE: 'cache' },
+      ensureManagedHeadroomServiceImpl: async (opts) => {
+        calls.push({ type: 'ensure-headroom', opts });
+        return { healthy: true };
+      },
+      removeManagedHeadroomRegistrationImpl: async (opts) => {
+        calls.push({ type: 'remove-headroom', opts });
+      },
+      stopObsoleteEngineImpl: async (opts) => {
+        calls.push({ type: 'stop-lite', opts });
+        return { stopped: true, conflict: false };
+      },
+      detectToolImpl: async () => {
+        calls.push({ type: 'detect-lite' });
+        return { installed: true };
+      },
+      restartHeadroomLiteImpl: async (port, osKind) => {
+        calls.push({ type: 'restart-lite', port, osKind });
+        return true;
+      },
+      warnFn: () => {},
+      logFn: () => {},
+      okFn: () => {},
+    });
+
+    assert.equal(result.persistHeadroomFallback, false);
+    assert.equal(result.selectedInstallEngine, 'headroom_lite');
+    assert.equal(result.selectedProxyPort, 8790);
+    assert.deepEqual(calls.map(({ type }) => type), ['remove-headroom', 'detect-lite', 'restart-lite']);
+  });
+
   it('does not fall back from unavailable headroom-lite and removes managed Python Headroom', async () => {
     const calls = [];
     const warnings = [];
