@@ -38,14 +38,48 @@ function buildEngineInstance({ engine, role, port, config }) {
       HEADROOM_LITE_UPSTREAM: `http://127.0.0.1:${egressPort}`,
       HEADROOM_LITE_COMPRESS_PROXY: 'true',
     };
+  } else if (engine === 'headroom' && role === 'copilot') {
+    const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+    env = {
+      ANTHROPIC_TARGET_API_URL: loopbackTarget,
+      OPENAI_TARGET_API_URL: loopbackTarget,
+      HEADROOM_MODE: config?.proxy?.copilot_headroom?.mode ?? 'cache',
+      NO_PROXY: '127.0.0.1,localhost,::1',
+    };
   }
   return { engine, role, port, id, stateDir, logPath, healthUrl, env };
+}
+
+function assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort) {
+  const pairs = [
+    [primaryPort, copilotPort, 'primary and copilot'],
+    [primaryPort, mitmPort, 'primary and MITM ingress'],
+    [primaryPort, egressPort, 'primary and MITM egress'],
+    [copilotPort, mitmPort, 'copilot and MITM ingress'],
+    [copilotPort, egressPort, 'copilot and MITM egress'],
+  ];
+  for (const [a, b, label] of pairs) {
+    if (a != null && b != null && a === b) {
+      throw new Error(`Port collision: ${label} share port ${a}`);
+    }
+  }
 }
 
 export function buildEngineInstancePlan(config = {}) {
   const engine = selectedEngine(config);
   const primaryPort = selectedEnginePort(config);
   const copilot = config.proxy?.copilot_headroom ?? {};
+  const mitmPort = config?.proxy?.mitm?.port ?? null;
+  const egressPort = config?.proxy?.mitm?.egress_port ?? null;
+
+  if (copilot.enabled === true) {
+    const copilotPort = copilot.port ?? 8788;
+    assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
+  } else {
+    // still check primary vs MITM collisions even when copilot is disabled
+    assertNoPlanPortCollisions(primaryPort, null, mitmPort, egressPort);
+  }
+
   const instances = [buildEngineInstance({ engine, role: 'primary', port: primaryPort, config })];
   if (copilot.enabled === true) {
     instances.push(buildEngineInstance({

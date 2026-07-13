@@ -111,3 +111,138 @@ describe('buildEngineInstancePlan', () => {
     assert.equal(copilot.healthUrl, `http://127.0.0.1:${copilot.port}/health`);
   });
 });
+
+describe('buildEngineInstancePlan — Python copilot env', () => {
+  it('populates Python copilot env with egress loopback URLs, HEADROOM_MODE, and NO_PROXY', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: true, port: 8788, mode: 'cache' },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    const copilot = plan.instances.find(i => i.role === 'copilot');
+    assert.deepEqual(copilot.env, {
+      ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889',
+      OPENAI_TARGET_API_URL: 'http://127.0.0.1:8889',
+      HEADROOM_MODE: 'cache',
+      NO_PROXY: '127.0.0.1,localhost,::1',
+    });
+  });
+
+  it('uses mode from config in Python copilot HEADROOM_MODE', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: true, port: 8788, mode: 'passthrough' },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    const copilot = plan.instances.find(i => i.role === 'copilot');
+    assert.equal(copilot.env.HEADROOM_MODE, 'passthrough');
+  });
+
+  it('Python copilot env never contains a real provider URL', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: true, port: 8788, mode: 'cache' },
+        mitm: { egress_port: 8889 },
+      },
+    });
+    const copilot = plan.instances.find(i => i.role === 'copilot');
+    for (const v of Object.values(copilot.env)) {
+      assert.ok(!String(v).includes('anthropic.com'), `env value should not contain real provider URL: ${v}`);
+      assert.ok(!String(v).includes('openai.com'), `env value should not contain real provider URL: ${v}`);
+      assert.ok(!String(v).includes('githubcopilot.com'), `env value should not contain real provider URL: ${v}`);
+    }
+  });
+});
+
+describe('buildEngineInstancePlan — port collision rejection', () => {
+  it('throws when primary port equals copilot port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8788 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('throws when copilot port equals MITM ingress port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8888 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('throws when copilot port equals MITM egress port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8889 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('throws when primary port equals MITM ingress port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('throws when primary port equals MITM egress port', () => {
+    assert.throws(
+      () => buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8889 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+      /collision|conflict|same port/i,
+    );
+  });
+
+  it('does not throw when all ports are distinct', () => {
+    assert.doesNotThrow(() =>
+      buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      }),
+    );
+  });
+});
