@@ -246,28 +246,17 @@ export async function applyServiceEngineInstallPlan({
   restartHeadroomLiteImpl,
 } = {}) {
   const resolvedPlan = { ...(enginePlan ?? buildServiceEnginePlan(cfg)) };
-  let persistHeadroomFallback = false;
 
   if (resolvedPlan.selectedEngine === 'headroom_lite') {
     const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
     const headroomLite = await detectTool('headroom-lite', '--version');
     if (!headroomLite.installed) {
-      warnFn('headroom-lite selected but not installed — keeping managed headroom until `myelin restart` can start headroom-lite');
-      resolvedPlan.selectedEngine = 'headroom';
-      resolvedPlan.selectedPort = port;
-      resolvedPlan.shouldRunManagedHeadroom = true;
-      resolvedPlan.shouldRemoveManagedHeadroom = false;
-      persistHeadroomFallback = true;
+      warnFn('headroom-lite selected but not installed — Python Headroom remains disabled; install @yehsuf/headroom-lite and run `myelin restart`');
     } else {
       const restartHeadroomLite = restartHeadroomLiteImpl ?? (await import('./cli/restart.mjs')).restartHeadroomLite;
       const healthy = await restartHeadroomLite(resolvedPlan.selectedPort, os, cfg);
       if (!healthy) {
-        warnFn('headroom-lite selected but not healthy after start — keeping managed headroom until a later restart succeeds');
-        resolvedPlan.selectedEngine = 'headroom';
-        resolvedPlan.selectedPort = port;
-        resolvedPlan.shouldRunManagedHeadroom = true;
-        resolvedPlan.shouldRemoveManagedHeadroom = false;
-        persistHeadroomFallback = true;
+        warnFn('headroom-lite selected but not healthy after start — Python Headroom remains disabled; fix headroom-lite and run `myelin restart`');
       }
     }
   }
@@ -300,7 +289,7 @@ export async function applyServiceEngineInstallPlan({
 
   return {
     enginePlan: resolvedPlan,
-    persistHeadroomFallback,
+    persistHeadroomFallback: false,
     selectedInstallEngine: resolvedPlan.selectedEngine,
     selectedProxyPort: resolvedPlan.selectedPort,
   };
@@ -1414,7 +1403,6 @@ async function main() {
       logFn: console.log,
       okFn: ok,
     });
-    persistHeadroomFallback = persistHeadroomFallback || installPlan.persistHeadroomFallback;
     selectedInstallEngine = installPlan.selectedInstallEngine;
     selectedProxyPort = installPlan.selectedProxyPort;
     const downstreamProxyInstallOpts = buildDownstreamProxyServiceInstallOptions({
@@ -1492,15 +1480,6 @@ async function main() {
       index_tier: flags['index-tier'],
     }), DEFAULT_CONFIG_PATH);
     ok(`config.yaml created`);
-  } else if (persistHeadroomFallback) {
-    await writeConfig(mergeDeep(await loadConfig(DEFAULT_CONFIG_PATH), {
-      proxy: {
-        engine: 'headroom',
-        headroom: { enabled: true, port },
-        headroom_lite: { enabled: false },
-      },
-    }), DEFAULT_CONFIG_PATH);
-    ok('config.yaml updated to headroom fallback');
   } else { skip('config.yaml already exists'); }
 
   // Claude Code settings.json

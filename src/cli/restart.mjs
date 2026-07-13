@@ -8,7 +8,7 @@ import { waitForHeadroom, headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
 import { defaultWindowsHome, normalizeWindowsFilesystemPath } from '../service/windows.mjs';
-import { installCopilotHeadroomService, installMitmService } from '../service/index.mjs';
+import { installCopilotHeadroomService, installMitmService, installService, installWatchdog } from '../service/index.mjs';
 import {
   buildCopilotHeadroomServiceInstallOptions,
   buildMitmServiceInstallOptions,
@@ -754,52 +754,49 @@ export async function defaultRestartManagedHeadroom({
   warn,
   managedHeadroomRegistrationStatusImpl = managedHeadroomRegistrationStatus,
   ensureManagedHeadroomServiceImpl = ensureManagedHeadroomService,
+  installServiceImpl = installService,
   homedirImpl = homedir,
   headroomBinPathImpl = headroomBinPath,
 }) {
   try {
     const home = homedirImpl();
+    const port = cfg?.proxy?.headroom?.port ?? 8787;
+    const envVars = buildManagedHeadroomEnv(cfg);
+    const headroomBin = headroomBinPathImpl();
+    const interceptToolResults = cfg?.proxy?.headroom?.intercept_tool_results ?? true;
     const registration = await managedHeadroomRegistrationStatusImpl({
       os,
       winManager,
       home,
-      headroomPort: cfg?.proxy?.headroom?.port ?? 8787,
+      headroomPort: port,
     });
     if (!registration.registered) {
       await ensureManagedHeadroomServiceImpl({
         os,
         winManager,
         home,
-        headroomBin: headroomBinPathImpl(),
-        port: cfg?.proxy?.headroom?.port ?? 8787,
-        envVars: buildManagedHeadroomEnv(cfg),
-        interceptToolResults: cfg?.proxy?.headroom?.intercept_tool_results ?? true,
+        headroomBin,
+        port,
+        envVars,
+        interceptToolResults,
         logFn: log,
         warnFn: warn,
       });
       return;
     }
-    if (os === 'darwin') {
-      const uid = execSync('id -u').toString().trim();
-      const plist = join(home, 'Library', 'LaunchAgents', 'com.myelin.headroom.plist');
-      try { execSync(`launchctl bootout gui/${uid}/com.myelin.headroom`, { stdio: 'ignore' }); } catch {}
-      execSync('sleep 1');
-      execSync(`launchctl bootstrap gui/${uid} ${plist}`, { stdio: 'pipe' });
-      log('  ✓ headroom restarted (launchd)');
+    if (os !== 'windows' || winManager === 'winsw') {
+      await installServiceImpl({
+        headroomBin,
+        port,
+        envVars,
+        home,
+        interceptToolResults,
+        logPath: join(home, '.myelin', 'headroom.log'),
+        manager: winManager,
+      });
+      log(`  ✓ headroom service refreshed (:${port})`);
       return;
     }
-    if (os === 'linux') {
-      execSync('systemctl --user restart myelin-headroom.service', { stdio: 'pipe' });
-      log('  ✓ headroom restarted (systemd)');
-      return;
-    }
-    if (winManager === 'winsw') {
-      const { HEADROOM_SERVICE_ID, restartWinswService } = await import('../service/windows.mjs');
-      if (!restartWinswService({ id: HEADROOM_SERVICE_ID })) throw new Error('WinSW restart failed');
-      log('  ✓ headroom restarted (WinSW)');
-      return;
-    }
-    const port = cfg?.proxy?.headroom?.port ?? 8787;
     const persistedEnv = (os === 'windows' && winManager !== 'winsw')
       ? (await import('../service/windows.mjs')).readUserEnvVars([
           'SSL_CERT_FILE',
@@ -818,11 +815,11 @@ export async function defaultRestartManagedHeadroom({
     await new Promise(r => setTimeout(r, 500));
     const { installService } = await import('../service/windows.mjs');
     await installService({
-      headroomBin: headroomBinPathImpl(),
+      headroomBin,
       port,
       envVars: buildManagedHeadroomEnv(cfg, { ...process.env, ...persistedEnv }),
       home,
-      interceptToolResults: cfg?.proxy?.headroom?.intercept_tool_results ?? true,
+      interceptToolResults,
       manager: 'registry',
     });
     log('  ✓ headroom restarted (registry)');
@@ -925,6 +922,35 @@ export async function defaultRestartMitm({
   }
 }
 
+export async function defaultRestartWatchdog({
+  os,
+  cfg,
+  winManager,
+  log,
+  warn,
+  homedirImpl = homedir,
+  installWatchdogImpl = installWatchdog,
+} = {}) {
+  try {
+    const home = homedirImpl();
+    const intervalMinutes = Number(cfg?.proxy?.windows_service?.watchdog_interval_minutes ?? 2) || 2;
+    const installed = await installWatchdogImpl({
+      home,
+      enabled: winManager === 'winsw' && (cfg?.proxy?.windows_service?.watchdog_enabled ?? false),
+      intervalMinutes,
+      headroomPort: selectedEngine(cfg) === 'headroom' ? (cfg?.proxy?.headroom?.port ?? 8787) : undefined,
+      mitmPort: cfg?.proxy?.mitm?.port ?? 8888,
+      ...(cfg?.proxy?.copilot_headroom?.enabled ? {
+        copilotHeadroomPort: cfg?.proxy?.copilot_headroom?.port ?? 8788,
+        egressPort: cfg?.proxy?.mitm?.egress_port ?? 8889,
+      } : {}),
+    });
+    if (installed) log('  ✓ watchdog definitions refreshed');
+  } catch (e) {
+    warn(`  ⚠ watchdog refresh failed: ${e.message?.split('\n')[0] ?? e}`);
+  }
+}
+
 async function defaultWaitForSelectedEngine({ engine, cfg }) {
   if (engine === 'headroom_lite') return waitForHeadroomLite(cfg?.proxy?.headroom_lite?.port ?? 8790, 5000);
   return waitForHeadroom(cfg?.proxy?.headroom?.port ?? 8787, 20000);
@@ -939,6 +965,7 @@ export async function runRestart({
   restartManagedHeadroomImpl = defaultRestartManagedHeadroom,
   restartCopilotHeadroomImpl = defaultRestartCopilotHeadroom,
   restartMitmImpl = defaultRestartMitm,
+  restartWatchdogImpl = defaultRestartWatchdog,
   waitForSelectedEngineImpl = defaultWaitForSelectedEngine,
   log = console.log,
   warn = console.warn,
@@ -950,6 +977,7 @@ export async function runRestart({
   const obsolete = engine === 'headroom' ? 'headroom_lite' : 'headroom';
   const home = homedir();
   log('\n🔄 Restarting Myelin services...');
+  let selectedEngineStarted = true;
 
   const startSelected = async () => {
     if (engine === 'headroom_lite') {
@@ -971,19 +999,25 @@ export async function runRestart({
     }
     await startSelected();
   } else {
-    const started = await startSelected();
     if (engine === 'headroom_lite') {
-      if (!started) {
-        warn('  ⚠ headroom-lite did not start; keeping the existing headroom service running');
-        log();
-        return;
-      }
       await stopObsoleteEngineImpl({ engine: obsolete, os, cfg, winManager, home, warn });
+      selectedEngineStarted = await startSelected();
+      if (!selectedEngineStarted) {
+        warn('  ⚠ headroom-lite did not start; Python Headroom remains disabled');
+      }
+    } else {
+      await startSelected();
     }
     await restartCopilotHeadroomImpl({ os, cfg, winManager, log, warn });
   }
 
   await restartMitmImpl({ os, cfg, winManager, log, warn });
+  await restartWatchdogImpl({ os, cfg, winManager, log, warn });
+
+  if (engine === 'headroom_lite' && !selectedEngineStarted) {
+    log();
+    return;
+  }
 
   const healthy = await waitForSelectedEngineImpl({ engine, cfg, os });
   if (engine === 'headroom_lite') {

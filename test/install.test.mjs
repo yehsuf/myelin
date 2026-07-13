@@ -165,8 +165,9 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(calls[1].opts.headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
   });
 
-  it('falls back from unavailable headroom-lite to managed Python headroom and still cleans up managed Lite', async () => {
+  it('does not fall back from unavailable headroom-lite and removes managed Python Headroom', async () => {
     const calls = [];
+    const warnings = [];
 
     const result = await applyServiceEngineInstallPlan({
       enginePlan: {
@@ -193,25 +194,30 @@ describe('applyServiceEngineInstallPlan', () => {
         calls.push({ type: 'ensure-headroom', opts });
         return { healthy: true };
       },
-      removeManagedHeadroomRegistrationImpl: async () => {
-        calls.push({ type: 'remove-headroom' });
+      removeManagedHeadroomRegistrationImpl: async (opts) => {
+        calls.push({ type: 'remove-headroom', opts });
       },
       stopObsoleteEngineImpl: async (opts) => {
         calls.push({ type: 'stop-lite', opts });
         return { stopped: true, conflict: false };
       },
       detectToolImpl: async () => ({ installed: false }),
-      warnFn: () => {},
+      warnFn: (message) => { warnings.push(message); },
       logFn: () => {},
       okFn: () => {},
     });
 
-    assert.equal(result.persistHeadroomFallback, true);
-    assert.equal(result.selectedInstallEngine, 'headroom');
-    assert.deepEqual(calls.map(({ type }) => type), ['stop-lite', 'ensure-headroom']);
+    assert.equal(result.persistHeadroomFallback, false);
+    assert.equal(result.selectedInstallEngine, 'headroom_lite');
+    assert.equal(result.selectedProxyPort, 8790);
+    assert.deepEqual(calls.map(({ type }) => type), ['remove-headroom']);
+    assert.equal(calls[0].opts.headroomPort, 8787);
+    assert.deepEqual(warnings, [
+      'headroom-lite selected but not installed — Python Headroom remains disabled; install @yehsuf/headroom-lite and run `myelin restart`',
+    ]);
   });
 
-  it('wires downstream mitm and watchdog options from the resolved fallback engine plan', async () => {
+  it('keeps downstream mitm wiring on the configured Lite port when Lite is unhealthy', async () => {
     const cfg = {
       proxy: {
         headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
@@ -240,7 +246,8 @@ describe('applyServiceEngineInstallPlan', () => {
       ensureManagedHeadroomServiceImpl: async () => ({ healthy: true }),
       removeManagedHeadroomRegistrationImpl: async () => {},
       stopObsoleteEngineImpl: async () => ({ stopped: true, conflict: false }),
-      detectToolImpl: async () => ({ installed: false }),
+      detectToolImpl: async () => ({ installed: true }),
+      restartHeadroomLiteImpl: async () => false,
       warnFn: () => {},
       logFn: () => {},
       okFn: () => {},
@@ -256,9 +263,11 @@ describe('applyServiceEngineInstallPlan', () => {
       installPlan,
     });
 
-    assert.equal(installPlan.selectedProxyPort, 8787);
-    assert.equal(downstream.mitmOpts.envVars.MYELIN_HEADROOM_PORT, '8787');
-    assert.equal(downstream.watchdogOpts.headroomPort, 8787);
+    assert.equal(installPlan.selectedInstallEngine, 'headroom_lite');
+    assert.equal(installPlan.selectedProxyPort, 8790);
+    assert.equal(downstream.mitmOpts.envVars.MYELIN_HEADROOM_PORT, '8790');
+    assert.equal(downstream.watchdogOpts.headroomPort, undefined);
+    assert.equal(downstream.watchdogOpts.copilotHeadroomPort, 8788);
     assert.equal(downstream.watchdogOpts.intervalMinutes, 5);
   });
 });

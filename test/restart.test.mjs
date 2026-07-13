@@ -8,6 +8,7 @@ import {
   defaultRestartCopilotHeadroom,
   defaultRestartManagedHeadroom,
   defaultRestartMitm,
+  defaultRestartWatchdog,
   restartHeadroomLite,
   runRestart,
   stopManagedHeadroomLite,
@@ -309,11 +310,12 @@ describe('runRestart engine selection', () => {
       warn: () => {},
     });
 
-    assert.deepEqual(calls, ['lite', 'stop:headroom', 'mitm']);
+    assert.deepEqual(calls, ['stop:headroom', 'lite', 'mitm']);
   });
 
-  it('keeps Python headroom running when headroom-lite fails to start', async () => {
+  it('keeps Python Headroom disabled when headroom-lite fails to start and still refreshes downstream services', async () => {
     const calls = [];
+    const warnings = [];
 
     await runRestart({
       config: {
@@ -323,6 +325,8 @@ describe('runRestart engine selection', () => {
           engine: 'headroom_lite',
           headroom: { enabled: false, port: 8787 },
           headroom_lite: { enabled: true, port: 8790 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788 },
         },
       },
       detectOSImpl: () => 'linux',
@@ -332,13 +336,16 @@ describe('runRestart engine selection', () => {
         return false;
       },
       restartManagedHeadroomImpl: async () => calls.push('headroom'),
+      restartCopilotHeadroomImpl: async () => calls.push('copilot'),
       restartMitmImpl: async () => calls.push('mitm'),
+      restartWatchdogImpl: async () => calls.push('watchdog'),
       waitForSelectedEngineImpl: async () => true,
       log: () => {},
-      warn: () => {},
+      warn: (message) => warnings.push(message),
     });
 
-    assert.deepEqual(calls, ['lite']);
+    assert.deepEqual(calls, ['stop:headroom', 'lite', 'copilot', 'mitm', 'watchdog']);
+    assert.deepEqual(warnings, ['  ⚠ headroom-lite did not start; Python Headroom remains disabled']);
   });
 });
 
@@ -548,6 +555,50 @@ describe('headroom-lite ownership guards', () => {
 });
 
 describe('defaultRestartManagedHeadroom', () => {
+  for (const { os, winManager, home } of [
+    { os: 'darwin', winManager: 'registry', home: '/Users/alice' },
+    { os: 'linux', winManager: 'registry', home: '/home/alice' },
+    { os: 'windows', winManager: 'winsw', home: 'C:\\Users\\alice' },
+  ]) {
+    it(`reinstalls fresh ${os === 'windows' ? 'WinSW' : os} service definitions from current config`, async () => {
+      const installs = [];
+      const cfg = {
+        proxy: {
+          headroom: {
+            port: 9797,
+            mode: 'observe',
+            corporate_proxy: 'http://corp-proxy:8080',
+            openai_target_url: 'https://api.githubcopilot.com',
+            intercept_tool_results: true,
+          },
+        },
+      };
+ 
+      await defaultRestartManagedHeadroom({
+        os,
+        cfg,
+        winManager,
+        log: () => {},
+        warn: () => {},
+        homedirImpl: () => home,
+        headroomBinPathImpl: () => os === 'windows'
+          ? 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'
+          : '/Users/alice/.myelin/bin/headroom',
+        managedHeadroomRegistrationStatusImpl: async () => ({ registered: true }),
+        installServiceImpl: async (opts) => {
+          installs.push(opts);
+        },
+      });
+ 
+      assert.equal(installs.length, 1);
+      assert.equal(installs[0].port, 9797);
+      assert.equal(installs[0].home, home);
+      assert.equal(installs[0].manager, winManager);
+      assert.equal(installs[0].interceptToolResults, true);
+      assert.deepEqual(installs[0].envVars, buildManagedHeadroomEnv(cfg));
+    });
+  }
+
   it('reinstalls a missing managed registration instead of spawning a transient-only restart', async () => {
     const calls = [];
     const cfg = {
@@ -581,6 +632,44 @@ describe('defaultRestartManagedHeadroom', () => {
     assert.equal(calls[0].headroomBin, 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe');
     assert.deepEqual(calls[0].envVars, buildManagedHeadroomEnv(cfg));
     assert.equal(calls[0].interceptToolResults, true);
+  });
+});
+
+describe('defaultRestartWatchdog', () => {
+  it('reinstalls watchdog definitions with current ports instead of a stale Python Headroom target', async () => {
+    const installs = [];
+
+    await defaultRestartWatchdog({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+          mitm: { port: 9888, egress_port: 9889 },
+          copilot_headroom: { enabled: true, port: 9788 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true, watchdog_interval_minutes: 5 },
+        },
+      },
+      winManager: 'winsw',
+      log: () => {},
+      warn: () => {},
+      homedirImpl: () => 'C:\\Users\\alice',
+      installWatchdogImpl: async (opts) => {
+        installs.push(opts);
+        return true;
+      },
+    });
+
+    assert.deepEqual(installs, [{
+      home: 'C:\\Users\\alice',
+      enabled: true,
+      intervalMinutes: 5,
+      headroomPort: undefined,
+      mitmPort: 9888,
+      copilotHeadroomPort: 9788,
+      egressPort: 9889,
+    }]);
   });
 });
 

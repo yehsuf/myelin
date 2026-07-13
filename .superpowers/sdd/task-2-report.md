@@ -113,3 +113,16 @@
    - `139` tests, `139` passed, `0` failed
 3. `npm test`
    - `490` tests, `490` passed, `0` failed
+
+## Lite Exclusion and Watchdog Refresh Fix
+- `proxy.engine: headroom_lite` no longer falls back to managed Python Headroom during install or restart. If Lite is missing or unhealthy, Myelin now leaves the configured Lite port/wiring intact, reports the failure directly, and still removes obsolete managed Python Headroom from that machine.
+- `myelin restart` now regenerates/reinstalls the main Python Headroom static service definitions on launchd, systemd, and WinSW from current config before bringing the selected engine back up, matching the existing Copilot-Headroom refresh behavior.
+- Restart also refreshes watchdog definitions after service wiring changes so watchdog health targets follow the current selected engine / Copilot / mitm ports instead of retaining stale Python-Headroom ports.
+
+## Lite Exclusion and Watchdog Refresh Verification
+1. `node --test test/install.test.mjs test/restart.test.mjs`
+   - `41` tests, `41` passed, `0` failed
+2. `node --test test/install.test.mjs test/restart.test.mjs test/verify.test.mjs test/stats.test.mjs`
+   - `49` tests, `49` passed, `0` failed
+3. `npm test`
+   - `494` tests, `494` passed, `0` failed
