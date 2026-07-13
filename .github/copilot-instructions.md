@@ -9,11 +9,17 @@
 - purpose: Token-efficiency stack for AI coding agents — compression proxy, RTK wiring, deterministic transforms, and developer tooling.
 
 ## Architecture invariants
-- Zero external runtime dependencies in the proxy/compression path.
+- Zero external runtime dependencies in **headroom-lite's core compression backend**.
 - All Node.js source uses ESM (.mjs extensions).
-- Compression transforms are deterministic and lossless — same input always produces same output.
-- No ML models in the compression pipeline.
+- **headroom-lite's core compression transforms** are deterministic and lossless — same input always produces same output.
+- **No ML models in headroom-lite's core compression backend.** (This purity rule is scoped to the headroom-lite core — see "LLMLingua / llmsecurity" below.)
 - Windows support is a first-class concern (WinSW, KeepAlive, path handling).
+
+## LLMLingua / llmsecurity (approved ML compression layer)
+- LLMLingua ("llmsecurity") is an **approved** lossy compression capability. Approved because it is peer-reviewed and runs **local-inference only** (127.0.0.1 microservice — no data egress).
+- It MUST be a **separate, self-standing, backend-agnostic myelin component** — never embedded in headroom-lite's core pipeline. It must work regardless of which headroom backend is active (toggled independently, e.g. via a headroom env var).
+- The "no ML / deterministic / lossless / zero-dep" invariants above do **not** apply to this separate layer; they apply only to the headroom-lite core.
+
 
 ## Standing rules
 - Never take a repo-changing, service-changing, or live-machine action without explicit unambiguous approval each time.
