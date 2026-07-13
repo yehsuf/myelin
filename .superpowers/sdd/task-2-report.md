@@ -3,6 +3,51 @@
 - Status: complete
 - Branch: `feat/unified-observability`
 
+## Service adapters role- and engine-aware (current implementation)
+
+- Pre-task base: `451cdbf`
+- Scope: Task 2 only; no installer, restart, or verify orchestration changed.
+
+### Files changed
+
+- `src/service/index.mjs`
+- `src/service/launchd.mjs`
+- `src/service/systemd.mjs`
+- `src/service/windows.mjs`
+- `test/service.test.mjs`
+
+### RED / GREEN evidence
+
+1. **RED:** `node --test test/service.test.mjs`
+   - Failed before implementation because `generateEngineInstancePlist` was not exported; the service adapters exposed only the Python-specific APIs.
+2. **GREEN:** `node --test test/service.test.mjs`
+   - Passed: 117 tests, 0 failures.
+3. **Review-fix RED:** targeted Windows registry ownership tests failed for Lite empty-argument launcher parsing, unvalidated PID reuse, and replacement-launcher PID cleanup.
+4. **Review-fix GREEN:** the three targeted ownership tests passed after the parser, launcher-identity validation, and PID cleanup fixes.
+
+### Implementation
+
+- Added generic install/status/remove dispatchers and descriptor-driven generators.
+- Both engines now generate primary and Copilot services for launchd, systemd, registry, and WinSW.
+- Engine selects the executable and arguments: Python Headroom uses `proxy --port`; Lite uses its established bare command plus `HEADROOM_LITE_PORT`.
+- Role maps stable service identity; descriptor state, log, health, and environment values are retained. Lite Copilot loopback upstream remains descriptor-provided.
+- Windows registry lifecycle validates launcher-parent ownership before stopping PID-file processes and retains a replacement PID file during old-launcher cleanup.
+
+### Tests
+
+- Focused: `node --test test/service.test.mjs` — 117 passed, 0 failed.
+- Full: `npm test` — passed (exit code 0).
+
+### Self-review
+
+- Three reviewers inspected architecture, platform behavior, and test coverage.
+- Fixed the concrete Windows registry findings: Lite empty arguments, managed-process identity checks, and PID-file race protection.
+- No external repository was modified.
+
+### Concerns
+
+- Windows service scripts are generation-tested on macOS; live validation of launchd/systemd/Windows managers belongs to platform integration work.
+
 ## Files
 - `src/config/engine-runtime.mjs`
 - `src/cli/restart.mjs`

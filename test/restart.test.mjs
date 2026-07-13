@@ -1064,7 +1064,7 @@ describe('defaultRestartMitm', () => {
           },
         },
         winManager: 'registry',
-        homedirImpl: () => os === 'windows' ? '/mnt/c/Users/alice' : '/Users/alice',
+        homedirImpl: () => os === 'windows' ? 'C:\\Users\\alice' : '/Users/alice',
         detectMitmdumpImpl: () => os === 'windows'
           ? '/mnt/c/Users/alice/.myelin/venv/Scripts/mitmdump.exe'
           : '/usr/local/bin/mitmdump',
