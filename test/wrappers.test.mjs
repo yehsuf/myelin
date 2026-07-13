@@ -106,6 +106,19 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
         const custom = buildCopilotWrapper({ os, mitmPort: 9999 });
         assert.ok(custom.includes('127.0.0.1:9999'));
       });
+      if (os !== 'windows') {
+        it('single-quotes the NO_PROXY value so zsh does not glob its * patterns', () => {
+          // NO_PROXY contains wildcard hosts (e.g. *.akamai.com, *.local). As an
+          // unquoted argument to `env`, zsh performs filename globbing on them and
+          // aborts with "no matches found" when nothing matches (bash tolerates it,
+          // zsh does not). The value MUST be single-quoted.
+          assert.match(w, /NO_PROXY='[^']*\*[^']*' \\/,
+            '_copilot POSIX wrapper must single-quote NO_PROXY to prevent zsh glob expansion.');
+          // And must NOT emit the bare unquoted form.
+          assert.ok(!/NO_PROXY=[^'"\s]*\*/.test(w),
+            '_copilot must not emit an unquoted NO_PROXY value containing glob characters.');
+        });
+      }
     });
   }
 });
