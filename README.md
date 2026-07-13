@@ -23,10 +23,13 @@ USER PROMPT
 Serena + Semble    LSP-backed code discovery     →  symbol-precise, no full-file reads
 RTK                Shell output compression       →  60-90% on CLI output
 mitmproxy addon    Tool filter + compress         →  91% fewer tools, 14-72% byte reduction
-Headroom proxy     Outbound compression + cache   →  69%+ KV cache hit rate, cost savings
+Selected engine    Outbound compression + cache   →  69%+ KV cache hit rate, cost savings
+  (Python Headroom or Headroom Lite — set by proxy.engine)
 Enforcement hooks  Prevents agent backsliding     →  makes savings stick
     ↓
 Anthropic API / GitHub Copilot API
+  Claude: via selected engine → provider
+  Copilot: MITM ingress → selected-engine Copilot instance → MITM egress → provider
 ```
 
 ---
@@ -143,7 +146,7 @@ myelin config show     # view current settings
 
 Expected output:
 ```
-✓ headroom proxy    :8787  healthy
+✓ headroom proxy    :8787  healthy    # or: headroom-lite :8790 if proxy.engine=headroom_lite
 ✓ mitmproxy         :8888  healthy
 ✓ serena            MCP    ready
 ✓ semble            MCP    ready
@@ -160,7 +163,7 @@ Expected output:
 ```bash
 claude   # ANTHROPIC_BASE_URL automatically points to headroom :8787
 ```
-Headroom compresses messages before forwarding to Anthropic. KV cache alignment reduces costs by up to $1+/day.
+The selected engine (Python Headroom by default; Headroom Lite if `proxy.engine: headroom_lite`) compresses messages before forwarding to Anthropic. KV cache alignment reduces costs by up to $1+/day.
 
 ### GitHub Copilot CLI (compressed)
 ```bash
@@ -168,6 +171,14 @@ _copilot   # routes through mitmproxy :8888 — compresses + filters tools
 copilot    # direct, uncompressed (still works if mitmproxy is down)
 ```
 `_copilot` health-checks port 8888 first — falls back to plain `copilot` with a warning if mitmproxy is offline.
+
+When `proxy.copilot_headroom.enabled` is `true`, Copilot traffic is further compressed by a dedicated selected-engine instance:
+
+```
+Copilot CLI → MITM ingress (:8888) → selected-engine Copilot instance (:8788) → MITM egress (:8889) → Copilot API
+```
+
+MITM is the sole real-network-egress owner; the engine instance targets only the loopback egress port.
 
 ---
 
@@ -203,11 +214,18 @@ Config: `~/.myelin/config.yaml`
 
 ```yaml
 proxy:
+  engine: headroom      # headroom (default) or headroom_lite
   headroom:
     port: 8787          # change: myelin config set proxy.headroom.port 9090
-    backend: kompress-base   # or: llmlingua-2
+    backend: kompress-base   # or: llmlingua-2  (headroom only)
+  headroom_lite:
+    port: 8790          # active when engine: headroom_lite
+  copilot_headroom:
+    enabled: false      # true: adds isolated selected-engine Copilot instance
+    port: 8788
   mitm:
     port: 8888
+    egress_port: 8889        # MITM loopback egress for Copilot routing
     block_bypass: false      # set true if behind content filter (NetFree etc.)
     override_proxy: ''       # socks5://10.8.0.1:1080
 
@@ -257,20 +275,30 @@ node src/install.mjs --yes
 ## Uninstall
 
 ```bash
-# macOS
+# macOS (Python Headroom)
 launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
 launchctl bootout gui/$(id -u)/com.myelin.headroom 2>/dev/null
 rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
 rm ~/Library/LaunchAgents/com.myelin.headroom.plist
 
-# Linux
+# macOS (Headroom Lite — if proxy.engine was headroom_lite)
+launchctl bootout gui/$(id -u)/com.myelin.headroom-lite 2>/dev/null
+rm ~/Library/LaunchAgents/com.myelin.headroom-lite.plist
+
+# Linux (Python Headroom)
 systemctl --user disable --now myelin-mitmproxy.service myelin-headroom.service
 rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom.service
 systemctl --user daemon-reload
 
+# Linux (Headroom Lite — if proxy.engine was headroom_lite)
+systemctl --user disable --now myelin-headroom-lite.service
+rm ~/.config/systemd/user/myelin-headroom-lite.service
+
 # Windows
 Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
 Unregister-ScheduledTask -TaskName "MyelinHeadroom" -Confirm:$false
+# Headroom Lite (if proxy.engine was headroom_lite):
+Unregister-ScheduledTask -TaskName "MyelinHeadroomLite" -Confirm:$false
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
 rm -rf ~/.myelin
