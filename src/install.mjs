@@ -71,6 +71,11 @@ function mergeJsonFile(path, updates, createIfMissing = {}) {
   writeFileSync(path, JSON.stringify(mergeDeepPlain(current, updates), null, 2), 'utf8');
 }
 
+export function shouldInstallPythonHeadroomPackage({ cfg = {}, flags = {} } = {}) {
+  if (flags['no-headroom']) return false;
+  return buildServiceEnginePlan(cfg).selectedEngine === 'headroom';
+}
+
 function isVersionAtLeast(version, minimum) {
   const parse = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
   const a = parse(version ?? '0.0.0');
@@ -1048,6 +1053,8 @@ async function main() {
 
   mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+  const initialEnginePlan = buildServiceEnginePlan(existingCfg);
+  const installsPythonHeadroomPackage = shouldInstallPythonHeadroomPackage({ cfg: existingCfg, flags });
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
@@ -1062,9 +1069,8 @@ async function main() {
   let codegraphReady = codegraphEnabled && tools.codegraph.installed;
   let port = existingCfg.proxy.headroom.port;
   let persistHeadroomFallback = false;
-  let selectedProxyPort = existingCfg.proxy?.engine === 'headroom_lite'
-    ? (existingCfg.proxy?.headroom_lite?.port ?? 8790)
-    : port;
+  let selectedInstallEngine = initialEnginePlan.selectedEngine;
+  let selectedProxyPort = initialEnginePlan.selectedPort;
   if (!(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {
@@ -1082,7 +1088,7 @@ async function main() {
     const dryRunTools = ['uv', 'serena', 'semble', 'ast-grep', ...(existingCfg.budget_routing?.litellm ? ['litellm'] : []), ...(codegraphEnabled ? ['codegraph'] : []), 'rtk', 'mitmproxy'];
     console.log(`  ${dryRunTools.join(', ')}`);
     if (copilotHudEnabled && copilot) console.log('  copilot-hud plugin');
-    if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
+    if (installsPythonHeadroomPackage) console.log('  headroom-ai[all] from PyPI');
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
@@ -1326,7 +1332,7 @@ async function main() {
 
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');
-  if (!flags['no-headroom']) {
+  if (installsPythonHeadroomPackage) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
       if (!existsSync(join(venv, 'pyvenv.cfg'))) {
@@ -1336,7 +1342,11 @@ async function main() {
       const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
       execSync(`uv pip install --python "${venv}" ${headroomPkg}`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
-    } else { skip(`headroom (${tools.headroom.version})`); }
+    } else {
+      skip(`headroom (${tools.headroom.version})`);
+    }
+  } else if (!flags['no-headroom']) {
+    skip('headroom install skipped (proxy.engine=headroom_lite)');
   }
 
   // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain

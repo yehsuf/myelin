@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generatePlist, generateGenericPlist } from '../src/service/launchd.mjs';
+import { generatePlist, generateGenericPlist, generateLaunchdWatchdogScript } from '../src/service/launchd.mjs';
 import { generateSystemdUnit, generateCopilotHeadroomUnit, generateMitmUnit } from '../src/service/systemd.mjs';
 import {
   buildManagedHeadroomStopScript,
@@ -38,6 +38,33 @@ const OPTS = {
   logPath: '/tmp/headroom.log',
   user: 'testuser',
 };
+
+
+describe('generateLaunchdWatchdogScript', () => {
+  it('omits the main Headroom stanza when headroomPort is undefined', () => {
+    const script = generateLaunchdWatchdogScript({
+      home: '/Users/alice',
+      headroomPort: undefined,
+      mitmPort: 8888,
+      copilotHeadroomPort: 8788,
+      egressPort: 8889,
+    });
+
+    assert.ok(script.includes("check_and_revive 8888 mitmproxy '*.mitmproxy.plist'"));
+    assert.ok(!script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+    assert.ok(script.includes("check_and_revive 8788 copilot-headroom '*.copilot-headroom.plist'"));
+  });
+
+  it('preserves the main Headroom stanza when an explicit headroom port is provided', () => {
+    const script = generateLaunchdWatchdogScript({
+      home: '/Users/alice',
+      headroomPort: 8787,
+      mitmPort: 8888,
+    });
+
+    assert.ok(script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+  });
+});
 
 describe('launchd plist generator', () => {
   it('contains the label', () => {

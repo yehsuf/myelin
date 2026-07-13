@@ -126,3 +126,14 @@
    - `49` tests, `49` passed, `0` failed
 3. `npm test`
    - `494` tests, `494` passed, `0` failed
+
+## High Lite Hard-Exclusion Fix
+- Installer package selection now resolves `proxy.engine` up front and skips `headroom-ai[all]` entirely when `proxy.engine=headroom_lite`, including the dry-run surface, unless Python Headroom is the selected engine.
+- launchd watchdog script generation now treats `headroomPort` as optional and omits the main Python Headroom revive stanza when downstream wiring intentionally passes `undefined`, while still preserving the stanza for real Python Headroom installs.
+- Added focused regressions covering both hard-exclusion gaps: installer package gating and launchd watchdog stanza omission/preservation.
+
+## High Lite Hard-Exclusion Verification
+1. `node --test test/install.test.mjs test/service.test.mjs test/restart.test.mjs`
+   - `137` tests, `137` passed, `0` failed
+2. `npm test`
+   - `498` tests, `498` passed, `0` failed

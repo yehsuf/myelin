@@ -7,8 +7,35 @@ import {
   buildMitmServiceInstallOptions,
   ensureManagedHeadroomService,
   removeManagedHeadroomRegistration,
+  shouldInstallPythonHeadroomPackage,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
+
+
+describe('shouldInstallPythonHeadroomPackage', () => {
+  it('skips headroom-ai installation entirely when headroom-lite is the selected engine', () => {
+    assert.equal(shouldInstallPythonHeadroomPackage({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+        },
+      },
+    }), false);
+  });
+
+  it('still installs headroom-ai when Python Headroom is the selected engine', () => {
+    assert.equal(shouldInstallPythonHeadroomPackage({
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+        },
+      },
+    }), true);
+  });
+});
 
 describe('ensureManagedHeadroomService', () => {
   for (const os of ['darwin', 'linux', 'windows']) {

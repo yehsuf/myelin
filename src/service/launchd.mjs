@@ -274,15 +274,18 @@ export function copilotHeadroomServiceStatus() {
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, headroomPort = 8787, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
+export function generateLaunchdWatchdogScript({ home, headroomPort, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
-  const binDir = join(home, '.myelin', 'bin');
-  mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(binDir, 'watchdog.sh');
   const la = join(home, 'Library', 'LaunchAgents');
   const watchdogLog = join(home, '.myelin', 'watchdog.log');
+  const checks = [
+    `check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`,
+    ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
+    ...(copilotHeadroomPort ? [`check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'`] : []),
+    ...(egressPort ? [`check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'`] : []),
+  ];
 
-  const script = `#!/usr/bin/env bash
+  return `#!/usr/bin/env bash
 # Myelin watchdog — re-bootstraps headroom/mitmproxy if launchd silently dropped them.
 set -uo pipefail
 UID_N=$(id -u)
@@ -292,7 +295,7 @@ check_and_revive() {
   local port="$1" name="$2" glob="$3"
   if nc -z 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
   local plist
-  plist=$(ls "$LA"/$glob 2>/dev/null | grep -v '\\.bak' | head -1)
+  plist=$(ls "$LA"/$glob 2>/dev/null | grep -v '\.bak' | head -1)
   if [ -z "$plist" ]; then return 0; fi
   local label
   label=$(basename "$plist" .plist)
@@ -302,11 +305,30 @@ check_and_revive() {
   echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> "${watchdogLog}"
 }
 
-check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'
-check_and_revive ${headroomPort} headroom '*.headroom.plist'
-${copilotHeadroomPort ? `check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'` : ''}
-${egressPort ? `check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'` : ''}
+${checks.join('\n')}
 `;
+}
+
+/**
+ * Install a watchdog LaunchAgent that periodically checks headroom + mitmproxy
+ * ports and re-bootstraps any service that's down.
+ *
+ * Why this exists: macOS launchd applies crash-loop protection to KeepAlive
+ * jobs — after repeated fast exits, it can silently stop trying to relaunch
+ * the job (no error, no log entry) until it's explicitly re-bootstrapped.
+ * `myelin restart`/reinstall recovers it, but nothing catches this
+ * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
+ * until a human notices and intervenes. This watchdog closes that gap.
+ */
+export function installWatchdog({ home, headroomPort, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
+  home = home ?? homedir();
+  const binDir = join(home, '.myelin', 'bin');
+  mkdirSync(binDir, { recursive: true });
+  const scriptPath = join(binDir, 'watchdog.sh');
+  const la = join(home, 'Library', 'LaunchAgents');
+  const watchdogLog = join(home, '.myelin', 'watchdog.log');
+
+  const script = generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
   writeFileSync(scriptPath, script, 'utf8');
   execSync(`chmod +x "${scriptPath}"`);
 
