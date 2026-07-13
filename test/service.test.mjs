@@ -16,9 +16,11 @@ import {
   generateMitmRunScript,
   generateSetUserEnvVarsScript,
   generateWindowsWatchdogHealthcheckScript,
+  generateWindowsWatchdogTaskDeleteScript,
   generateWindowsWatchdogTaskCreateScript,
   generateWinswConfigXml,
   buildManagedMitmStatusScript,
+  installWatchdog as installWindowsWatchdog,
   mitmServiceStatus,
   parseManagedMitmStatus,
   parseWinswServiceStatus,
@@ -26,6 +28,7 @@ import {
   serviceStatus,
   spawnDetachedService,
   stopManagedHeadroomProcess,
+  uninstallWindowsWatchdogTask,
   winswConfigPath,
   winswExecutablePath,
 } from '../src/service/windows.mjs';
@@ -438,6 +441,88 @@ describe('serviceStatus', () => {
     assert.deepEqual(status, { running: false, state: 'Stopped', raw: 'Stopped' });
     assert.ok(commands.some((command) => command.includes('--port 8788 --mode cache --connect-timeout-seconds 10')));
     assert.ok(!commands.some((command) => command.includes('--port 8787(\\s|$)')));
+  });
+});
+
+describe('Windows watchdog generators', () => {
+  it('creates a task delete script for the main Headroom watchdog only', () => {
+    const script = generateWindowsWatchdogTaskDeleteScript({ taskName: 'Myelin Headroom Watchdog' });
+    assert.ok(script.includes('Unregister-ScheduledTask'));
+    assert.ok(script.includes('Myelin Headroom Watchdog'));
+    assert.ok(!script.includes('Copilot'));
+  });
+
+  it('removes only the managed Headroom watchdog script and log artifacts', () => {
+    const unlinked = [];
+    let deleteScript = '';
+
+    const result = uninstallWindowsWatchdogTask({
+      id: HEADROOM_SERVICE_ID,
+      home: 'C:\\Users\\alice',
+      unlinkSyncImpl: (path) => {
+        unlinked.push(path);
+      },
+      runPsFn: (script) => {
+        deleteScript = script;
+      },
+    });
+
+    assert.equal(result.taskName, 'Myelin Headroom Watchdog');
+    assert.deepEqual(unlinked, [
+      'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.ps1',
+      'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.log',
+    ]);
+    assert.ok(deleteScript.includes('Unregister-ScheduledTask'));
+    assert.ok(deleteScript.includes('Myelin Headroom Watchdog'));
+    assert.ok(!deleteScript.includes('Myelin Copilot Headroom Watchdog'));
+  });
+
+  it('keeps Copilot watchdog behavior intact when Lite replaces the main Headroom service', () => {
+    const calls = [];
+
+    installWindowsWatchdog({
+      home: 'C:\\Users\\alice',
+      enabled: true,
+      headroomPort: undefined,
+      copilotHeadroomPort: 8788,
+      intervalMinutes: 5,
+      installWindowsWatchdogTaskImpl: (opts) => {
+        calls.push({ type: 'install', opts });
+        return opts;
+      },
+      uninstallWindowsWatchdogTaskImpl: (opts) => {
+        calls.push({ type: 'uninstall', opts });
+        return opts;
+      },
+    });
+
+    assert.deepEqual(calls.map(({ type }) => type), ['uninstall', 'install']);
+    assert.equal(calls[0].opts.id, HEADROOM_SERVICE_ID);
+    assert.equal(calls[1].opts.id, 'myelin-copilot-headroom');
+    assert.equal(calls[1].opts.serviceName, 'Myelin Copilot Headroom');
+  });
+
+  it('removes only the main Headroom watchdog when the watchdog is disabled', () => {
+    const calls = [];
+
+    installWindowsWatchdog({
+      home: 'C:\\Users\\alice',
+      enabled: false,
+      headroomPort: 8787,
+      copilotHeadroomPort: 8788,
+      installWindowsWatchdogTaskImpl: (opts) => {
+        calls.push({ type: 'install', opts });
+        return opts;
+      },
+      uninstallWindowsWatchdogTaskImpl: (opts) => {
+        calls.push({ type: 'uninstall', opts });
+        return opts;
+      },
+    });
+
+    assert.deepEqual(calls.map(({ type }) => type), ['uninstall']);
+    assert.equal(calls[0].opts.id, HEADROOM_SERVICE_ID);
+    assert.equal(calls[0].opts.home, 'C:\\Users\\alice');
   });
 });
 

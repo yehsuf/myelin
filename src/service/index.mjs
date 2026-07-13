@@ -41,7 +41,6 @@ export async function installWatchdog(opts) {
     return installWatchdog(opts);
   }
   if (os === 'windows') {
-    if (!opts?.enabled) return null;
     const { installWatchdog } = await import('./windows.mjs');
     return installWatchdog(opts);
   }

@@ -594,6 +594,29 @@ schtasks.exe /create /tn $TaskName /sc minute /mo ${cadence} /tr $TaskAction /ru
 `;
 }
 
+export function generateWindowsWatchdogTaskDeleteScript({ taskName } = {}) {
+  return `
+$TaskName = ${psQuote(taskName)}
+Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+`;
+}
+
+export function uninstallWindowsWatchdogTask({
+  id,
+  taskName = windowsWatchdogTaskName({ id }),
+  home,
+  unlinkSyncImpl = unlinkSync,
+  runPsFn = runPs,
+} = {}) {
+  const scriptPath = winswWatchdogScriptPath({ id, home });
+  const logPath = winswWatchdogLogPath({ id, home });
+  runPsFn(generateWindowsWatchdogTaskDeleteScript({ taskName }));
+  for (const path of [scriptPath, logPath]) {
+    try { unlinkSyncImpl(path); } catch {}
+  }
+  return { taskName, scriptPath, logPath };
+}
+
 export async function installWinswService({
   id,
   name,
@@ -1483,20 +1506,27 @@ export function installWatchdog({
   headroomPort,
   copilotHeadroomPort,
   intervalMinutes = 2,
+  installWindowsWatchdogTaskImpl = installWindowsWatchdogTask,
+  uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
 } = {}) {
-  if (!enabled) return null;
+  if (!enabled) {
+    uninstallWindowsWatchdogTaskImpl({ id: HEADROOM_SERVICE_ID, home });
+    return null;
+  }
   const tasks = [];
   if (headroomPort != null) {
-    tasks.push(installWindowsWatchdogTask({
+    tasks.push(installWindowsWatchdogTaskImpl({
       id: HEADROOM_SERVICE_ID,
       serviceName: 'Myelin Headroom',
       healthUrl: headroomHealthUrl(headroomPort),
       intervalMinutes,
       home,
     }));
+  } else {
+    uninstallWindowsWatchdogTaskImpl({ id: HEADROOM_SERVICE_ID, home });
   }
   if (copilotHeadroomPort) {
-    tasks.push(installWindowsWatchdogTask({
+    tasks.push(installWindowsWatchdogTaskImpl({
       id: COPILOT_HEADROOM_SERVICE_ID,
       serviceName: 'Myelin Copilot Headroom',
       healthUrl: headroomHealthUrl(copilotHeadroomPort),

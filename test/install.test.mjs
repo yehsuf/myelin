@@ -297,6 +297,37 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(downstream.watchdogOpts.copilotHeadroomPort, 8788);
     assert.equal(downstream.watchdogOpts.intervalMinutes, 5);
   });
+
+  it('leaves the main Headroom watchdog disabled while preserving Copilot wiring on WinSW Lite installs', () => {
+    const downstream = buildDownstreamProxyServiceInstallOptions({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { openai_target_url: 'https://api.githubcopilot.com', mode: 'cache', intercept_tool_results: true },
+          headroom_lite: { port: 8790 },
+          mitm: { port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788, mode: 'observe' },
+          windows_service: { manager: 'winsw', watchdog_enabled: false, watchdog_interval_minutes: 5 },
+        },
+      },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
+      sslEnv: {},
+      winManager: 'winsw',
+      installPlan: {
+        selectedEngine: 'headroom_lite',
+        selectedPort: 8790,
+        headroomPort: 8787,
+        shouldRunManagedHeadroom: false,
+        shouldRemoveManagedHeadroom: true,
+      },
+    });
+
+    assert.equal(downstream.watchdogOpts.enabled, false);
+    assert.equal(downstream.watchdogOpts.headroomPort, undefined);
+    assert.equal(downstream.watchdogOpts.copilotHeadroomPort, 8788);
+  });
 });
 
 describe('buildMitmServiceInstallOptions', () => {
