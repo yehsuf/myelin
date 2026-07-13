@@ -1,7 +1,8 @@
 import { execSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 export const RTK_PINNED_VERSION = '0.43.0';
 
@@ -56,15 +57,38 @@ function hasClaudeHook(settings) {
       typeof hook?.command === 'string' && hook.command.includes('rtk hook claude')));
 }
 
-function hasCopilotHook(config) {
-  const pascal = config?.hooks?.PreToolUse;
-  const camel = config?.hooks?.preToolUse;
-  const hasPascal = Array.isArray(pascal) && pascal.some((entry) =>
-    typeof entry?.command === 'string' && entry.command.includes('rtk hook copilot'));
-  const hasCamel = Array.isArray(camel) && camel.some((entry) =>
-    (typeof entry?.bash === 'string' && entry.bash.includes('rtk hook copilot'))
-    || (typeof entry?.powershell === 'string' && entry.powershell.includes('rtk hook copilot')));
-  return hasPascal || hasCamel;
+/** Every command string across a Copilot/Claude hook config, regardless of
+ *  event-key casing (preToolUse/PreToolUse), entry shape (flat vs the nested
+ *  {matcher, hooks:[...]} VS Code shape), or field (command/bash/powershell). */
+function collectHookCommands(config) {
+  const cmds = [];
+  const events = config?.hooks;
+  if (!events || typeof events !== 'object') return cmds;
+  const push = (obj) => {
+    for (const field of ['command', 'bash', 'powershell']) {
+      if (typeof obj?.[field] === 'string') cmds.push(obj[field]);
+    }
+  };
+  for (const entries of Object.values(events)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      push(entry);
+      if (Array.isArray(entry?.hooks)) for (const h of entry.hooks) push(h);
+    }
+  }
+  return cmds;
+}
+
+/** A hook that invokes the raw `rtk hook copilot` binary directly — the
+ *  fail-CLOSED, session-bricking form `rtk init --copilot` generates. The word
+ *  boundary keeps this from matching our safe `rtk-guard copilot` wrapper. */
+export function isRawUnsafeRtkHook(config) {
+  return collectHookCommands(config).some((c) => /(^|[^\w-])rtk\s+hook\s+/.test(c));
+}
+
+/** A hook routed through the fail-open `myelin rtk-guard` wrapper. */
+export function isGuardedRtkHook(config) {
+  return collectHookCommands(config).some((c) => c.includes('rtk-guard'));
 }
 
 export function detectRtkHookArtifacts({ home = homedir() } = {}) {
@@ -96,17 +120,135 @@ export function detectRtkHookArtifacts({ home = homedir() } = {}) {
 
   const copilot = {
     relevant: [copilotMcpPath, copilotHookPath, copilotInstructionsPath].some(existsSync),
-    hookConfigured: hasCopilotHook(copilotHook.value),
+    hookConfigured: isGuardedRtkHook(copilotHook.value),
+    hookUnsafe: isRawUnsafeRtkHook(copilotHook.value),
     instructionsPresent: (copilotInstructions?.includes('<!-- rtk-instructions') || copilotInstructions?.includes('# RTK')) ?? false,
     hookUnreadable: copilotHook.unreadable,
   };
-  copilot.ok = copilot.hookConfigured && copilot.instructionsPresent;
-  copilot.detail = copilot.ok ? 'hook file + copilot-instructions.md present' : [
-    !copilot.hookConfigured && (copilot.hookUnreadable ? 'hook file unreadable' : 'hook file missing or incomplete'),
+  // A raw `rtk hook copilot` hook is worse than no hook: it fail-CLOSES every
+  // tool call when rtk isn't on Copilot's PATH. Never report that as ok.
+  copilot.ok = copilot.hookConfigured && !copilot.hookUnsafe && copilot.instructionsPresent;
+  copilot.detail = copilot.ok ? 'fail-open guarded hook + copilot-instructions.md present' : [
+    copilot.hookUnsafe && 'UNSAFE raw `rtk hook copilot` hook (fail-closed) — run `myelin install` to heal',
+    !copilot.hookConfigured && !copilot.hookUnsafe && (copilot.hookUnreadable ? 'hook file unreadable' : 'hook file missing or incomplete'),
     !copilot.instructionsPresent && 'copilot-instructions.md missing',
   ].filter(Boolean).join('; ');
 
   return { claude, copilot };
+}
+
+const defaultFs = { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync };
+
+/** Windows paths use `\`; the bash Copilot runs (Git Bash on Windows too)
+ *  wants `/`. */
+export function toPosixPath(p = '') {
+  return String(p).replace(/\\/g, '/');
+}
+
+/** Absolute path (trailing slash) to the installed Myelin repo, preferring the
+ *  canonical ~/.myelin/repo over the dev checkout, so the hook command keeps
+ *  working regardless of which worktree init was run from. */
+export function resolveMyelinRepoRoot({ home = homedir(), plat = process.platform, exists = existsSync } = {}) {
+  const sep = plat === 'win32' ? '\\' : '/';
+  const canonical = join(home, '.myelin', 'repo');
+  try { if (exists(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep; } catch { /* fall through */ }
+  return fileURLToPath(new URL('../../', import.meta.url));
+}
+
+export function copilotRtkHookPath(home = homedir()) {
+  return join(home, '.copilot', 'hooks', 'rtk-rewrite.json');
+}
+
+/**
+ * The bash command Copilot CLI runs for the RTK preToolUse hook. Copilot honors
+ * the `bash` field on every platform (Windows included) and preToolUse hooks
+ * are fail-CLOSED on non-zero exit, so this string is built for three safety
+ * properties, in priority order:
+ *   1. Trailing `; exit 0` — the shell ALWAYS exits 0, so even if node is gone
+ *      or the guard can't spawn, the tool call is never denied. This is the
+ *      invariant that stops `myelin init/install` from bricking Copilot.
+ *   2. Absolute node path — the guard runs even under the minimal PATH Copilot
+ *      spawns hooks with (the original Windows failure: `rtk` off PATH -> 127).
+ *   3. `2>/dev/null` — the guard's stderr is dropped; only a decision on stdout
+ *      reaches Copilot.
+ */
+export function buildRtkGuardBashCommand({ nodePath = process.execPath, repoRoot } = {}) {
+  const root = repoRoot ?? resolveMyelinRepoRoot();
+  const node = toPosixPath(nodePath);
+  const cli = toPosixPath(root).replace(/\/?$/, '/') + 'src/cli/index.mjs';
+  return `"${node}" "${cli}" rtk-guard copilot 2>/dev/null; exit 0`;
+}
+
+/** The full fail-open replacement for `~/.copilot/hooks/rtk-rewrite.json`.
+ *  Canonical Copilot CLI shape: camelCase `preToolUse`, flat entry, `bash`
+ *  field, `bash` matcher (RTK only rewrites shell commands). */
+export function buildGuardedRtkCopilotHook({ nodePath = process.execPath, repoRoot } = {}) {
+  return {
+    version: 1,
+    hooks: {
+      preToolUse: [
+        {
+          type: 'command',
+          matcher: 'bash',
+          bash: buildRtkGuardBashCommand({ nodePath, repoRoot }),
+          cwd: '.',
+          timeoutSec: 5,
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * Guarantee the global RTK Copilot hook can never brick a session. Modes:
+ *   - 'active'    : (re)write the fail-open guarded hook, replacing any raw
+ *                   `rtk hook copilot` `rtk init --copilot` may have written.
+ *   - 'inactive'  : RTK is off/absent — remove our (or a raw rtk) hook so a
+ *                   previously-bricked machine is healed. Never touches a
+ *                   foreign hand-written hook that happens to share the path.
+ *   - 'heal-only' : only rewrite a raw hook to the guarded form; never create
+ *                   or remove. Safe to call from `myelin init`.
+ * fs is injectable for tests; every path is defensive and returns a status.
+ */
+export function ensureSafeRtkCopilotHook({
+  home = homedir(),
+  nodePath = process.execPath,
+  repoRoot,
+  mode = 'active',
+  fs = defaultFs,
+} = {}) {
+  const path = copilotRtkHookPath(home);
+  const present = fs.existsSync(path);
+  let existing = null;
+  if (present) {
+    try { existing = JSON.parse(fs.readFileSync(path, 'utf8')); } catch { existing = null; }
+  }
+  const writeGuarded = () => {
+    const config = buildGuardedRtkCopilotHook({ nodePath, repoRoot });
+    fs.mkdirSync(join(home, '.copilot', 'hooks'), { recursive: true });
+    fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  };
+
+  if (mode === 'active') {
+    writeGuarded();
+    return { action: 'wrote-guarded', path };
+  }
+
+  if (mode === 'heal-only') {
+    if (present && isRawUnsafeRtkHook(existing) && !isGuardedRtkHook(existing)) {
+      writeGuarded();
+      return { action: 'healed-raw', path };
+    }
+    return { action: 'noop', path };
+  }
+
+  // mode === 'inactive'
+  if (!present) return { action: 'noop', path };
+  if (existing === null || isGuardedRtkHook(existing) || isRawUnsafeRtkHook(existing)) {
+    try { fs.unlinkSync(path); return { action: 'removed-unsafe', path }; }
+    catch { return { action: 'remove-failed', path }; }
+  }
+  return { action: 'left-foreign', path };
 }
 
 export function rtkInstallStrategy(os) {

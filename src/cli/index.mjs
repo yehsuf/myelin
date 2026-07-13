@@ -133,4 +133,12 @@ program.command('serena-guard')
     runServenaGuardCli(opts.event, opts.target);
   });
 
+program.command('rtk-guard')
+  .description('[internal] fail-open RTK shell-compression hook bridge for Copilot CLI — wired globally by `myelin install`; never denies a tool call')
+  .argument('[target]', 'rtk hook target (copilot|claude|cursor|gemini)', 'copilot')
+  .action(async (target) => {
+    const { runRtkGuardCli } = await import('./rtk-guard.mjs');
+    runRtkGuardCli(target);
+  });
+
 program.parse();

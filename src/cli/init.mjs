@@ -8,6 +8,7 @@ import { DEFAULT_CONFIG, mergeDeep } from '../config/schema.mjs';
 import { renderManagedBlock } from '../config/instruction-snippets.mjs';
 import { writeManagedSection } from '../config/managed-section.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from '../service/serena-config.mjs';
+import { ensureSafeRtkCopilotHook } from '../tools/rtk.mjs';
 
 function findGitRoot(dir) {
   let d = dir;
@@ -499,6 +500,12 @@ async function mapLimit(items, limit, fn) {
 
 export async function runInit({ yes = false, recursive = false, dir = process.cwd(), depth = 4 } = {}) {
   let rl;
+
+  // Defensively heal a session-bricking raw `rtk hook copilot` global hook if a
+  // prior `myelin install` left one — `myelin init` never wires it, but users
+  // associate the breakage with "init", and this is idempotent + safe. Full
+  // (re)write/removal lifecycle lives in `myelin install`. See src/cli/rtk-guard.mjs.
+  try { ensureSafeRtkCopilotHook({ mode: 'heal-only' }); } catch { /* never block init */ }
 
   // Collect repos to init
   let repos = [];

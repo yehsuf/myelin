@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
+import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
 
@@ -156,6 +157,22 @@ describe('detectRtkHookArtifacts', () => {
     mkdirSync(join(home, '.copilot', 'hooks'), { recursive: true });
     writeFileSync(join(home, '.copilot', 'mcp-config.json'), JSON.stringify({ mcpServers: {} }, null, 2));
     writeFileSync(join(home, '.copilot', 'copilot-instructions.md'), '<!-- rtk-instructions v2 -->\n# RTK\n');
+    writeFileSync(join(home, '.copilot', 'hooks', 'rtk-rewrite.json'),
+      JSON.stringify(buildGuardedRtkCopilotHook({ nodePath: '/usr/bin/node', repoRoot: '/repo/' }), null, 2));
+
+    const state = detectRtkHookArtifacts({ home });
+    assert.equal(state.copilot.relevant, true);
+    assert.equal(state.copilot.ok, true);
+    assert.equal(state.copilot.hookUnsafe, false);
+    assert.equal(state.copilot.detail, 'fail-open guarded hook + copilot-instructions.md present');
+  });
+
+  it('flags a raw `rtk hook copilot` hook as UNSAFE (fail-closed)', () => {
+    const home = makeHome('copilot-unsafe');
+    mkdirSync(join(home, '.copilot', 'hooks'), { recursive: true });
+    writeFileSync(join(home, '.copilot', 'mcp-config.json'), JSON.stringify({ mcpServers: {} }, null, 2));
+    writeFileSync(join(home, '.copilot', 'copilot-instructions.md'), '<!-- rtk-instructions v2 -->\n# RTK\n');
+    // The exact shape `rtk init --copilot` generates — the one that bricked Windows.
     writeFileSync(join(home, '.copilot', 'hooks', 'rtk-rewrite.json'), JSON.stringify({
       version: 1,
       hooks: {
@@ -165,9 +182,9 @@ describe('detectRtkHookArtifacts', () => {
     }, null, 2));
 
     const state = detectRtkHookArtifacts({ home });
-    assert.equal(state.copilot.relevant, true);
-    assert.equal(state.copilot.ok, true);
-    assert.equal(state.copilot.detail, 'hook file + copilot-instructions.md present');
+    assert.equal(state.copilot.hookUnsafe, true);
+    assert.equal(state.copilot.ok, false);
+    assert.match(state.copilot.detail, /UNSAFE raw .rtk hook copilot/);
   });
 
   it('reports missing RTK artifacts clearly', () => {

@@ -29,7 +29,7 @@ import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
-import { installRtk, getRtkVersionWarning, runRtkInit } from './tools/rtk.mjs';
+import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
 import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
 import { setUserEnvVars } from './service/windows.mjs';
@@ -1271,6 +1271,28 @@ async function main() {
     // must remain explicit opt-in.
   } else if (!flags['no-rtk'] && !rtkEnabledInConfig) {
     skip('rtk hook wiring disabled by shell_compression.rtk=false');
+  }
+
+  // The global RTK Copilot hook MUST be fail-open. `rtk init --copilot` writes a
+  // raw `rtk hook copilot` preToolUse hook, which fail-CLOSES every tool call in
+  // every session when rtk isn't on Copilot's hook PATH (the Windows brick).
+  // Replace it with a guarded, always-exit-0 wrapper (or remove it if RTK is
+  // off) — this also heals machines a previous install already bricked. See
+  // src/cli/rtk-guard.mjs.
+  if (copilot) {
+    try {
+      const rtkActive = !flags['no-rtk'] && rtkEnabledInConfig && tools.rtk.installed;
+      const res = ensureSafeRtkCopilotHook({
+        home,
+        nodePath: process.execPath,
+        repoRoot: resolveRepoRoot(home, os),
+        mode: rtkActive ? 'active' : 'inactive',
+      });
+      if (res.action === 'wrote-guarded') ok('~/.copilot/hooks/rtk-rewrite.json (fail-open guard)');
+      else if (res.action === 'removed-unsafe') ok('removed unsafe RTK Copilot hook (RTK disabled)');
+    } catch (e) {
+      warn(`could not secure RTK Copilot hook: ${e.message.split('\n')[0]}`);
+    }
   }
 
   // Slash commands — lets `myelin init` be re-run from inside a live agent
