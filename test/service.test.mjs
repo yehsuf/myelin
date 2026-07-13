@@ -141,6 +141,38 @@ describe('engine instance service generators', () => {
       });
     }
   }
+
+  it('keeps Python Copilot descriptor routing authoritative over shared primary env vars', () => {
+    const instance = {
+      ...engineInstance('headroom', 'copilot'),
+      env: {
+        ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8999',
+        OPENAI_TARGET_API_URL: 'http://127.0.0.1:8999',
+        HEADROOM_MODE: 'aggressive',
+        NO_PROXY: '127.0.0.1,localhost,::1',
+      },
+    };
+    const primaryEnvVars = {
+      ANTHROPIC_TARGET_API_URL: 'https://api.anthropic.com',
+      OPENAI_TARGET_API_URL: 'https://api.githubcopilot.com',
+      HEADROOM_MODE: 'cache',
+      REQUESTS_CA_BUNDLE: '/etc/ssl/corp.pem',
+    };
+    const generated = [
+      generateEngineInstancePlist({ instance, ...ENGINE_BINS, envVars: primaryEnvVars }),
+      generateEngineInstanceUnit({ instance, ...ENGINE_BINS, envVars: primaryEnvVars }),
+      generateEngineInstanceRunScript({ instance, ...ENGINE_BINS, envVars: primaryEnvVars }),
+      generateEngineInstanceWinswConfig({ instance, ...ENGINE_BINS, envVars: primaryEnvVars }),
+    ];
+
+    for (const serviceDefinition of generated) {
+      assert.match(serviceDefinition, /ANTHROPIC_TARGET_API_URL[\s\S]{0,80}http:\/\/127\.0\.0\.1:8999/);
+      assert.match(serviceDefinition, /OPENAI_TARGET_API_URL[\s\S]{0,80}http:\/\/127\.0\.0\.1:8999/);
+      assert.match(serviceDefinition, /HEADROOM_MODE[\s\S]{0,80}aggressive/);
+      assert.match(serviceDefinition, /REQUESTS_CA_BUNDLE[\s\S]{0,80}\/etc\/ssl\/corp\.pem/);
+      assert.doesNotMatch(serviceDefinition, /https:\/\/api\.(anthropic\.com|githubcopilot\.com)/);
+    }
+  });
 });
 
 describe('Windows registry engine-instance ownership', () => {

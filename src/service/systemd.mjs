@@ -103,7 +103,7 @@ export function generateCopilotHeadroomUnit(opts = {}) {
 export function generateEngineInstanceUnit({ instance, envVars = {}, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
-  const mergedEnv = { ...command.env, ...instance.env, ...envVars };
+  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]

@@ -169,7 +169,7 @@ export function generateEngineInstancePlist({ instance, envVars = {}, ...options
     label,
     command: command.command,
     args: command.args,
-    envVars: { ...command.env, ...instance.env, ...envVars },
+    envVars: { ...command.env, ...envVars, ...instance.env },
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
   });

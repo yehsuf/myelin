@@ -839,7 +839,7 @@ export function generateEngineInstanceRunScript({ instance, envVars = {}, ...opt
   const commandLineClause = args
     ? ` -and $previousProcess.CommandLine -match '${escapePs(escapePsRegex(args))}$'`
     : '';
-  const mergedEnv = { ...command.env, ...instance.env, ...envVars };
+  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   const envLines = Object.entries(mergedEnv)
     .filter(([, value]) => value != null && String(value).length > 0)
     .map(([key, value]) => {
@@ -896,7 +896,7 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
     workingDirectory: normalizeWindowsFilesystemPath(instance.stateDir),
     envVars: defaultServiceEnv({
       home,
-      envVars: { ...command.env, ...instance.env, ...envVars },
+      envVars: { ...command.env, ...envVars, ...instance.env },
     }),
   });
 }
@@ -904,7 +904,7 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
 export async function installEngineInstance(instance, { manager = 'registry', envVars = {}, home, ...options } = {}) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
-  const mergedEnv = { ...command.env, ...instance.env, ...envVars };
+  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   if (manager !== 'winsw') {
     runPs(generateEngineInstanceRunScript({ instance, envVars, ...options }));
     return { ok: true, manager: 'registry', id: identity.id };
