@@ -311,6 +311,8 @@ def _restore_original_destination(flow: http.HTTPFlow) -> bool:
 #   /v1/messages           → anthropic
 #   /chat/completions      → openai
 #   /v1/chat/completions   → openai
+#   /responses             → openai   (OpenAI Responses API — Copilot's current default)
+#   /v1/responses          → openai
 #
 # Static overrides can be added via MYELIN_EXTRA_PROVIDERS (JSON).
 # ---------------------------------------------------------------------------
@@ -330,6 +332,14 @@ _COMPLETION_PATHS = {
     '/v1/messages':          'anthropic',
     '/chat/completions':     'openai',
     '/v1/chat/completions':  'openai',
+    # OpenAI Responses API — GitHub Copilot's current streaming completion
+    # endpoint. Recognising it keeps its (SSE) responses out of the thrash
+    # cache; prefix matching also covers the /responses/{id} poll path. Its
+    # request body uses `input`, not `messages`, so the compression step no-ops
+    # safely (guarded by the messages check in the request hook) until
+    # headroom-lite gains Responses-API schema support.
+    '/responses':            'openai',
+    '/v1/responses':         'openai',
 }
 
 # Cache format per wire format

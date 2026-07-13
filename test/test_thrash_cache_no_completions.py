@@ -136,6 +136,28 @@ def test_is_completion_path_detects_messages_and_chat():
     assert copilot_addon._is_completion_path('api.githubcopilot.com', '/chat/completions')
 
 
+def test_is_completion_path_detects_responses_api():
+    # GitHub Copilot migrated to the OpenAI Responses API (/responses). It is a
+    # streaming (SSE) completion endpoint, so it MUST be recognised as a
+    # completion path — otherwise its POST bodies are thrash-cache-eligible and a
+    # stored application/json body could be served for a stream ("EOF ... line 1
+    # column 0"). Path is reported truncated in mitm logs ("/responses") but the
+    # real poll path is /responses/{id}, so prefix matching must cover both.
+    assert copilot_addon._is_completion_path('api.business.githubcopilot.com', '/responses')
+    assert copilot_addon._is_completion_path('api.business.githubcopilot.com', '/v1/responses')
+    assert copilot_addon._is_completion_path('api.business.githubcopilot.com', '/responses/resp_abc123')
+
+
+def test_responses_request_does_not_serve_from_cache():
+    # A repeated POST /responses must never be answered from the thrash cache.
+    key = copilot_addon._cache_key('api.business.githubcopilot.com', '/responses', b'{"input":[]}')
+    copilot_addon._cache_put(key, b'{"stale":"json"}', {})
+    flow = _flow(path='/responses', body=b'{"input":[]}')
+    asyncio.run(MyelinAddon().request(flow))
+    assert flow.metadata.get('myelin_cache_hit') is not True
+    assert flow.response is None
+
+
 if __name__ == '__main__':
     import pytest
     raise SystemExit(pytest.main([__file__, '-v']))
