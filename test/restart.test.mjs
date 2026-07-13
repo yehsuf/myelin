@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { existsSync } from 'node:fs';
+import { win32 as pathWin32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildCopilotHeadroomServiceInstallOptions } from '../src/install.mjs';
 import {
   buildCopilotHeadroomTaskEnv,
@@ -9,12 +12,14 @@ import {
   defaultRestartManagedHeadroom,
   defaultRestartMitm,
   defaultRestartWatchdog,
+  headroomLiteLauncherPath,
   restartHeadroomLite,
   runRestart,
   stopManagedHeadroomLite,
 } from '../src/cli/restart.mjs';
 import {
   installWatchdog as installWindowsWatchdog,
+  normalizeWindowsFilesystemPath,
   removeEngineInstance as removeWindowsEngineInstance,
 } from '../src/service/windows.mjs';
 
@@ -773,15 +778,17 @@ describe('headroom-lite ownership guards', () => {
 
   it('stops a managed Unix headroom-lite owner when the pid file matches the listener', async () => {
     const killed = [];
+    const home = '/Users/alice';
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8790,
       osKind: 'linux',
-      home: '/Users/alice',
+      home,
       execSyncImpl: (command) => {
         if (command.includes('lsof -nP -tiTCP:8790')) return Buffer.from('5150\n');
         if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
         if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
-        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /Users/alice/.myelin/state/headroom-lite/start-headroom-lite.sh\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from(`/bin/sh ${launcherPath}\n`);
         return Buffer.from('');
       },
       existsSyncImpl: () => true,
@@ -829,15 +836,17 @@ describe('headroom-lite ownership guards', () => {
   it('stops the recorded managed pid before replacing state when the configured Lite port changes', async () => {
     const killed = [];
     let unlinked = 0;
+    const home = '/Users/alice';
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8791,
       osKind: 'linux',
-      home: '/Users/alice',
+      home,
       execSyncImpl: (command) => {
         if (command.includes('lsof -nP -tiTCP:8791')) return Buffer.from('');
         if (command.includes('ps -p 5150 -o command=')) return Buffer.from('/usr/local/bin/headroom-lite\n');
         if (command.includes('ps -p 5150 -o ppid=')) return Buffer.from('999\n');
-        if (command.includes('ps -p 999 -o command=')) return Buffer.from('/bin/sh /Users/alice/.myelin/state/headroom-lite/start-headroom-lite.sh\n');
+        if (command.includes('ps -p 999 -o command=')) return Buffer.from(`/bin/sh ${launcherPath}\n`);
         return Buffer.from('');
       },
       existsSyncImpl: () => true,
@@ -1088,7 +1097,19 @@ describe('defaultRestartMitm', () => {
       assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
       if (os === 'windows') {
         assert.equal(installs[0].home, 'C:\\Users\\alice');
-        assert.equal(installs[0].addonPath, 'C:\\Users\\alice\\.myelin\\repo\\src\\mitm\\copilot_addon.py');
+        const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
+        const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
+        const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
+          || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
+        assert.equal(
+          installs[0].addonPath,
+          pathWin32.join(
+            useCanonicalRepo ? canonicalRepo : currentRepo,
+            'src',
+            'mitm',
+            'copilot_addon.py',
+          ),
+        );
       }
     });
   }
