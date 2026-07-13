@@ -517,7 +517,7 @@ function modePrepare(data) {
   console.log('     with: "customInstructions exceeds maximum length of 4000"');
   console.log(`  4. Write the hint to: ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt`);
   console.log('     Then run:');
-  console.log('       node ~/.copilot/skills/compact/compact-prepare.mjs clipboard \\');
+  console.log('       node ~/.copilot/skills/myelin-compact/compact-prepare.mjs clipboard \\');
   console.log('         ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt');
   console.log('     This enforces the cap, copies /compact <hint> to clipboard,');
   console.log('     and prints the full ready-to-run command.');
@@ -580,7 +580,7 @@ function modeClipboard(hintFile) {
   console.log('');
   console.log('─'.repeat(64));
   console.log('  After /compact completes, run:');
-  console.log('    node ~/.copilot/skills/compact/compact-prepare.mjs resume');
+  console.log('    node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume');
   console.log('─'.repeat(64));
 }
 
