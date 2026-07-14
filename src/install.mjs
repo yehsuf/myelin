@@ -1407,6 +1407,112 @@ async function ensureMitmCA(home, mitmdumpBin) {
 }
 
 /**
+ * Ownership-verified shutdown of legacy Myelin-managed proxy processes during
+ * the one-time ~/.tokenstack → ~/.myelin migration.
+ *
+ * The previous implementation ran `Stop-Process -Name headroom,mitmdump`,
+ * which name-kills *any* process sharing those names — including a user's own
+ * unrelated headroom/mitmproxy install. This replacement never name-kills:
+ * it only stops a process when (a) its pid was persisted by Myelin under the
+ * legacy managed directory, (b) the process is still live (has a StartTime),
+ * and (c) the process is genuinely running *from* the managed directory being
+ * migrated (command-line / executable-path ownership — mirrors the
+ * headroomLiteMatchesManagedPid guard in src/cli/restart.mjs). A same-named
+ * process installed elsewhere can never satisfy (c), so it is left untouched.
+ */
+function legacyManagedPidFiles(oldDir) {
+  return [
+    join(oldDir, 'services', 'myelin-headroom', 'headroom.pid'),
+    join(oldDir, 'services', 'myelin-copilot-headroom', 'copilot-headroom.pid'),
+    join(oldDir, 'services', 'myelin-mitmproxy', 'mitm.pid'),
+    join(oldDir, 'state', 'headroom-lite', 'headroom-lite.pid'),
+  ];
+}
+
+function legacyProcessInfo(pid, { execSyncImpl = execSync, powershellExe } = {}) {
+  try {
+    const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+    const script = [
+      `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
+      'if (-not $proc) { return }',
+      '@{ command = $proc.CommandLine; executablePath = $proc.ExecutablePath; startTime = if ($proc.CreationDate) { $proc.CreationDate.ToString("o") } else { "" } } | ConvertTo-Json -Compress',
+    ].join('; ');
+    const out = execSyncImpl(`${ps} -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').trim();
+    return out ? JSON.parse(out) : null;
+  } catch {
+    return null;
+  }
+}
+
+function legacyManagedProcessIsOwned(processInfo, managedRoot) {
+  const needle = String(managedRoot ?? '').toLowerCase();
+  if (!needle || !processInfo) return false;
+  // Require a live process (StartTime present) to avoid acting on a stale or
+  // torn pid record, then verify command-path ownership under the managed dir.
+  if (!processInfo.startTime) return false;
+  return [processInfo.command, processInfo.executablePath].some((value) =>
+    String(value ?? '').toLowerCase().includes(needle)
+  );
+}
+
+function defaultStopManagedPid(pid, { execSyncImpl = execSync, powershellExe } = {}) {
+  const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+  // Stop strictly by pid — never by process name.
+  execSyncImpl(`${ps} -NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, { stdio: 'pipe' });
+}
+
+export function stopLegacyManagedProxies({
+  os,
+  oldDir,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  powershellExe,
+  processInfoFn = (pid) => legacyProcessInfo(pid, { execSyncImpl, powershellExe }),
+  stopPidFn = (pid) => defaultStopManagedPid(pid, { execSyncImpl, powershellExe }),
+} = {}) {
+  const stopped = [];
+  const skipped = [];
+  if (os !== 'windows' || !oldDir) return { stopped, skipped };
+
+  const seen = new Set();
+  for (const pidFile of legacyManagedPidFiles(oldDir)) {
+    let pid = null;
+    try {
+      if (!existsSyncImpl(pidFile)) continue;
+      pid = Number(
+        String(readFileSyncImpl(pidFile, 'utf8') ?? '')
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) ?? '',
+      );
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+
+    const info = processInfoFn(pid);
+    if (!legacyManagedProcessIsOwned(info, oldDir)) {
+      skipped.push({ pid, reason: 'not a verified Myelin-managed process' });
+      continue;
+    }
+
+    try {
+      stopPidFn(pid);
+      stopped.push(pid);
+    } catch (error) {
+      skipped.push({ pid, reason: `failed to stop pid ${pid}: ${error?.message?.split?.('\n')?.[0] ?? error}` });
+    }
+  }
+
+  return { stopped, skipped };
+}
+
+/**
  * Copilot/Claude wrappers are now defined in ./service/wrappers.mjs so they
  * can be unit-tested for env-var isolation. Never set provider env vars
  * globally (shell profile / Windows registry) — always via these wrappers.
@@ -1476,10 +1582,23 @@ async function main() {
   }
 
   if (existsSync(oldDir) && !existsSync(newDir) && !runningFromOld) {
-    // On Windows, running processes lock the venv dir — stop them first
+    // On Windows, running processes lock the venv dir — stop them first, but
+    // ONLY Myelin-managed processes verified by persisted pid + command-path
+    // ownership. Never name-kill (that could take out an unrelated headroom
+    // or mitmproxy the user installed themselves).
     if (os === 'windows') {
-      try { execSync('powershell -Command "Stop-Process -Name headroom,mitmdump -ErrorAction SilentlyContinue"', { stdio: 'pipe' }); } catch {}
-      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const { stopped, skipped } = stopLegacyManagedProxies({ os, oldDir });
+        if (stopped.length) {
+          ok(`Stopped ${stopped.length} Myelin-managed legacy process(es) before migration`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        for (const { pid, reason } of skipped) {
+          skip(`Left process ${pid} running (${reason})`);
+        }
+      } catch (e) {
+        warn(`Could not stop legacy managed processes: ${e.message.split('\n')[0]} — continuing`);
+      }
     }
     try {
       const { renameSync } = await import('node:fs');

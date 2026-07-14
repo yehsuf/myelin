@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
 import { joinManaged, managedPaths } from '../shared/myelin-paths.mjs';
 
 const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
@@ -69,8 +69,12 @@ export function writeCurrentRelease({
   releaseId,
   renameSyncFn = renameSync,
   readFileSyncFn = readFileSync,
-  writeFileSyncFn = writeFileSync,
+  writeFileSyncFn,
   mkdirSyncFn = mkdirSync,
+  openSyncFn = openSync,
+  writeSyncFn = writeSync,
+  fsyncSyncFn = fsyncSync,
+  closeSyncFn = closeSync,
 } = {}) {
   if (!isValidReleaseId(releaseId)) {
     throw new Error(`invalid release id: ${releaseId}`);
@@ -79,12 +83,35 @@ export function writeCurrentRelease({
   const paths = runtimePaths({ home, rootDir });
   const pointer = currentReleasePointer({ home, rootDir }, releaseId);
   const tempPointerPath = `${paths.currentPointerPath}.${process.pid}.tmp`;
+  const pointerContent = `${JSON.stringify(pointer, null, 2)}\n`;
+
+  // Durably persist the temp pointer (open→write→fsync→close) so a hard
+  // power-loss between write and rename cannot leave an empty/torn pointer.
+  // A custom writeFileSyncFn (used by tests) opts out of the fsync path.
+  const writePointer = writeFileSyncFn
+    ? (path, content) => writeFileSyncFn(path, content, 'utf8')
+    : (path, content) => {
+        const fd = openSyncFn(path, 'w');
+        try {
+          writeSyncFn(fd, content);
+          try {
+            fsyncSyncFn(fd);
+          } catch {
+            // fsync can be unsupported on some filesystems (e.g. certain
+            // network mounts); the write itself still succeeded, so fall
+            // back to a best-effort (non-fsync) durability guarantee rather
+            // than aborting the install.
+          }
+        } finally {
+          closeSyncFn(fd);
+        }
+      };
 
   mkdirSyncFn(paths.root, { recursive: true });
   mkdirSyncFn(paths.releasesDir, { recursive: true });
 
   try {
-    writeFileSyncFn(tempPointerPath, `${JSON.stringify(pointer, null, 2)}\n`, 'utf8');
+    writePointer(tempPointerPath, pointerContent);
 
     let parsed;
     try {

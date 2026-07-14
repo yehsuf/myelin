@@ -16,12 +16,16 @@ function makeExecutable(path, chmodSyncFn = chmodSync) {
   } catch {}
 }
 
-function renderPosixLauncher(launcherPath) {
-  return `#!/bin/sh\nexec node "${launcherPath}" "$@"\n`;
+function shSingleQuote(value = '') {
+  return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
 }
 
-function renderWindowsLauncher(launcherPath) {
-  return `@echo off\r\nnode "${launcherPath}" %*\r\n`;
+function renderPosixLauncher(launcherPath, nodeBin = process.execPath) {
+  return `#!/bin/sh\nexec ${shSingleQuote(nodeBin)} "${launcherPath}" "$@"\n`;
+}
+
+function renderWindowsLauncher(launcherPath, nodeBin = process.execPath) {
+  return `@echo off\r\n"${nodeBin}" "${launcherPath}" %*\r\n`;
 }
 
 function renderManagedLauncherSource() {
@@ -131,6 +135,7 @@ export function writeManagedLauncher({
   home = homedir(),
   rootDir,
   os,
+  nodeBin = process.execPath,
   mkdirSyncFn = mkdirSync,
   writeFileSyncFn = writeFileSync,
   chmodSyncFn = chmodSync,
@@ -145,7 +150,9 @@ export function writeManagedLauncher({
 
   writeFileSyncFn(
     commandPath,
-    os === 'windows' ? renderWindowsLauncher(launcherPath) : renderPosixLauncher(launcherPath),
+    os === 'windows'
+      ? renderWindowsLauncher(launcherPath, nodeBin)
+      : renderPosixLauncher(launcherPath, nodeBin),
     'utf8',
   );
   makeExecutable(commandPath, chmodSyncFn);

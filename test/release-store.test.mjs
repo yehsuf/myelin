@@ -165,6 +165,87 @@ describe('current release pointer', () => {
     }
   });
 
+  it('fsyncs the temp pointer (open→write→fsync→close) before renaming it into place', () => {
+    const events = [];
+    const files = new Map();
+    const fdToPath = new Map();
+    let nextFd = 10;
+
+    const result = writeCurrentRelease({
+      home: '/home/alice',
+      releaseId: 'main-abcdef1',
+      mkdirSyncFn() {},
+      openSyncFn(path, flags) {
+        const fd = nextFd++;
+        fdToPath.set(fd, path);
+        events.push(`open:${path}:${flags}`);
+        return fd;
+      },
+      writeSyncFn(fd, content) {
+        files.set(fdToPath.get(fd), content);
+        events.push(`write:${fdToPath.get(fd)}`);
+      },
+      fsyncSyncFn(fd) {
+        events.push(`fsync:${fdToPath.get(fd)}`);
+      },
+      closeSyncFn(fd) {
+        events.push(`close:${fdToPath.get(fd)}`);
+      },
+      readFileSyncFn(path) {
+        const content = files.get(path);
+        if (content == null) throw new Error(`missing file: ${path}`);
+        return content;
+      },
+      renameSyncFn(from, to) {
+        files.set(to, files.get(from));
+        files.delete(from);
+        events.push(`rename:${from}->${to}`);
+      },
+    });
+
+    assert.deepEqual(result, {
+      version: 1,
+      releaseId: 'main-abcdef1',
+      runtimeRoot: join('/home/alice', '.myelin', 'releases', 'main-abcdef1'),
+    });
+
+    const openIdx = events.findIndex((e) => e.startsWith('open:'));
+    const writeIdx = events.findIndex((e) => e.startsWith('write:'));
+    const fsyncIdx = events.findIndex((e) => e.startsWith('fsync:'));
+    const closeIdx = events.findIndex((e) => e.startsWith('close:'));
+    const renameIdx = events.findIndex((e) => e.startsWith('rename:'));
+
+    assert.ok(openIdx >= 0, `expected an open: ${events.join(', ')}`);
+    assert.ok(writeIdx > openIdx, `write after open: ${events.join(', ')}`);
+    assert.ok(fsyncIdx > writeIdx, `fsync after write: ${events.join(', ')}`);
+    assert.ok(closeIdx > fsyncIdx, `close after fsync: ${events.join(', ')}`);
+    assert.ok(renameIdx > closeIdx, `rename only after fsync+close: ${events.join(', ')}`);
+    // The write must target the temp pointer, not the live pointer, and the
+    // fsync'd fd must be the temp file's fd.
+    assert.ok(events[openIdx].includes('.tmp'), `open targets temp file: ${events.join(', ')}`);
+    assert.ok(events[fsyncIdx].includes('.tmp'), `fsync targets temp file: ${events.join(', ')}`);
+  });
+
+  it('still promotes the pointer when fsync is unsupported (fail-safe)', () => {
+    const home = makeTempHome();
+    try {
+      const result = writeCurrentRelease({
+        home,
+        releaseId: 'main-abcdef1',
+        fsyncSyncFn() { throw new Error('EINVAL: fsync not supported'); },
+      });
+
+      assert.deepEqual(readCurrentRelease({ home }), result);
+      assert.deepEqual(readdirSync(join(home, '.myelin')).filter((name) => name.endsWith('.tmp')), []);
+      assert.equal(
+        readFileSync(join(home, '.myelin', 'current.json'), 'utf8'),
+        JSON.stringify(result, null, 2) + '\n',
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('returns null for invalid pointer contents', () => {
     const home = makeTempHome();
     try {

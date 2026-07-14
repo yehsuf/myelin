@@ -190,6 +190,48 @@ describe('writeManagedLauncher', () => {
     }
   });
 
+  it('bakes the absolute node binary into the POSIX shim (no bare node)', () => {
+    const home = makeTempHome('managed-launcher-posix-nodebin');
+    try {
+      const nodeBin = '/opt/nvm/versions/node/v20.11.0/bin/node';
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(nodeBin), `shim should embed ${nodeBin}: ${launcher}`);
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcher), `shim must not exec bare node: ${launcher}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults the POSIX shim node path to process.execPath (absolute)', () => {
+    const home = makeTempHome('managed-launcher-posix-execpath');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(process.execPath), `shim should embed ${process.execPath}: ${launcher}`);
+      assert.ok(process.execPath.startsWith('/'), 'process.execPath must be absolute');
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcher));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('bakes the absolute node binary into the Windows shim (no bare node)', () => {
+    const home = makeTempHome('managed-launcher-windows-nodebin');
+    try {
+      const nodeBin = 'C:\\Program Files\\nodejs\\node.exe';
+      const result = writeManagedLauncher({ home, os: 'windows', nodeBin });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(nodeBin), `shim should embed ${nodeBin}: ${launcher}`);
+      assert.ok(!/(?:^|\r?\n)node\s+"/m.test(launcher), `shim must not invoke bare node: ${launcher}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('writes a Windows launcher that invokes node with the managed launcher', () => {
     const home = makeTempHome('managed-launcher-windows');
     try {
@@ -230,6 +272,21 @@ describe('linkGlobalBin managed launcher', () => {
       assert.ok(launcherText.includes('myelin-launcher.mjs'));
       assert.ok(!launcherText.includes(repoEntrypoint));
       assert.ok(!launcherText.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('links a shim that invokes an absolute node path, not bare node', () => {
+    const home = makeTempHome('managed-global-link-nodebin');
+    const prefix = join(home, 'global-prefix');
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+      const launcherText = readFileSync(result.commandPath, 'utf8');
+
+      assert.equal(result.linked, true);
+      assert.ok(launcherText.includes(process.execPath), `linked shim should embed ${process.execPath}: ${launcherText}`);
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcherText), `linked shim must not exec bare node: ${launcherText}`);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

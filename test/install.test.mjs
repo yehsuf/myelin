@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import {
   applyServiceEngineInstallPlan,
   applyMitmServiceInstallPlan,
@@ -9,6 +12,7 @@ import {
   ensureManagedHeadroomService,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
+  stopLegacyManagedProxies,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
@@ -1043,5 +1047,138 @@ describe('removeManagedHeadroomRegistration', () => {
     assert.equal(stops[0].home, 'C:\\Users\\alice');
     assert.equal(stops[0].port, 8787);
     assert.ok(commands[0].startsWith('powershell.exe '));
+  });
+});
+
+describe('stopLegacyManagedProxies (C1: no name-based process kill)', () => {
+  function makeTempDir(name) {
+    const dir = join(process.cwd(), '.test-artifacts', `${name}-${process.pid}-${randomBytes(4).toString('hex')}`);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  function writePidFile(oldDir, serviceId, pidName, pid) {
+    const dir = join(oldDir, 'services', serviceId);
+    mkdirSync(dir, { recursive: true });
+    const pidPath = join(dir, pidName);
+    writeFileSync(pidPath, `${pid}\n`, 'utf8');
+    return pidPath;
+  }
+
+  it('is a no-op on non-windows platforms', () => {
+    const oldDir = makeTempDir('legacy-noop');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 4242);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'darwin',
+        oldDir,
+        processInfoFn: () => { throw new Error('should not query on non-windows'); },
+        stopPidFn: (pid) => kills.push(pid),
+      });
+      assert.deepEqual(result, { stopped: [], skipped: [] });
+      assert.deepEqual(kills, []);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT kill an unrelated same-named process (path not under the managed dir)', () => {
+    const oldDir = makeTempDir('legacy-unrelated');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 4242);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        // A DIFFERENT headroom.exe installed elsewhere on the machine that
+        // happens to have reused (or coincidentally matches) the recorded pid.
+        processInfoFn: () => ({
+          command: 'C:\\Program Files\\headroom\\headroom.exe proxy --port 8787',
+          executablePath: 'C:\\Program Files\\headroom\\headroom.exe',
+          startTime: '2024-01-01T00:00:00.0000000+00:00',
+        }),
+        stopPidFn: (pid) => kills.push(pid),
+      });
+
+      assert.deepEqual(kills, [], 'unrelated same-named process must never be killed');
+      assert.deepEqual(result.stopped, []);
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].pid, 4242);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT kill when the recorded pid is dead / stale (no live process)', () => {
+    const oldDir = makeTempDir('legacy-stale');
+    try {
+      writePidFile(oldDir, 'myelin-mitmproxy', 'mitm.pid', 9999);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        processInfoFn: () => null, // process no longer exists
+        stopPidFn: (pid) => kills.push(pid),
+      });
+      assert.deepEqual(kills, []);
+      assert.deepEqual(result.stopped, []);
+      assert.equal(result.skipped.length, 1);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('DOES stop a verified Myelin-managed process running from the managed dir', () => {
+    const oldDir = makeTempDir('legacy-managed');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 5555);
+      writePidFile(oldDir, 'myelin-mitmproxy', 'mitm.pid', 6666);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        processInfoFn: (pid) => ({
+          command: `${oldDir}\\venv\\Scripts\\${pid === 5555 ? 'headroom.exe proxy --port 8787' : 'mitmdump.exe'}`,
+          executablePath: `${oldDir}\\venv\\Scripts\\${pid === 5555 ? 'headroom.exe' : 'mitmdump.exe'}`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        }),
+        stopPidFn: (pid) => kills.push(pid),
+      });
+
+      assert.deepEqual(kills.sort(), [5555, 6666]);
+      assert.deepEqual(result.stopped.sort(), [5555, 6666]);
+      assert.deepEqual(result.skipped, []);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('default stop path targets the pid (Stop-Process -Id) and NEVER a process name', () => {
+    const oldDir = makeTempDir('legacy-byid');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 5555);
+      const commands = [];
+      stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        powershellExe: 'powershell.exe',
+        // capture what the DEFAULT stopPidFn would execute
+        execSyncImpl: (cmd) => { commands.push(String(cmd)); return Buffer.from(''); },
+        processInfoFn: () => ({
+          command: `${oldDir}\\venv\\Scripts\\headroom.exe proxy`,
+          executablePath: `${oldDir}\\venv\\Scripts\\headroom.exe`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        }),
+      });
+
+      assert.equal(commands.length, 1);
+      assert.ok(commands[0].includes('Stop-Process -Id 5555'), `expected Stop-Process -Id: ${commands[0]}`);
+      assert.ok(!/-Name\b/.test(commands[0]), `must never use -Name: ${commands[0]}`);
+      assert.ok(!/headroom,mitmdump/.test(commands[0]), `must never name-kill: ${commands[0]}`);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
   });
 });
