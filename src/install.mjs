@@ -789,20 +789,38 @@ function resolveManagedMainRepoUrl({
 }
 
 /**
+ * Wrap a value in POSIX single quotes so an arbitrary managed-root path (spaces,
+ * `$`, globbing chars, …) survives verbatim when sourced from a shell profile.
+ * Embedded single quotes are closed, escaped, and reopened (`'\''`).
+ */
+function posixSingleQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Build the shell-profile PATH additions, rooting the managed bin dir in the
  * managed root so a relocated MYELIN_DIR is honored. The default (MYELIN_DIR
  * unset) keeps the shell-portable `$HOME`/`$env:USERPROFILE` form; when the
  * managed root is relocated the entries point at the resolved managed bin dir.
+ *
+ * When the root is relocated, the POSIX block additionally persists an
+ * `export MYELIN_DIR=<quoted root>` so a freshly-sourced shell resolves the same
+ * managed root the baked-in PATH points at — otherwise `myelin`/`_copilot`/
+ * `_claude` would fall back to `~/.myelin` while PATH aimed at the relocated bin
+ * dir. The value is single-quoted to stay safe for paths with spaces or shell
+ * metacharacters. Returned via `posixMyelinDirExport` (empty when not relocated).
  */
 export function managedProfilePathBlock({ os, home = homedir(), env = process.env } = {}) {
   const relocated = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim();
-  const managedBinDir = managedPaths({ home, env }).binDir;
+  const managed = managedPaths({ home, env });
+  const managedBinDir = managed.binDir;
   if (os === 'windows') {
     const myelinBin = relocated
       ? normalizeWindowsFilesystemPath(managedBinDir, { rejectPosix: true })
       : '$env:USERPROFILE\\.myelin\\bin';
     return {
       posixExport: '',
+      posixMyelinDirExport: '',
       windowsPathDirs: [
         '$env:USERPROFILE\\.local\\bin',
         myelinBin,
@@ -815,6 +833,9 @@ export function managedProfilePathBlock({ os, home = homedir(), env = process.en
   const myelinBin = relocated ? managedBinDir : '$HOME/.myelin/bin';
   return {
     posixExport: `\nexport PATH="$HOME/.local/bin:${myelinBin}:$PATH"`,
+    posixMyelinDirExport: relocated
+      ? `\nexport MYELIN_DIR=${posixSingleQuote(managed.root)}`
+      : '',
     windowsPathDirs: [],
   };
 }
@@ -2199,6 +2220,7 @@ ${initSkillBody}`);
       : `alias myelin='"${managedRuntime.commandPath}"'`;
     const profilePathBlock = managedProfilePathBlock({ os, home });
     const extraPath = profilePathBlock.posixExport;
+    const myelinDirExport = profilePathBlock.posixMyelinDirExport;
 
     // On Windows, add key bin dirs to process.env.PATH now so tool invocations work
     if (os === 'windows') {
@@ -2231,7 +2253,7 @@ ${initSkillBody}`);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)

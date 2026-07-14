@@ -25,6 +25,52 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
     assert.ok(!posixExport.includes('.myelin/bin'), posixExport);
   });
 
+  it('posix default does not export MYELIN_DIR', () => {
+    const { posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: {},
+    });
+    assert.equal(posixMyelinDirExport, '');
+  });
+
+  it('posix exports the relocated MYELIN_DIR so a new shell resolves the same root as PATH', () => {
+    const { posixExport, posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/custom/mroot' },
+    });
+    assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/custom/mroot'");
+    assert.ok(posixExport.includes(':/custom/mroot/bin:$PATH'), posixExport);
+  });
+
+  it('posix single-quotes a relocated MYELIN_DIR containing spaces and metacharacters', () => {
+    const { posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/opt/my roots/$weird' },
+    });
+    assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/opt/my roots/$weird'");
+  });
+
+  it('posix escapes an embedded single quote in a relocated MYELIN_DIR', () => {
+    const { posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: "/opt/o'brien/myelin" },
+    });
+    assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/opt/o'\\''brien/myelin'");
+  });
+
+  it('windows never emits a POSIX MYELIN_DIR export even when relocated', () => {
+    const { posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: 'D:\\managed' },
+    });
+    assert.equal(posixMyelinDirExport, '');
+  });
+
   it('windows default keeps $env:USERPROFILE\\.myelin\\bin among the PATH dirs', () => {
     const { posixExport, windowsPathDirs } = managedProfilePathBlock({
       os: 'windows',
