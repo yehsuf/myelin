@@ -21,7 +21,8 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
       env: { MYELIN_DIR: '/custom/mroot' },
     });
     const expectedBin = join('/custom/mroot', 'bin');
-    assert.ok(posixExport.includes(`:${expectedBin}:$PATH`), posixExport);
+    // The relocated bin is spliced in as a single-quoted literal.
+    assert.ok(posixExport.includes(`:"'${expectedBin}'":$PATH`), posixExport);
     assert.ok(!posixExport.includes('.myelin/bin'), posixExport);
   });
 
@@ -41,7 +42,7 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
       env: { MYELIN_DIR: '/custom/mroot' },
     });
     assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/custom/mroot'");
-    assert.ok(posixExport.includes(':/custom/mroot/bin:$PATH'), posixExport);
+    assert.ok(posixExport.includes(":\"'/custom/mroot/bin'\":$PATH"), posixExport);
   });
 
   it('posix single-quotes a relocated MYELIN_DIR containing spaces and metacharacters', () => {
@@ -60,6 +61,82 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
       env: { MYELIN_DIR: "/opt/o'brien/myelin" },
     });
     assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/opt/o'\\''brien/myelin'");
+  });
+
+  it('posix default keeps the managed bin export exactly shell-portable', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: {},
+    });
+    assert.equal(posixExport, '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"');
+  });
+
+  it('posix neutralizes command substitution in a relocated managed bin path', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/opt/$(touch pwned)/myelin' },
+    });
+    // The `$(…)` must survive verbatim inside single quotes, never as a
+    // command substitution the shell would execute when sourcing the profile.
+    assert.equal(
+      posixExport,
+      "\nexport PATH=\"$HOME/.local/bin:\"'/opt/$(touch pwned)/myelin/bin'\":$PATH\"",
+    );
+    assert.ok(!posixExport.includes('$(touch pwned)/myelin/bin:$PATH'), posixExport);
+  });
+
+  it('posix neutralizes backtick command substitution in a relocated managed bin path', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/opt/`id`/myelin' },
+    });
+    assert.equal(
+      posixExport,
+      "\nexport PATH=\"$HOME/.local/bin:\"'/opt/`id`/myelin/bin'\":$PATH\"",
+    );
+  });
+
+  it('posix neutralizes an embedded double quote in a relocated managed bin path', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/opt/a"; rm -rf ~; "b/myelin' },
+    });
+    // The stray double quote stays inside the single-quoted literal, so it can
+    // never break out of the PATH string to inject a following command.
+    assert.equal(
+      posixExport,
+      "\nexport PATH=\"$HOME/.local/bin:\"'/opt/a\"; rm -rf ~; \"b/myelin/bin'\":$PATH\"",
+    );
+  });
+
+  it('posix neutralizes variable expansion in a relocated managed bin path', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/opt/$HOME/myelin' },
+    });
+    // `$HOME` in the relocated literal must not expand — only the leading
+    // `$HOME/.local/bin` and trailing `$PATH` are meant to be shell variables.
+    assert.equal(
+      posixExport,
+      "\nexport PATH=\"$HOME/.local/bin:\"'/opt/$HOME/myelin/bin'\":$PATH\"",
+    );
+  });
+
+  it('posix escapes an embedded single quote in a relocated managed bin path', () => {
+    const { posixExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: "/opt/o'brien/myelin" },
+    });
+    assert.equal(
+      posixExport,
+      "\nexport PATH=\"$HOME/.local/bin:\"'/opt/o'\\''brien/myelin/bin'\":$PATH\"",
+    );
   });
 
   it('windows never emits a POSIX MYELIN_DIR export even when relocated', () => {

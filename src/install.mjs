@@ -830,9 +830,16 @@ export function managedProfilePathBlock({ os, home = homedir(), env = process.en
       ],
     };
   }
-  const myelinBin = relocated ? managedBinDir : '$HOME/.myelin/bin';
+  // A relocated managed bin dir is arbitrary user-supplied text; splice it into
+  // the PATH export as a single-quoted literal (closing/reopening the outer
+  // double quotes) so `$(…)`, backticks, `"`, and `$VAR` in the path can never
+  // be executed or expanded when the profile is sourced. The default form keeps
+  // `$HOME/.myelin/bin` unquoted so the shell still expands `$HOME`.
+  const posixExport = relocated
+    ? `\nexport PATH="$HOME/.local/bin:"${posixSingleQuote(managedBinDir)}":$PATH"`
+    : '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"';
   return {
-    posixExport: `\nexport PATH="$HOME/.local/bin:${myelinBin}:$PATH"`,
+    posixExport,
     posixMyelinDirExport: relocated
       ? `\nexport MYELIN_DIR=${posixSingleQuote(managed.root)}`
       : '',
