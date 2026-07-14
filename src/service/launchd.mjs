@@ -1,7 +1,7 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
@@ -104,7 +104,38 @@ function xmlEscape(s) {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Write a plist safely: render to a `<path>.candidate`, validate it with
+ * `plutil -lint` (via an injected exec impl so unit tests never shell out), and
+ * ONLY on success atomically rename the candidate over the destination. On
+ * failure the candidate is removed and the error is thrown WITHOUT touching the
+ * existing (healthy) plist — so the installer never boots out a working job and
+ * then fails to bootstrap a broken replacement.
+ */
+export function writeValidatedPlist({
+  path,
+  content,
+  writeFileSyncImpl = writeFileSync,
+  renameSyncImpl = renameSync,
+  unlinkSyncImpl = unlinkSync,
+  execFileSyncImpl = execFileSync,
+  plutilPath = 'plutil',
+} = {}) {
+  const candidate = `${path}.candidate`;
+  writeFileSyncImpl(candidate, content, 'utf8');
+  try {
+    execFileSyncImpl(plutilPath, ['-lint', candidate], { stdio: 'ignore' });
+  } catch (err) {
+    try { unlinkSyncImpl(candidate); } catch {}
+    const detail = String(err?.message ?? err).split('\n')[0];
+    throw new Error(`Refusing to install invalid plist at ${path}: plutil -lint failed: ${detail}`);
+  }
+  renameSyncImpl(candidate, path);
+  return path;
 }
 
 export function generatePlist(opts = {}) {
@@ -133,7 +164,7 @@ export function mitmPlistPath(home = homedir()) {
  *  filter). */
 export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory }) {
   const envEntries = Object.entries(envVars)
-    .map(([k, v]) => `        <key>${k}</key>\n        <string>${xmlEscape(v)}</string>`)
+    .map(([k, v]) => `        <key>${xmlEscape(k)}</key>\n        <string>${xmlEscape(v)}</string>`)
     .join('\n');
   const progArgs = shWrappedProgramArgs(command, args);
   const argItems = progArgs
@@ -147,7 +178,7 @@ export function generateGenericPlist({ label, command, args = [], envVars = {}, 
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${label}</string>
+    <string>${xmlEscape(label)}</string>
     <key>ProgramArguments</key>
     <array>
 ${argItems}
@@ -163,9 +194,9 @@ ${envEntries}
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>${logPath ?? '/tmp/myelin.log'}</string>
+    <string>${xmlEscape(logPath ?? '/tmp/myelin.log')}</string>
     <key>StandardErrorPath</key>
-    <string>${logPath ?? '/tmp/myelin.log'}</string>${workingDirEntry}
+    <string>${xmlEscape(logPath ?? '/tmp/myelin.log')}</string>${workingDirEntry}
 </dict>
 </plist>`;
 }
@@ -194,7 +225,10 @@ export function installEngineInstance(instance, options = {}) {
   const content = generateEngineInstancePlist({ instance, ...options });
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  writeFileSync(p, content, 'utf8');
+  // Validate + atomically replace BEFORE booting out the running job, so an
+  // invalid plist (bad XML from a `&`/`<` path) can never leave the host with a
+  // booted-out job and no working replacement.
+  writeValidatedPlist({ path: p, content });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
@@ -284,7 +318,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     logPath: logPath ?? joinManaged(managedPaths({ home: home ?? homedir(), env }).root, 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  writeFileSync(p, content, 'utf8');
+  writeValidatedPlist({ path: p, content });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${MITM_LABEL}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
@@ -413,25 +447,25 @@ export function installWatchdog({ home, env = process.env, headroomPort, mitmPor
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${WATCHDOG_LABEL}</string>
+    <string>${xmlEscape(WATCHDOG_LABEL)}</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${scriptPath}</string>
+        <string>${xmlEscape(scriptPath)}</string>
     </array>
     <key>StartInterval</key>
     <integer>90</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${watchdogLog}</string>
+    <string>${xmlEscape(watchdogLog)}</string>
     <key>StandardErrorPath</key>
-    <string>${watchdogLog}</string>
+    <string>${xmlEscape(watchdogLog)}</string>
 </dict>
 </plist>`;
   const plistPathW = join(la, `${WATCHDOG_LABEL}.plist`);
   mkdirSync(la, { recursive: true });
-  writeFileSync(plistPathW, plistContent, 'utf8');
+  writeValidatedPlist({ path: plistPathW, content: plistContent });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${WATCHDOG_LABEL}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
