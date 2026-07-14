@@ -439,41 +439,41 @@ describe('runRestart descriptor plan', () => {
       warn: () => {},
     });
 
-    it('does not restart a Copilot descriptor when compression is disabled', async () => {
-      const restarted = [];
-      const removedPlans = [];
-
-      await runRestart({
-        config: {
-          proxy: {
-            engine: 'headroom',
-            compression: { enabled: false },
-            headroom: { port: 8787 },
-            copilot_headroom: { enabled: true, port: 8788 },
-            mitm: { enabled: true, port: 8888, egress_port: 8889 },
-            windows_service: { manager: 'registry' },
-          },
-        },
-        detectOSImpl: () => 'linux',
-        stopObsoleteOwnedInstancesImpl: async () => {},
-        removeDisabledCopilotInstanceImpl: async ({ plan }) => removedPlans.push(plan.instances),
-        restartEngineInstanceImpl: async (instance) => restarted.push(instance.id),
-        restartMitmImpl: async () => {},
-        restartWatchdogImpl: async () => {},
-        log: () => {},
-        warn: () => {},
-      });
-
-      assert.deepEqual(restarted, ['headroom-primary']);
-      assert.deepEqual(removedPlans[0].map(({ id }) => id), ['headroom-primary']);
-    });
-
     assert.deepEqual(calls, [
       'remove:headroom-primary',
       'install:headroom-primary:/opt/myelin/headroom',
       'health:http://127.0.0.1:9787/health',
       'mitm',
     ]);
+  });
+
+  it('does not restart a Copilot descriptor when compression is disabled', async () => {
+    const restarted = [];
+    const removedPlans = [];
+
+    await runRestart({
+      config: {
+        proxy: {
+          engine: 'headroom',
+          compression: { enabled: false },
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          mitm: { enabled: true, port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      detectOSImpl: () => 'linux',
+      stopObsoleteOwnedInstancesImpl: async () => {},
+      removeDisabledCopilotInstanceImpl: async ({ plan }) => removedPlans.push(plan.instances),
+      restartEngineInstanceImpl: async (instance) => restarted.push(instance.id),
+      restartMitmImpl: async () => {},
+      restartWatchdogImpl: async () => {},
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(restarted, ['headroom-primary']);
+    assert.deepEqual(removedPlans[0].map(({ id }) => id), ['headroom-primary']);
   });
 
   describe('restartEngineInstance WSL executable resolution', () => {
