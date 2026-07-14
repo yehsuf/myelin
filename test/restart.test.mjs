@@ -573,6 +573,143 @@ describe('runRestart descriptor plan', () => {
     }
   });
 
+  describe('restartEngineInstance resolves the Lite binary before removing the service (finding 3)', () => {
+    it('prefers the pinned managed-component pointer over a global PATH lookup', async () => {
+      const events = [];
+      const instance = {
+        engine: 'headroom_lite',
+        role: 'primary',
+        id: 'headroom_lite-primary',
+        port: 8790,
+        stateDir: '/Users/alice/.myelin/state/headroom_lite-primary',
+        logPath: '/Users/alice/.myelin/headroom_lite-primary.log',
+        healthUrl: 'http://127.0.0.1:8790/health',
+        env: {},
+      };
+
+      const restarted = await restartEngineInstance(instance, {
+        os: 'linux',
+        home: '/Users/alice',
+        resolveManagedCompressionBinaryImpl: (args) => {
+          events.push(['resolve-managed', args]);
+          return { binPath: '/Users/alice/.myelin/components/headroomLite/current/bin/headroom-lite' };
+        },
+        detectToolImpl: async () => {
+          assert.fail('global PATH lookup must not run when a managed pointer resolves');
+        },
+        removeEngineInstanceImpl: async () => events.push(['remove']),
+        installEngineInstanceImpl: async (_instance, options) => events.push(['install', options]),
+        waitForHealthUrlImpl: async () => true,
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(restarted, true);
+      assert.equal(events[0][0], 'resolve-managed');
+      assert.equal(events[0][1].backend, 'headroom-lite');
+      assert.equal(events[0][1].componentsRoot, '/Users/alice/.myelin/components');
+      assert.equal(events[1][0], 'remove');
+      assert.equal(events[2][0], 'install');
+      assert.equal(events[2][1].headroomLiteBin, '/Users/alice/.myelin/components/headroomLite/current/bin/headroom-lite');
+    });
+
+    it('never removes the running service when neither the managed pointer nor the global fallback resolve', async () => {
+      const instance = {
+        engine: 'headroom_lite',
+        role: 'primary',
+        id: 'headroom_lite-primary',
+        port: 8790,
+        stateDir: '/Users/alice/.myelin/state/headroom_lite-primary',
+        logPath: '/Users/alice/.myelin/headroom_lite-primary.log',
+        healthUrl: 'http://127.0.0.1:8790/health',
+        env: {},
+      };
+      let removed = false;
+
+      const restarted = await restartEngineInstance(instance, {
+        os: 'linux',
+        home: '/Users/alice',
+        resolveManagedCompressionBinaryImpl: () => {
+          throw new Error('No pinned headroomLite component pointer under /Users/alice/.myelin/components.');
+        },
+        detectToolImpl: async () => ({ installed: false, path: null }),
+        removeEngineInstanceImpl: async () => { removed = true; },
+        installEngineInstanceImpl: async () => assert.fail('must not install when no binary resolves'),
+        waitForHealthUrlImpl: async () => true,
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(restarted, false);
+      assert.equal(removed, false, 'the prior service must not be removed before a binary is resolved');
+    });
+
+    it('falls back to the legacy global PATH lookup only when no managed pointer exists', async () => {
+      const events = [];
+      const instance = {
+        engine: 'headroom_lite',
+        role: 'primary',
+        id: 'headroom_lite-primary',
+        port: 8790,
+        stateDir: '/Users/alice/.myelin/state/headroom_lite-primary',
+        logPath: '/Users/alice/.myelin/headroom_lite-primary.log',
+        healthUrl: 'http://127.0.0.1:8790/health',
+        env: {},
+      };
+
+      const restarted = await restartEngineInstance(instance, {
+        os: 'linux',
+        home: '/Users/alice',
+        resolveManagedCompressionBinaryImpl: () => {
+          throw new Error('No pinned headroomLite component pointer under /Users/alice/.myelin/components.');
+        },
+        detectToolImpl: async () => ({ installed: true, path: '/usr/local/bin/headroom-lite' }),
+        removeEngineInstanceImpl: async () => events.push('remove'),
+        installEngineInstanceImpl: async (_instance, options) => events.push(options),
+        waitForHealthUrlImpl: async () => true,
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(restarted, true);
+      assert.equal(events[0], 'remove');
+      assert.equal(events[1].headroomLiteBin, '/usr/local/bin/headroom-lite');
+    });
+
+    it('resolves the managed pointer under the WSL storage platform (linux) even though the service target is windows (finding 4)', async () => {
+      const platforms = [];
+
+      const restarted = await restartEngineInstance({
+        engine: 'headroom_lite',
+        role: 'primary',
+        id: 'headroom_lite-primary',
+        port: 8790,
+        stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+        healthUrl: 'http://127.0.0.1:8790/health',
+        env: {},
+      }, {
+        os: 'windows',
+        home: '/home/alice',
+        isWslImpl: () => true,
+        defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+        resolveWindowsServiceExecutableImpl: ({ candidate }) => candidate,
+        resolveManagedCompressionBinaryImpl: ({ platform }) => {
+          platforms.push(platform);
+          return { binPath: '/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite' };
+        },
+        removeEngineInstanceImpl: async () => {},
+        installEngineInstanceImpl: async () => {},
+        waitForHealthUrlImpl: async () => true,
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(restarted, true);
+      assert.deepEqual(platforms, ['linux']);
+    });
+  });
+
   it('keeps Python Copilot restart env scoped to its descriptor loopback targets', async () => {
     const installed = [];
     const instance = {

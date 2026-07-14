@@ -1,7 +1,7 @@
 export const DEFAULT_CONFIG = {
   version: '1.0',
   proxy: {
-    engine: 'headroom',
+    engine: 'headroom_lite',
     // Compression delivery is independent of the selected engine. Disable all
     // MITM compression and dedicated Copilot redirection explicitly with this
     // setting; engine selection only determines which service is installed.
@@ -9,7 +9,7 @@ export const DEFAULT_CONFIG = {
       enabled: true,
     },
     headroom: {
-      enabled: true,
+      enabled: false,
       port: 8787,
       bind: '127.0.0.1',
       backend: 'kompress-base',
@@ -36,7 +36,7 @@ export const DEFAULT_CONFIG = {
     // `myelin restart` when `enabled !== false`. Falls back gracefully to a
     // hint if the `headroom-lite` binary isn't installed.
     headroom_lite: {
-      enabled: false,
+      enabled: true,
       port: 8790,
     },
     mitm: {
@@ -188,12 +188,24 @@ function isPlainObject(value) {
 
 export const COMPRESSION_ENGINES = new Set(['headroom', 'headroom_lite']);
 
+// Accepts the hyphenated spelling as an alias of the canonical underscore
+// `proxy.engine` value so a typo'd separator never silently reverts to the
+// other engine (finding 5: silent invalid-value fallback is a footgun).
+const ENGINE_ALIASES = new Map([
+  ['headroom', 'headroom'],
+  ['headroom_lite', 'headroom_lite'],
+  ['headroom-lite', 'headroom_lite'],
+  ['headroom-original', 'headroom'],
+]);
+
 export function normalizeCompressionEngine(userConfig = {}, warn = console.warn) {
   const explicit = userConfig.proxy?.engine;
-  if (COMPRESSION_ENGINES.has(explicit)) return explicit;
   if (explicit != null) {
-    warn(`[myelin] invalid proxy.engine "${explicit}"; using headroom`);
-    return 'headroom';
+    const canonical = ENGINE_ALIASES.get(explicit);
+    if (canonical) return canonical;
+    // A genuinely unrecognized value must fail loudly rather than silently
+    // falling back to a different engine than the one requested.
+    throw new Error(`[myelin] invalid proxy.engine "${explicit}"; expected "headroom" or "headroom_lite"`);
   }
 
   const legacyHeadroomEnabled = userConfig.proxy?.headroom?.enabled;
@@ -202,8 +214,17 @@ export function normalizeCompressionEngine(userConfig = {}, warn = console.warn)
     warn('[myelin] conflicting legacy proxy.headroom.enabled and proxy.headroom_lite.enabled; using headroom');
     return 'headroom';
   }
+  if (legacyHeadroomLiteEnabled === true) return 'headroom_lite';
 
-  return legacyHeadroomLiteEnabled === true ? 'headroom_lite' : 'headroom';
+  // A legacy config that explicitly toggled classic Headroom (present before
+  // `proxy.engine` existed) keeps running classic Headroom; only a config with
+  // no engine signal at all picks up the new canonical default.
+  const legacyHeadroomEnabledSpecified = Object.prototype.hasOwnProperty.call(
+    userConfig.proxy?.headroom ?? {}, 'enabled',
+  );
+  if (legacyHeadroomEnabledSpecified) return 'headroom';
+
+  return 'headroom_lite';
 }
 
 export function mergeDeep(base, override) {

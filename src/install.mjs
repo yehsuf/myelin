@@ -55,12 +55,15 @@ import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
 import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
 import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
-import { updatePaths, createUpdateLock } from './update/update-orchestrator.mjs';
+import { updatePaths, createUpdateLock, resolveStoragePlatform } from './update/update-orchestrator.mjs';
 import {
   resolveManagedCompressionBinary,
   resolveManagedMitmBinary,
 } from './update/managed-service-binary.mjs';
 import { selectedBackend } from './update/engine-selection.mjs';
+import { stageComponent } from './update/component-installers.mjs';
+import { activateComponent } from './update/version-store.mjs';
+import { COMPONENTS } from './update/component-manifest.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -562,6 +565,21 @@ export function createInstallMutationFence({
 }
 
 /**
+ * Resolves the platform used for managed-component storage lookups (pointer
+ * files, staged version directories) — distinct from the Windows *service*
+ * target platform. Under WSL, `os` is 'windows' (a native Windows service is
+ * registered) but managed components are npm/uv-installed and staged on the
+ * Linux/WSL side, so their storage must resolve through `resolveStoragePlatform`
+ * rather than the raw service-target `os` (finding 4: WSL staged-apply
+ * platform mismatch — passing `os` directly makes lookups search for
+ * never-staged `.cmd`/`.exe` layouts).
+ */
+export function resolveInstallComponentStoragePlatform(os, { isWslImpl = isWsl } = {}) {
+  const wsl = os === 'windows' && isWslImpl();
+  return resolveStoragePlatform(os, { wsl });
+}
+
+/**
  * Resolves the pinned managed compression binary to bind during a staged apply.
  * When compression is disabled (`proxy.compression.enabled === false`), no
  * compression binary is resolved or staged — a disabled proxy update must never
@@ -578,6 +596,48 @@ export function resolveStagedCompressionBinary({
   const backend = selectedBackend(cfg);
   if (backend === 'disabled') return null;
   return resolveBinary({ backend, componentsRoot, platform })?.binPath ?? null;
+}
+
+/**
+ * Provisions (stages + activates) the pinned managed `headroom-lite` component
+ * so a fresh `myelin install` with Lite selected never requires a pre-existing
+ * global `headroom-lite` binary (finding 2). Storage always targets
+ * `resolveInstallComponentStoragePlatform` so the same fix also holds for WSL
+ * (finding 4).
+ */
+export async function provisionManagedCompressionComponent({
+  home,
+  os,
+  isWslImpl = isWsl,
+  stageComponentImpl = stageComponent,
+  activateComponentImpl = activateComponent,
+  resolveManagedCompressionBinaryImpl = resolveManagedCompressionBinary,
+  componentsImpl = COMPONENTS,
+} = {}) {
+  const storagePlatform = resolveInstallComponentStoragePlatform(os, { isWslImpl });
+  const componentsRoot = updatePaths(home).componentsRoot;
+  const component = componentsImpl.headroomLite;
+  try {
+    await stageComponentImpl({
+      name: 'headroomLite',
+      component,
+      root: componentsRoot,
+      platform: storagePlatform,
+    });
+    await activateComponentImpl({
+      root: componentsRoot,
+      name: 'headroomLite',
+      version: component.version,
+      platform: storagePlatform,
+    });
+  } catch (e) {
+    throw new Error(`Failed to provision headroom-lite: ${e.message}`);
+  }
+  return resolveManagedCompressionBinaryImpl({
+    backend: 'headroom-lite',
+    componentsRoot,
+    platform: storagePlatform,
+  })?.binPath ?? null;
 }
 
 export async function applyServiceEngineInstallPlan({
@@ -597,6 +657,7 @@ export async function applyServiceEngineInstallPlan({
   resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
   managedCompressionBin = null,
   skipObsoleteCleanup = false,
+  provisionManagedCompressionImpl = provisionManagedCompressionComponent,
 } = {}) {
   const wsl = os === 'windows' && isWslImpl();
   const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
@@ -618,16 +679,20 @@ export async function applyServiceEngineInstallPlan({
       wsl,
     });
   } else if (resolvedPlan.engine === 'headroom_lite') {
-    // Staged apply threads a pinned managed binary; otherwise the globally
-    // installed headroom-lite is detected and used.
+    // Staged apply threads a pinned managed binary; otherwise fall back to a
+    // legacy globally-installed headroom-lite; and if neither exists (a fresh
+    // install with Lite selected) provision the pinned managed component
+    // before ever registering its service — a fresh install must never
+    // require a pre-existing global binary (finding 2).
     let liteCandidate = managedCompressionBin;
     if (!liteCandidate) {
       const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
       const headroomLite = await detectTool('headroom-lite', '--version');
-      if (!headroomLite.installed || !headroomLite.path) {
-        throw new Error('headroom-lite selected but not installed');
+      if (headroomLite.installed && headroomLite.path) {
+        liteCandidate = headroomLite.path;
+      } else {
+        liteCandidate = await provisionManagedCompressionImpl({ home, os, isWslImpl });
       }
-      liteCandidate = headroomLite.path;
     }
     platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({
       engine: resolvedPlan.engine,
@@ -2596,7 +2661,7 @@ async function main() {
     if (mitmEnabled) {
       mitmdumpBin = resolveManagedMitmBinary({
         componentsRoot: updatePaths(home).componentsRoot,
-        platform: os,
+        platform: resolveInstallComponentStoragePlatform(os),
       }).binPath;
     }
   } else if (!mitmEnabled) {
@@ -2643,7 +2708,7 @@ async function main() {
       updateApply: flags['update-apply'],
       cfg,
       componentsRoot: transactionPaths.componentsRoot,
-      platform: os,
+      platform: resolveInstallComponentStoragePlatform(os),
     });
     const binPath = enginePlan.engine === 'headroom' ? headroomBinPath() : undefined;
     const envVars = { HEADROOM_PORT: String(primaryInstance.port), ...sslEnv };
