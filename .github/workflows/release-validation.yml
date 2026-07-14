@@ -1,0 +1,32 @@
+name: Release Validation
+
+# Manually dispatched, read-only smoke test: proves the current default
+# branch state passes the full cross-platform suite. Deliberately holds no
+# write token and performs no tag/release action, because this file (and any
+# `if:` guard in it) can be overridden on any branch it is dispatched from --
+# see docs/superpowers/plans/2026-07-12-atomic-update-backend-selection.md
+# (Task 11) and .superpowers/sdd/task-11-review.md (finding 4). The
+# write-capable publisher lives in a separate workflow
+# (.github/workflows/release-publish.yml) that is never directly
+# dispatchable and only reacts to a successful run of this workflow.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test

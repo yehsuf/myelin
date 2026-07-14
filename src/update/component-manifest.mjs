@@ -1,0 +1,225 @@
+export const COMPONENT_MANIFEST_VERSION = 1;
+
+const COMPONENT_KINDS = Object.freeze([
+  'npm-git',
+  'uv-venv',
+  'uv-git',
+  'github-binary',
+  'npm',
+  'git-checkout',
+]);
+
+const GIT_REF_KINDS = new Set([
+  'npm-git',
+  'uv-git',
+  'github-binary',
+  'git-checkout',
+]);
+
+const EXECUTABLE_KINDS = new Set([
+  'npm-git',
+  'uv-venv',
+  'uv-git',
+  'github-binary',
+  'npm',
+]);
+
+const REQUIRE_PACKAGE_KINDS = new Set([
+  'npm-git',
+  'uv-venv',
+  'uv-git',
+  'npm',
+]);
+
+const REQUIRE_REPOSITORY_KINDS = new Set([
+  'uv-git',
+  'github-binary',
+  'git-checkout',
+]);
+
+const FULL_SEMVER_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+const FULL_SHA_PATTERN = /^[0-9a-f]{40}$/iu;
+const SHORT_SHA_PATTERN = /^[0-9a-f]{7,40}$/iu;
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+function validatePinnedVersionString(value) {
+  return isNonEmptyString(value)
+    && !/[\s~^*<>=]/u.test(value)
+    && !/^latest$/iu.test(value)
+    && !/(^|\.)x$/iu.test(value)
+    && !/(^|\.)\*$/u.test(value);
+}
+
+function validateSemverVersion(value) {
+  return isNonEmptyString(value) && FULL_SEMVER_PATTERN.test(value);
+}
+
+function validateVersionForKind(component) {
+  switch (component.kind) {
+    case 'npm':
+    case 'npm-git':
+    case 'github-binary':
+      return validateSemverVersion(component.version);
+    case 'git-checkout':
+      return validatePinnedVersionString(component.version)
+        && SHORT_SHA_PATTERN.test(component.version);
+    default:
+      return validatePinnedVersionString(component.version);
+  }
+}
+
+function validateGitRefForKind(component) {
+  if (!isNonEmptyString(component.ref)) return false;
+
+  // Keep this switch exhaustive for every kind listed in GIT_REF_KINDS.
+  switch (component.kind) {
+    case 'uv-git':
+      return FULL_SHA_PATTERN.test(component.ref);
+    case 'git-checkout':
+      return FULL_SHA_PATTERN.test(component.ref)
+        && component.ref.toLowerCase().startsWith(component.version.toLowerCase());
+    case 'npm-git':
+    case 'github-binary':
+      return validateSemverVersion(component.version)
+        && component.ref === `v${component.version}`;
+    default:
+      return false;
+  }
+}
+
+function requireField(componentName, fieldName, value) {
+  if (!isNonEmptyString(value)) {
+    throw new Error(`${componentName}.${fieldName} is required.`);
+  }
+}
+
+function freezeManifest(manifest) {
+  for (const component of Object.values(manifest)) {
+    Object.freeze(component);
+  }
+  return Object.freeze(manifest);
+}
+
+export function validateComponentManifest(manifest) {
+  if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
+    throw new Error('component manifest must be an object.');
+  }
+
+  for (const [componentName, component] of Object.entries(manifest)) {
+    if (typeof component !== 'object' || component === null || Array.isArray(component)) {
+      throw new Error(`${componentName} must be an object.`);
+    }
+
+    if (!COMPONENT_KINDS.includes(component.kind)) {
+      throw new Error(`${componentName}.kind is unknown: ${component.kind}`);
+    }
+
+    requireField(componentName, 'version', component.version);
+    if (!validateVersionForKind(component)) {
+      throw new Error(`${componentName}.version must be an exact pinned version.`);
+    }
+
+    if (REQUIRE_PACKAGE_KINDS.has(component.kind)) {
+      requireField(componentName, 'package', component.package);
+    }
+
+    if (REQUIRE_REPOSITORY_KINDS.has(component.kind)) {
+      requireField(componentName, 'repository', component.repository);
+    }
+
+    if (GIT_REF_KINDS.has(component.kind)) {
+      if (!validateGitRefForKind(component)) {
+        throw new Error(`${componentName}.ref must be a valid git ref pin.`);
+      }
+    }
+
+    if (EXECUTABLE_KINDS.has(component.kind)) {
+      requireField(componentName, 'bin', component.bin);
+    }
+  }
+
+  return true;
+}
+
+const RELEASED_COMPONENTS = {
+  headroomLite: {
+    kind: 'npm-git',
+    package: 'github:yehsuf/headroom-lite',
+    version: '0.31.0',
+    ref: 'v0.31.0',
+    bin: 'headroom-lite',
+  },
+  headroomOriginal: {
+    kind: 'uv-venv',
+    package: 'headroom-ai[proxy]',
+    version: '0.31.0',
+    bin: 'headroom',
+  },
+  serena: {
+    kind: 'uv-git',
+    package: 'serena-agent',
+    repository: 'https://github.com/oraios/serena.git',
+    version: '1.5.4.dev0',
+    ref: 'e08e964d0c8703401f7ad419b9bf69d85d35188d',
+    bin: 'serena',
+  },
+  semble: {
+    kind: 'uv-venv',
+    package: 'semble[mcp]',
+    version: '0.4.2',
+    bin: 'semble',
+  },
+  agentcairn: {
+    kind: 'uv-venv',
+    package: 'agentcairn',
+    version: '0.23.0',
+    bin: 'cairn',
+  },
+  rtk: {
+    kind: 'github-binary',
+    repository: 'rtk-ai/rtk',
+    version: '0.43.0',
+    ref: 'v0.43.0',
+    bin: 'rtk',
+  },
+  astGrep: {
+    kind: 'npm',
+    package: '@ast-grep/cli',
+    version: '0.44.1',
+    bin: 'ast-grep',
+  },
+  mitmproxy: {
+    kind: 'uv-venv',
+    package: 'mitmproxy',
+    version: '12.2.3',
+    bin: 'mitmdump',
+  },
+  winsw: {
+    kind: 'github-binary',
+    repository: 'winsw/winsw',
+    version: '3.0.0-alpha.11',
+    ref: 'v3.0.0-alpha.11',
+    bin: 'WinSW.exe',
+  },
+  codegraph: {
+    kind: 'npm',
+    package: '@optave/codegraph',
+    version: '3.15.0',
+    bin: 'codegraph',
+    optional: true,
+  },
+  tokenOptimizer: {
+    kind: 'git-checkout',
+    repository: 'https://github.com/alexgreensh/token-optimizer.git',
+    version: 'c8f8609',
+    ref: 'c8f860993fd813575fc7ba6a8e73fcee16ca0493',
+    optional: true,
+  },
+};
+
+validateComponentManifest(RELEASED_COMPONENTS);
+
+export const COMPONENTS = freezeManifest(RELEASED_COMPONENTS);

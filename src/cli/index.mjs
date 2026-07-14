@@ -22,23 +22,45 @@ program.command('diagnose')
   });
 
 program.command('update')
-  .description('Update the managed Myelin runtime and tools')
-  .option('--check', 'Preview external-tool updates without staging or activating')
+  .description('Update Myelin as one pinned release')
+  .option('--check', 'Show release and component drift without making changes')
   .option('--download-only', 'Stage and validate the latest release without activating it')
-  .option('--self', 'Deprecated: use `myelin update`')
+  .option('--channel <channel>', 'Release channel: stable or main', 'stable')
+  .option('--self', 'Removed; use myelin update')
+  .option('-f, --force', 'Removed; use myelin update')
   .action(async (opts) => {
-    const { runDeprecatedSelfUpdate, runManagedUpdate } = await import('./update.mjs');
     if (opts.self) {
-      const result = runDeprecatedSelfUpdate();
-      process.exit(result.exitCode);
+      console.error('Error: --self was removed. Use `myelin update` or `myelin update --channel main`.');
+      process.exitCode = 2;
+      return;
     }
+    if (opts.force) {
+      console.error('Error: --force was removed. Use `myelin update` or `myelin update --channel main`.');
+      process.exitCode = 2;
+      return;
+    }
+    if (!['stable', 'main'].includes(opts.channel)) {
+      console.error('Error: invalid update channel. Choose stable or main.');
+      process.exitCode = 2;
+      return;
+    }
+    const { runUpdate: runAtomicUpdate } = await import('./update.mjs');
+    let result;
     try {
-      const result = await runManagedUpdate({ check: opts.check, downloadOnly: opts.downloadOnly });
-      process.exit(result.status === 'failed' ? 1 : 0);
-    } catch (err) {
-      console.error(`✗ ${err.message}`);
-      process.exit(1);
+      result = await runAtomicUpdate({
+        channel: opts.channel,
+        check: opts.check,
+        downloadOnly: opts.downloadOnly,
+      });
+    } catch (error) {
+      console.error(`Update failed: ${error?.message ?? error}`);
+      process.exitCode = 1;
+      return;
     }
+    if (!result.ok) {
+      console.error(`Update failed: ${result.error?.message ?? result.status}`);
+    }
+    process.exitCode = result.ok ? 0 : 1;
   });
 
 program.command('self')

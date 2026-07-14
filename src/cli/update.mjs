@@ -12,6 +12,9 @@ import { stageMainRuntime } from '../runtime/stage-main.mjs';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
 import { managedHeadroomPidPath } from '../service/windows.mjs';
 import { managedPaths, joinManaged, resolveMyelinRoot, isManagedRootRelocated } from '../shared/myelin-paths.mjs';
+import { resolveCompressionConfig } from '../update/engine-selection.mjs';
+import { loadConfig } from '../config/reader.mjs';
+import { runUpdate as runAtomicUpdate } from '../update/update-orchestrator.mjs';
 
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
 
@@ -188,7 +191,7 @@ export async function checkStaleConfigKeys({
   return { exists: true, staleKeys };
 }
 
-export async function runUpdate(options = {}, deps = {}) {
+export async function runToolUpdates(options = {}, deps = {}) {
   const { check = false } = options;
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
@@ -292,7 +295,7 @@ export async function runManagedUpdate({ downloadOnly = false, check = false } =
   const runInstallerFn = deps.runInstallerFn ?? runManagedInstaller;
   const checkStaleConfigKeysFn = deps.checkStaleConfigKeysFn ?? checkStaleConfigKeys;
   const runToolUpdatesFn = deps.runToolUpdatesFn
-    ?? ((options) => runUpdate(options, { home, env, os, log, warn }));
+    ?? ((options) => runToolUpdates(options, { home, env, os, log, warn }));
   const runRestartFn = deps.runRestartFn ?? (async () => {
     const { runRestart } = await import('./restart.mjs');
     return runRestart();
@@ -381,4 +384,51 @@ export function runDeprecatedNestedSelfUpdate({ error = console.error } = {}) {
   const message = '`myelin self update` is deprecated; run `myelin update`.';
   error(message);
   return { status: 'deprecated', exitCode: 1, message };
+}
+
+export async function detectUpdateTools({
+  config,
+  loadConfigImpl = loadConfig,
+  detectAllImpl = detectAll,
+} = {}) {
+  const resolvedConfig = config ?? await loadConfigImpl();
+  const selected = resolveCompressionConfig(resolvedConfig);
+  return detectAllImpl({ compressionBackend: selected.backend });
+}
+
+export function filterSelectedUpdateEntries(tools, entries) {
+  return Object.entries(tools).filter(([name, result]) => (
+    !result.skipped && Boolean(entries[name])
+  ));
+}
+
+export function formatUpdateCheckReport(report) {
+  const plan = report.plan;
+  const componentVersions = plan.components
+    .map(({ name, current }) => `${name}@${current}`)
+    .join(', ') || 'none';
+  return [
+    `Myelin update check (${plan.channel})`,
+    `  active release: ${plan.releaseSnapshot.current ?? 'none'}`,
+    `  target release: ${plan.target.version}`,
+    `  backend: ${plan.backend}`,
+    `  pinned components: ${componentVersions}`,
+    `  config migration: ${report.config.migrationRequired ? 'required' : 'not required'}`,
+    `  global lock: ${report.lock?.held ? `held by PID ${report.lock.owner?.pid ?? 'unknown'}` : 'available'}`,
+    `  update journal: ${report.journal?.phase ?? 'none'}`,
+  ].join('\n');
+}
+
+export async function runUpdate(options = {}, deps = {}) {
+  const report = deps.report ?? (options.check
+    ? value => console.log(formatUpdateCheckReport(value))
+    : undefined);
+  const result = await runAtomicUpdate(options, {
+    ...deps,
+    ...(report ? { report } : {}),
+  });
+  if (!options.check && result.ok) {
+    console.log(`Myelin update ${result.status}.`);
+  }
+  return result;
 }
