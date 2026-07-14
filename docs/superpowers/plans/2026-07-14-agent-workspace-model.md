@@ -172,13 +172,13 @@ Prove the documented commands actually work end-to-end, in a disposable location
 ```bash
 SMOKE=$(mktemp -d)/wsmoke && mkdir -p "$SMOKE/.bare"
 git clone --bare "file:///Users/ysufrin/tokenstack/.git" "$SMOKE/.bare/myelin.git"
-git -C "$SMOKE/.bare/myelin.git" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
-git -C "$SMOKE/.bare/myelin.git" worktree add "$SMOKE/agentX/myelin" -b smoke/test HEAD
+git --git-dir="$SMOKE/.bare/myelin.git" config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+git --git-dir="$SMOKE/.bare/myelin.git" worktree add "$SMOKE/agentX/myelin" -b smoke/test HEAD
 # verify: clean tree + tests run in the worktree
 git -C "$SMOKE/agentX/myelin" status --porcelain    # expect: empty
 ( cd "$SMOKE/agentX/myelin" && node --test test/detect.test.mjs )   # expect: pass
 # teardown
-git -C "$SMOKE/.bare/myelin.git" worktree remove "$SMOKE/agentX/myelin"
+git --git-dir="$SMOKE/.bare/myelin.git" worktree remove "$SMOKE/agentX/myelin"
 rm -rf "$(dirname "$SMOKE")"
 ```
 

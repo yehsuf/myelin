@@ -68,7 +68,14 @@ git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
 cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
 ```
 
-Reuse the same worktree path across branches where practical (keeps Serena's path-baked cache warm). Put ALL scratch in `~/myelin-agents/<agent>/scratch/` — never in the worktree.
+Reuse the same worktree path across branches where practical (keeps Serena's path-baked cache warm) — switch in place instead of creating a new worktree dir:
+
+```bash
+git -C ~/myelin-agents/<agent>/myelin fetch origin
+git -C ~/myelin-agents/<agent>/myelin switch -c <branch> origin/main   # or: switch <existing-branch>
+```
+
+Put ALL scratch in `~/myelin-agents/<agent>/scratch/` — never in the worktree.
 
 ### Test on all 3 platforms before merging
 
