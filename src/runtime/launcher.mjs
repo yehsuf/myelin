@@ -20,12 +20,24 @@ function shSingleQuote(value = '') {
   return `'${String(value ?? '').replace(/'/g, `'\\''`)}'`;
 }
 
+// In a .cmd batch file `%` triggers %VAR% expansion even inside double quotes;
+// `%%` collapses back to a literal `%` at parse time. `$(...)`, backticks and
+// `$VAR` are NOT special to cmd.exe, so double-quoting already keeps them inert
+// — escaping `%` closes the only remaining expansion/injection vector for a
+// relocated (MYELIN_DIR-derived, arbitrary) managed path.
+function cmdBatchLiteral(value = '') {
+  return String(value ?? '').replace(/%/g, '%%');
+}
+
 function renderPosixLauncher(launcherPath, nodeBin = process.execPath) {
-  return `#!/bin/sh\nexec ${shSingleQuote(nodeBin)} "${launcherPath}" "$@"\n`;
+  // launcherPath is MYELIN_DIR-derived (arbitrary user text). Single-quote it —
+  // exactly like nodeBin — so a relocated root containing `$(...)`, backticks,
+  // or `$VAR` can never be executed/expanded by /bin/sh when the shim runs.
+  return `#!/bin/sh\nexec ${shSingleQuote(nodeBin)} ${shSingleQuote(launcherPath)} "$@"\n`;
 }
 
 function renderWindowsLauncher(launcherPath, nodeBin = process.execPath) {
-  return `@echo off\r\n"${nodeBin}" "${launcherPath}" %*\r\n`;
+  return `@echo off\r\n"${cmdBatchLiteral(nodeBin)}" "${cmdBatchLiteral(launcherPath)}" %*\r\n`;
 }
 
 function renderManagedLauncherSource() {

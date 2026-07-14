@@ -1,10 +1,23 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { buildRtkGuardBashCommand, buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
+
+// A POSIX `sh` is absent on Windows hosts (execFileSync sh -> ENOENT). Guard the
+// behavioral test so full injection coverage runs on POSIX while the suite
+// stays green on a real Windows host.
+function hasPosixSh() {
+  if (process.platform === 'win32') return false;
+  try {
+    const r = spawnSync('sh', ['-c', 'exit 0']);
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
 
 // I2 (SECURITY): the RTK Copilot preToolUse hook interpolates a MYELIN_DIR-derived
 // repoRoot (and the node path) into the `bash` command Copilot runs. A relocated
@@ -56,7 +69,7 @@ describe('buildRtkGuardBashCommand — behavioral: injection never executes unde
   mkdirSync(artifacts, { recursive: true });
   after(() => rmSync(artifacts, { recursive: true, force: true }));
 
-  it('a $(touch sentinel) in the repo root does not create the sentinel when the hook runs', () => {
+  it('a $(touch sentinel) in the repo root does not create the sentinel when the hook runs', { skip: !hasPosixSh() }, () => {
     const sentinel = join(artifacts, 'pwned');
     // process.execPath is a real node; the cli path is bogus, so node errors out
     // (swallowed by 2>/dev/null) and `; exit 0` keeps the hook fail-open. The

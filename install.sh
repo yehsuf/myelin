@@ -1,6 +1,26 @@
 #!/usr/bin/env sh
 set -e
-MYELIN_DIR="${MYELIN_DIR:-$HOME/.myelin}"
+
+# Canonicalize an explicit MYELIN_DIR the SAME way Node's resolveMyelinRoot does,
+# so this shell installer and the staged Node runtime always target the same
+# managed root:
+#   - a leading `~` or `~/` expands to $HOME,
+#   - any still-relative value is rooted at $HOME (never the cwd),
+#   - an already-absolute value passes through unchanged.
+# Without this, `MYELIN_DIR=~/foo` or `MYELIN_DIR=foo` would be staged verbatim
+# here while Node canonicalized it against $HOME — pointing the two at different
+# directories.
+canonicalize_myelin_dir() {
+  _root="$1"
+  case "$_root" in
+    '~')   printf '%s\n' "$HOME" ;;
+    '~/'*) printf '%s\n' "$HOME${_root#\~}" ;;
+    /*)    printf '%s\n' "$_root" ;;
+    *)     printf '%s\n' "$HOME/$_root" ;;
+  esac
+}
+
+MYELIN_DIR="$(canonicalize_myelin_dir "${MYELIN_DIR:-$HOME/.myelin}")"
 export MYELIN_DIR
 REPO_URL="${MYELIN_REPO_URL:-https://github.com/yehsuf/myelin}"
 

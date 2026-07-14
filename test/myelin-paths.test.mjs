@@ -112,7 +112,10 @@ describe('resolveMyelinRoot — tilde/relative expansion, Windows root style (I3
 
 describe('resolveMyelinRoot — precedence & blank handling preserved after I3', () => {
   it('still falls back to <home>/.myelin when no explicit root is set', () => {
-    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: {} }), '/home/alice/.myelin');
+    // The default root uses the HOST-native separator (resolveMyelinRoot joins
+    // with process.platform's path module). Build the expectation the same way
+    // so this passes on Windows (backslashes) as well as POSIX.
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: {} }), join('/home/alice', '.myelin'));
   });
   it('still treats a blank rootDir as absent and falls through to MYELIN_DIR', () => {
     assert.equal(resolveMyelinRoot({ home: '/home/alice', env: { MYELIN_DIR: '/env-root' }, rootDir: '   ' }), '/env-root');

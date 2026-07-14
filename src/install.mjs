@@ -921,6 +921,28 @@ export function managedProfilePathBlock({ os, home = homedir(), env = process.en
 }
 
 /**
+ * Render the PowerShell `$PROFILE` PATH-prepend lines from the
+ * {@link managedProfilePathBlock} `windowsPathDirs`. Each entry is either:
+ *   - a trusted `$env:`-prefixed variable reference (e.g. `$env:USERPROFILE\.local\bin`)
+ *     that MUST expand — emitted inside a double-quoted PowerShell string, or
+ *   - a relocated managed bin dir, which is MYELIN_DIR-derived arbitrary user
+ *     text — emitted as an inert single-quoted PowerShell literal via
+ *     {@link powershellSingleQuote} so `$(...)`, backticks, and `$VAR` in the
+ *     path can never be executed/expanded when the profile is sourced.
+ * A relocated managed path is always a drive/UNC filesystem path (never
+ * `$env:`-prefixed), so the classification can never be spoofed into executing
+ * a command-substitution vector.
+ */
+export function renderWindowsProfilePathLines(windowsPathDirs = []) {
+  return windowsPathDirs
+    .map((p) => {
+      const expr = String(p).startsWith('$env:') ? `"${p}"` : powershellSingleQuote(p);
+      return `if ($env:PATH -notlike ('*' + ${expr} + '*')) { $env:PATH = ${expr} + ';' + $env:PATH }`;
+    })
+    .join('\n');
+}
+
+/**
  * The Windows registry (HKCU\Environment) MYELIN_DIR entry, as a spreadable map.
  * Returns `{ MYELIN_DIR: <native Windows root> }` ONLY when the managed root is
  * genuinely relocated; a default install returns `{}` so no absolute MYELIN_DIR
@@ -2477,8 +2499,7 @@ ${initSkillBody}`);
         ? `${profilePathBlock.windowsMyelinDirExport}\n`
         : '';
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
-      const psPaths = profilePathBlock.windowsPathDirs
-        .map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
+      const psPaths = renderWindowsProfilePathLines(profilePathBlock.windowsPathDirs);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.

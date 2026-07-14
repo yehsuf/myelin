@@ -101,4 +101,45 @@ describe('I9 installWinswService reinstall never overwrites the running exe', ()
     assert.ok(unlinked.some((p) => p.endsWith('headroom-primary.exe.new')));
     assert.ok(unlinked.some((p) => p.endsWith('headroom-primary.xml.new')));
   });
+
+  it('restores the previous service and re-registers it when the FINAL install/start fails (never leaves the host serviceless)', async () => {
+    let restoredExe = false;
+    let restoredConfig = false;
+    const psScripts = [];
+    let startCalls = 0;
+
+    await assert.rejects(installWinswService({
+      ...BASE,
+      mkdirSyncImpl: () => {},
+      // Both a previous exe AND config are present, so both are backed up.
+      existsSyncImpl: (p) => p.endsWith('headroom-primary.exe') || p.endsWith('headroom-primary.xml'),
+      copyFileSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      renameSyncImpl: (from, to) => {
+        // .new -> live promotions (step 3) succeed silently.
+        if (from.endsWith('.exe.bak') && to.endsWith('headroom-primary.exe')) { restoredExe = true; return; }
+        if (from.endsWith('.xml.bak') && to.endsWith('headroom-primary.xml')) { restoredConfig = true; return; }
+      },
+      unlinkSyncImpl: () => {},
+      sleepImpl: async () => {},
+      runPsFn: (script) => {
+        psScripts.push(script);
+        // The install/start script (step 4 and the re-register) is the one that
+        // contains `start`; make the FIRST such call fail, the re-register pass.
+        if (/\bstart\b/.test(script)) {
+          startCalls += 1;
+          if (startCalls === 1) throw new Error('final install/start failed');
+        }
+      },
+    }), /final install\/start failed/);
+
+    // Both backed-up files restored over the promoted-but-orphaned new files...
+    assert.ok(restoredExe, 'previous exe restored from .bak');
+    assert.ok(restoredConfig, 'previous config restored from .bak');
+    // ...and the previous service re-registered (install+start) so it keeps running.
+    assert.match(psScripts.at(-1), /\bstart\b/);
+    // The failing final install/start ran (startCalls incremented) and was
+    // followed by exactly one successful re-register.
+    assert.equal(startCalls, 2);
+  });
 });

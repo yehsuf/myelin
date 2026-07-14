@@ -13,6 +13,19 @@ import {
 import { resolveRuntimeEntrypoint, writeManagedLauncher } from '../src/runtime/launcher.mjs';
 import { stageMainRuntime } from '../src/runtime/stage-main.mjs';
 
+// A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
+// behavioral shell test so full coverage runs on POSIX while staying green on
+// a real Windows host.
+function hasPosixSh() {
+  if (process.platform === 'win32') return false;
+  try {
+    const r = spawnSync('sh', ['-c', 'exit 0']);
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
 function makeTempHome() {
   const home = join(process.cwd(), '.test-artifacts', `release-store-${process.pid}-${randomBytes(4).toString('hex')}`);
   mkdirSync(home, { recursive: true });
@@ -944,7 +957,7 @@ describe('bootstrap scripts', () => {
   // M3: the current.json pointer embeds RUNTIME_ROOT/RELEASE_ID as JSON string
   // values. A managed root containing a `"` or `\` must be escaped, or the file
   // is corrupt (invalid JSON that readCurrentRelease then fails to parse).
-  it('escapes RUNTIME_ROOT/RELEASE_ID into valid JSON in install.sh', () => {
+  it('escapes RUNTIME_ROOT/RELEASE_ID into valid JSON in install.sh', { skip: !hasPosixSh() }, () => {
     const script = readFileSync(join(process.cwd(), 'install.sh'), 'utf8');
 
     // The pointer writer must route BOTH interpolated values through the escaper
@@ -969,6 +982,44 @@ describe('bootstrap scripts', () => {
       const parsed = JSON.parse(json); // throws if escaping is wrong
       assert.equal(parsed.runtimeRoot, nasty, `round-trip failed for ${nasty}`);
     }
+  });
+
+  // fix-review #3: install.sh must canonicalize an explicit MYELIN_DIR exactly
+  // like Node's resolveMyelinRoot (expand ~ / ~/ against $HOME, root a relative
+  // value at $HOME, pass an absolute value through) BEFORE staging/pointer
+  // writing — otherwise the shell installer and the Node runtime target
+  // different roots.
+  it('canonicalizes ~ / ~/ / relative MYELIN_DIR against $HOME like resolveMyelinRoot', { skip: !hasPosixSh() }, () => {
+    const script = readFileSync(join(process.cwd(), 'install.sh'), 'utf8');
+
+    const fnMatch = /^canonicalize_myelin_dir\(\) \{[\s\S]*?^\}/m.exec(script);
+    assert.ok(fnMatch, 'install.sh must define a canonicalize_myelin_dir helper');
+    // The default and explicit values both flow through the canonicalizer.
+    assert.ok(
+      /MYELIN_DIR="\$\(canonicalize_myelin_dir "\$\{MYELIN_DIR:-\$HOME\/\.myelin\}"\)"/.test(script),
+      'MYELIN_DIR must be assigned from canonicalize_myelin_dir',
+    );
+
+    const canon = (value, home) => {
+      const harness = `HOME='${home}'\n${fnMatch[0]}\ncanonicalize_myelin_dir "$1"\n`;
+      const res = spawnSync('sh', ['-s', value], { input: harness, encoding: 'utf8' });
+      assert.equal(res.status, 0, res.stderr);
+      return res.stdout.replace(/\n$/, '');
+    };
+
+    const HOME = '/home/tester';
+    // Bare tilde -> $HOME.
+    assert.equal(canon('~', HOME), HOME);
+    // ~/ -> $HOME/rest.
+    assert.equal(canon('~/managed', HOME), '/home/tester/managed');
+    assert.equal(canon('~/deep/nested', HOME), '/home/tester/deep/nested');
+    // Relative -> rooted at $HOME (never cwd).
+    assert.equal(canon('managed', HOME), '/home/tester/managed');
+    assert.equal(canon('a/b', HOME), '/home/tester/a/b');
+    // Absolute -> passthrough.
+    assert.equal(canon('/opt/myelin', HOME), '/opt/myelin');
+    // Default resolves to $HOME/.myelin (already absolute -> passthrough).
+    assert.equal(canon('/home/tester/.myelin', HOME), '/home/tester/.myelin');
   });
 
   it('stages and runs the managed runtime installer from install.ps1', () => {

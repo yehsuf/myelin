@@ -1,8 +1,22 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix } from 'node:path';
+import { isAbsolute, join, posix } from 'node:path';
+
+// A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
+// behavioral shell test on this so full coverage still runs on POSIX while the
+// suite stays green on a real Windows host.
+function hasPosixSh() {
+  if (process.platform === 'win32') return false;
+  try {
+    const r = spawnSync('sh', ['-c', 'exit 0']);
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
@@ -252,7 +266,10 @@ describe('writeManagedLauncher', () => {
       const launcher = readFileSync(result.commandPath, 'utf8');
 
       assert.ok(launcher.includes(process.execPath), `shim should embed ${process.execPath}: ${launcher}`);
-      assert.ok(process.execPath.startsWith('/'), 'process.execPath must be absolute');
+      // The intent is "an absolute node path is embedded". process.execPath is a
+      // Windows path on win32 and a POSIX path elsewhere — assert absoluteness in
+      // the host-native style so this holds on every host (not just POSIX).
+      assert.ok(isAbsolute(process.execPath), 'process.execPath must be absolute');
       assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcher));
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -293,9 +310,65 @@ describe('writeManagedLauncher', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
-});
 
-describe('linkGlobalBin managed launcher', () => {
+  // Security regression (fix-review #1): a relocated MYELIN_DIR containing shell
+  // metacharacters must be an inert single-quoted literal in the generated POSIX
+  // shim — never executed/expanded when the shim runs.
+  it('POSIX shim single-quotes the launcher path so $(...)/`/$VAR can not run', () => {
+    const home = makeTempHome('managed-launcher-posix-inject');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin: '/usr/bin/node' });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // The launcher path is inside single quotes (closing the outer context),
+      // never a double-quoted string that /bin/sh would expand.
+      assert.ok(/exec '\/usr\/bin\/node' '.*myelin-launcher\.mjs' "\$@"/.test(shim), shim);
+      assert.ok(!shim.includes('"' + result.launcherPath + '"'), `launcher path must not be double-quoted: ${shim}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('POSIX shim is behaviorally inert: a $(touch) in the managed root never executes', { skip: !hasPosixSh() }, () => {
+    const artifacts = makeTempHome('managed-launcher-posix-behavioral');
+    try {
+      // A managed root literally named with a command substitution (no slash so
+      // it is a single valid directory component). If the shim double-quoted it,
+      // /bin/sh would run `touch pwned` while expanding the exec argument.
+      const home = join(artifacts, 'root-$(touch pwned)');
+      mkdirSync(home, { recursive: true });
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin: process.execPath });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // Run under sh with cwd=artifacts; node execs with a bogus path and errors
+      // (ignored). Only the command-substitution inertness matters here.
+      spawnSync('sh', ['-c', shim], { cwd: artifacts, stdio: 'ignore' });
+      assert.equal(existsSync(join(artifacts, 'pwned')), false, 'command substitution executed — injection!');
+    } finally {
+      rmSync(artifacts, { recursive: true, force: true });
+    }
+  });
+
+  it('Windows .cmd shim keeps $(...)/`/$VAR inert (cmd literal) and escapes %', () => {
+    const artifacts = makeTempHome('managed-launcher-windows-inject');
+    try {
+      // A real (POSIX) temp dir whose NAME carries the shell metacharacters, so
+      // the generated .cmd embeds them via the launcher path without needing a
+      // fake Windows filesystem on this host.
+      const home = join(artifacts, 'ev$(calc)`bt`$VAR%TEMP%');
+      mkdirSync(home, { recursive: true });
+      const result = writeManagedLauncher({ home, os: 'windows', nodeBin: 'C:\\Program Files\\nodejs\\node.exe' });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // cmd.exe does not expand $(...), backticks, or $VAR — they survive verbatim.
+      assert.ok(shim.includes('$(calc)'), shim);
+      assert.ok(shim.includes('`bt`'), shim);
+      assert.ok(shim.includes('$VAR'), shim);
+      // `%` is the one cmd expansion vector — it is escaped to `%%` so `%TEMP%`
+      // can never expand at batch parse time.
+      assert.ok(shim.includes('%%TEMP%%'), shim);
+      assert.ok(!/[^%]%TEMP%/.test(shim), `raw %TEMP% must not survive: ${shim}`);
+    } finally {
+      rmSync(artifacts, { recursive: true, force: true });
+    }
+  });
   it('writes a stable launcher into a writable global bin dir', () => {
     const home = makeTempHome('managed-global-link');
     const prefix = join(home, 'global-prefix');

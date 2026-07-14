@@ -1101,8 +1101,26 @@ export async function installWinswService({
     throw err;
   }
 
-  // 4. Install + start the new service, then discard the backups.
-  runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+  // 4. Install + start the new service INSIDE rollback handling. If this final
+  //    step fails after the old service was already uninstalled (step 2), the
+  //    host would otherwise be left serviceless — so on failure restore the
+  //    backed-up exe/xml and re-register (install + start) the previous service.
+  try {
+    runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+  } catch (err) {
+    if (backedUpExe) {
+      try { renameSyncImpl(backupExePath, serviceFilesystemExePath); } catch {}
+    }
+    if (backedUpConfig) {
+      try { renameSyncImpl(backupConfigPath, configFilesystemPath); } catch {}
+    }
+    if (hadPrevious) {
+      try {
+        runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+      } catch {}
+    }
+    throw err;
+  }
   if (backedUpExe) { try { unlinkSyncImpl(backupExePath); } catch {} }
   if (backedUpConfig) { try { unlinkSyncImpl(backupConfigPath); } catch {} }
   return { id, serviceExePath, configPath, logDir };

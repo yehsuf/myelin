@@ -1,14 +1,15 @@
 import { detectAll } from '../detect/tools.mjs';
 import { execSync, spawnSync } from 'node:child_process';
-import { detectOS } from '../detect/os.mjs';
+import { detectOS, powerShellExecutable } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
 import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
 import { stageMainRuntime } from '../runtime/stage-main.mjs';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
+import { managedHeadroomPidPath } from '../service/windows.mjs';
 import { managedPaths, joinManaged, resolveMyelinRoot, isManagedRootRelocated } from '../shared/myelin-paths.mjs';
 
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
@@ -47,15 +48,108 @@ const _UPGRADE_STOP_PROCESS = {
   semble: ['semble'],
 };
 
-export function _stopForUpgrade(name, execSyncFn = execSync) {
-  const names = _UPGRADE_STOP_PROCESS[name];
-  if (!names) return;
-  const joined = names.map(processName => `'${processName}'`).join(',');
+/**
+ * Resolve the persisted, Myelin-managed PID file for a tool whose file lock must
+ * be released before a Windows in-place upgrade. Only `headroom` runs as a
+ * Myelin-managed service with a PID we persisted and can verify ownership of;
+ * `serena`/`semble` are `uv` tools with no managed PID file, so they return
+ * `null` and {@link _stopForUpgrade} never touches a same-named process.
+ */
+function managedUpgradePidPath(name, { home } = {}) {
+  return name === 'headroom' ? managedHeadroomPidPath({ home }) : null;
+}
+
+/**
+ * Read a live process's command line / executable path / start time by PID via a
+ * Win32_Process CIM query. Mirrors install.mjs `legacyProcessInfo` so the
+ * ownership guard here matches the migration-shutdown guard exactly.
+ */
+function defaultUpgradeProcessInfo(pid, { execSyncFn = execSync, powershellExe } = {}) {
   try {
-    execSyncFn(
-      `powershell -Command "Get-Process -Name ${joined} -ErrorAction SilentlyContinue | Stop-Process -Force"`,
-      { stdio: 'pipe', timeout: 5000 }
+    const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+    const script = [
+      `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
+      'if (-not $proc) { return }',
+      '@{ command = $proc.CommandLine; executablePath = $proc.ExecutablePath; startTime = if ($proc.CreationDate) { $proc.CreationDate.ToString("o") } else { "" } } | ConvertTo-Json -Compress',
+    ].join('; ');
+    const out = execSyncFn(`${ps} -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').trim();
+    return out ? JSON.parse(out) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ownership gate: only a LIVE process (StartTime present) whose command line or
+ * executable path runs FROM the managed root is ours. A same-named process
+ * installed elsewhere can never satisfy this, so it is left untouched. Mirrors
+ * install.mjs `legacyManagedProcessIsOwned` / restart.mjs
+ * `headroomLiteMatchesManagedPid`.
+ */
+function managedUpgradeProcessIsOwned(processInfo, managedRoot) {
+  const needle = String(managedRoot ?? '').toLowerCase();
+  if (!needle || !processInfo) return false;
+  if (!processInfo.startTime) return false;
+  return [processInfo.command, processInfo.executablePath].some((value) =>
+    String(value ?? '').toLowerCase().includes(needle)
+  );
+}
+
+function defaultStopUpgradePid(pid, { execSyncFn = execSync, powershellExe } = {}) {
+  const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+  // Stop strictly by PID — NEVER by process name.
+  execSyncFn(`${ps} -NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, { stdio: 'pipe' });
+}
+
+function readManagedUpgradePid(pidPath, { existsSyncFn = existsSync, readFileSyncFn = readFileSync } = {}) {
+  try {
+    if (!existsSyncFn(pidPath)) return null;
+    const pid = Number(
+      String(readFileSyncFn(pidPath, 'utf8') ?? '')
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find(Boolean) ?? '',
     );
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Release a managed tool's file lock before a Windows in-place upgrade WITHOUT
+ * ever name-killing. It stops ONLY the Myelin-managed instance identified by our
+ * persisted PID file, and only after verifying (StartTime + command-path)
+ * ownership under the managed root. When no managed PID is found — the common
+ * case for `serena`/`semble`, or a headroom that isn't running — it does
+ * nothing, so a user's own unrelated same-named process is never killed.
+ */
+export function _stopForUpgrade(name, {
+  home = homedir(),
+  env = process.env,
+  pidPathFn = managedUpgradePidPath,
+  existsSyncFn = existsSync,
+  readFileSyncFn = readFileSync,
+  processInfoFn = defaultUpgradeProcessInfo,
+  stopPidFn = defaultStopUpgradePid,
+  managedRoot = resolveMyelinRoot({ home, env }),
+} = {}) {
+  if (!_UPGRADE_STOP_PROCESS[name]) return;
+  const pidPath = pidPathFn(name, { home, env });
+  if (!pidPath) return;
+
+  const pid = readManagedUpgradePid(pidPath, { existsSyncFn, readFileSyncFn });
+  if (!pid) return;
+
+  let info = null;
+  try { info = processInfoFn(pid); } catch { return; }
+  if (!managedUpgradeProcessIsOwned(info, managedRoot)) return;
+
+  try {
+    stopPidFn(pid);
     const start = Date.now();
     while (Date.now() - start < 500) {}
   } catch {}
@@ -105,7 +199,7 @@ export async function runUpdate(options = {}, deps = {}) {
     log(`  ${icon} ${label.padEnd(14)} ${status}`);
     if (!check) {
       if (!cmd.upgrade) { log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
-      if (os === 'windows') _stopForUpgrade(name);
+      if (os === 'windows') _stopForUpgrade(name, { home, env });
       try { exec(cmd.upgrade, { stdio: 'inherit' }); log('    ✓ done'); }
       catch (e) {
         const msg = e?.message ?? String(e);

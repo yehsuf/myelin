@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { posix } from 'node:path';
-import { managedProfilePathBlock, managedMyelinCommandLine, managedRegistryMyelinDirVar } from '../src/install.mjs';
+import { managedProfilePathBlock, managedMyelinCommandLine, managedRegistryMyelinDirVar, renderWindowsProfilePathLines } from '../src/install.mjs';
 
 describe('managedProfilePathBlock — managed bin root in shell profile', () => {
   it('posix default keeps shell-portable $HOME/.myelin/bin', () => {
@@ -395,5 +395,42 @@ describe('managedMyelinCommandLine — Windows function single-quotes the manage
       managedMyelinCommandLine({ os: 'windows', commandPath: "D:\\o'brien\\myelin.cmd" }),
       "function global:myelin { & 'D:\\o''brien\\myelin.cmd' @args }",
     );
+  });
+});
+
+// Security regression (fix-review #1): the PowerShell $PROFILE PATH lines embed
+// managed (MYELIN_DIR-derived) path entries. A relocated managed bin dir is
+// arbitrary user text and must be an inert single-quoted PowerShell literal —
+// while the trusted `$env:`-prefixed constants must still expand.
+describe('renderWindowsProfilePathLines — managed path entries are inert literals', () => {
+  it('single-quotes a relocated managed bin dir so $(...)/`/$VAR can not run', () => {
+    const relocated = 'D:\\ev$(calc)`bt`$VAR\\bin';
+    const lines = renderWindowsProfilePathLines([relocated]);
+    // The relocated path appears ONLY as a single-quoted literal (never inside a
+    // double-quoted, expanding PowerShell string).
+    assert.ok(lines.includes(`'D:\\ev$(calc)\`bt\`$VAR\\bin'`), lines);
+    assert.ok(!/"\*D:\\/.test(lines), `must not double-quote the managed path: ${lines}`);
+  });
+
+  it('escapes an embedded single quote in a relocated managed bin dir', () => {
+    const lines = renderWindowsProfilePathLines(["D:\\o'brien\\bin"]);
+    assert.ok(lines.includes(`'D:\\o''brien\\bin'`), lines);
+  });
+
+  it('keeps $env:-prefixed trusted entries in an expanding double-quoted string', () => {
+    const lines = renderWindowsProfilePathLines(['$env:USERPROFILE\\.local\\bin']);
+    assert.ok(lines.includes('"$env:USERPROFILE\\.local\\bin"'), lines);
+    // No single-quoting of the trusted, expandable variable reference.
+    assert.ok(!lines.includes("'$env:USERPROFILE"), lines);
+  });
+
+  it('produces a working prepend guard for each entry', () => {
+    const lines = renderWindowsProfilePathLines(['$env:APPDATA\\npm', 'D:\\managed\\bin']);
+    const rows = lines.split('\n');
+    assert.equal(rows.length, 2);
+    for (const row of rows) {
+      assert.ok(row.startsWith('if ($env:PATH -notlike ('), row);
+      assert.ok(row.includes("+ ';' + $env:PATH"), row);
+    }
   });
 });

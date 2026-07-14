@@ -34,36 +34,112 @@ function captureConsole() {
   };
 }
 
-describe('_stopForUpgrade', () => {
-  it('calls powershell Stop-Process for headroom on windows', () => {
-    const calls = [];
-    const stub = (cmd) => calls.push(cmd);
+describe('_stopForUpgrade — ownership-safe managed-PID shutdown (no name-kill)', () => {
+  const OWNED_INFO = { command: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe proxy', executablePath: '', startTime: '2026-01-01T00:00:00.0000000+00:00' };
 
-    _stopForUpgrade('headroom', stub);
-
-    assert.ok(calls.length === 1);
-    assert.ok(calls[0].includes('headroom'));
-    assert.ok(calls[0].includes('Stop-Process'));
+  it('stops ONLY the managed headroom PID after verifying command-path ownership', () => {
+    const stopped = [];
+    _stopForUpgrade('headroom', {
+      home: 'C:\\Users\\alice',
+      env: {},
+      pidPathFn: () => 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom-primary\\headroom.pid',
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '4321\n',
+      processInfoFn: () => OWNED_INFO,
+      stopPidFn: (pid) => stopped.push(pid),
+      managedRoot: 'C:\\Users\\alice\\.myelin',
+    });
+    assert.deepEqual(stopped, [4321]);
   });
 
-  it('calls Stop-Process for serena-agent', () => {
-    const calls = [];
-
-    _stopForUpgrade('serena', cmd => calls.push(cmd));
-
-    assert.ok(calls[0].includes('serena-agent'));
+  it('never kills an unrelated same-named process (command not under the managed root)', () => {
+    const stopped = [];
+    _stopForUpgrade('headroom', {
+      home: 'C:\\Users\\alice',
+      env: {},
+      pidPathFn: () => 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom-primary\\headroom.pid',
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '4321\n',
+      // A user's OWN headroom, installed elsewhere — same name, different root.
+      processInfoFn: () => ({ command: 'C:\\Tools\\headroom\\headroom.exe proxy', executablePath: '', startTime: '2026-01-01T00:00:00.0000000+00:00' }),
+      stopPidFn: (pid) => stopped.push(pid),
+      managedRoot: 'C:\\Users\\alice\\.myelin',
+    });
+    assert.deepEqual(stopped, []);
   });
 
-  it('no-ops for unknown tool name', () => {
-    const calls = [];
-
-    _stopForUpgrade('uv', cmd => calls.push(cmd));
-
-    assert.strictEqual(calls.length, 0);
+  it('never kills a stale/torn PID record with no live StartTime', () => {
+    const stopped = [];
+    _stopForUpgrade('headroom', {
+      home: 'C:\\Users\\alice',
+      env: {},
+      pidPathFn: () => 'x',
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '4321',
+      processInfoFn: () => ({ command: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe', executablePath: '', startTime: '' }),
+      stopPidFn: (pid) => stopped.push(pid),
+      managedRoot: 'C:\\Users\\alice\\.myelin',
+    });
+    assert.deepEqual(stopped, []);
   });
 
-  it('swallows errors from execSync', () => {
-    assert.doesNotThrow(() => _stopForUpgrade('headroom', () => { throw new Error('ps failed'); }));
+  it('does nothing (no name-kill) when a tool has no managed PID file — serena/semble', () => {
+    const stopped = [];
+    let processInfoCalled = false;
+    for (const name of ['serena', 'semble']) {
+      _stopForUpgrade(name, {
+        home: 'C:\\Users\\alice',
+        env: {},
+        existsSyncFn: () => true,
+        readFileSyncFn: () => '4321',
+        processInfoFn: () => { processInfoCalled = true; return {}; },
+        stopPidFn: (pid) => stopped.push(pid),
+        managedRoot: 'C:\\Users\\alice\\.myelin',
+      });
+    }
+    assert.deepEqual(stopped, []);
+    assert.equal(processInfoCalled, false, 'must not even inspect a process when no managed PID exists');
+  });
+
+  it('does nothing when the managed PID file is absent', () => {
+    const stopped = [];
+    _stopForUpgrade('headroom', {
+      home: 'C:\\Users\\alice',
+      env: {},
+      pidPathFn: () => 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom-primary\\headroom.pid',
+      existsSyncFn: () => false,
+      readFileSyncFn: () => { throw new Error('should not read'); },
+      processInfoFn: () => OWNED_INFO,
+      stopPidFn: (pid) => stopped.push(pid),
+      managedRoot: 'C:\\Users\\alice\\.myelin',
+    });
+    assert.deepEqual(stopped, []);
+  });
+
+  it('no-ops for an unknown tool name', () => {
+    const stopped = [];
+    _stopForUpgrade('uv', {
+      pidPathFn: () => 'x',
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '1',
+      processInfoFn: () => OWNED_INFO,
+      stopPidFn: (pid) => stopped.push(pid),
+      managedRoot: '/root',
+    });
+    assert.deepEqual(stopped, []);
+  });
+
+  it('swallows errors thrown while stopping the managed PID', () => {
+    assert.doesNotThrow(() => _stopForUpgrade('headroom', {
+      home: 'C:\\Users\\alice',
+      env: {},
+      pidPathFn: () => 'x',
+      existsSyncFn: () => true,
+      readFileSyncFn: () => '4321',
+      processInfoFn: () => OWNED_INFO,
+      stopPidFn: () => { throw new Error('stop failed'); },
+      managedRoot: 'C:\\Users\\alice\\.myelin',
+    }));
   });
 });
 
