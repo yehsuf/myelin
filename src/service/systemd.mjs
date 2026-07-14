@@ -21,7 +21,11 @@ function engineInstanceIdentity(instance = {}) {
   throw new Error(`Unsupported engine instance role: ${instance.role}`);
 }
 
-function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } = {}) {
+function engineInstanceCommand(instance = {}, {
+  headroomBin,
+  headroomLiteBin,
+  nodePath = process.execPath,
+} = {}) {
   if (instance.engine === 'headroom') {
     if (!headroomBin) throw new Error('headroomBin is required for headroom engine instances');
     return {
@@ -33,7 +37,7 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
   if (instance.engine === 'headroom_lite') {
     if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
     return {
-      executable: process.execPath,
+      executable: nodePath,
       args: [resolveHeadroomLiteEntrypoint(headroomLiteBin)],
       env: { HEADROOM_LITE_PORT: String(instance.port) },
     };

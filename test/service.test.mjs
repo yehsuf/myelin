@@ -72,6 +72,15 @@ const ENGINE_BINS = {
   headroomBin: '/opt/myelin/bin/headroom',
   headroomLiteBin: HEADROOM_LITE_FIXTURE.bin,
 };
+const SERVICE_NODE_EXECUTABLE = '/opt/myelin/runtime/node';
+
+function expectedSystemdArgument(value) {
+  return `"${String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '$$$$')
+    .replace(/%/g, '%%')}"`;
+}
 
 function createHeadroomLiteFixture({ extensionlessEntrypoint = false } = {}) {
   const root = mkdtempSync(join(process.cwd(), '.service test $headroom-lite-'));
@@ -237,13 +246,29 @@ function engineInstance(engine, role) {
 }
 
 describe('engine instance service generators', () => {
-  it('runs Lite launchd and systemd services with Node and a resolved JavaScript entrypoint', () => {
+  it('defaults Lite launchd and systemd services to the current Node runtime', () => {
     const instance = engineInstance('headroom_lite', 'primary');
     const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
     const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS });
-    const expectedLaunchdCommand = `exec '${process.execPath}' '${HEADROOM_LITE_FIXTURE.entrypoint}'`;
-    const escapedSystemdEntrypoint = HEADROOM_LITE_FIXTURE.entrypoint.replace(/\$/g, () => '$$');
-    const expectedSystemdCommand = `ExecStart="${process.execPath}" "${escapedSystemdEntrypoint}"`;
+
+    assert.ok(plist.includes(`exec '${process.execPath}' '${HEADROOM_LITE_FIXTURE.entrypoint}'`));
+    assert.ok(unit.includes(`ExecStart=${expectedSystemdArgument(process.execPath)} ${expectedSystemdArgument(HEADROOM_LITE_FIXTURE.entrypoint)}`));
+  });
+
+  it('runs Lite launchd and systemd services with Node and a resolved JavaScript entrypoint', () => {
+    const instance = engineInstance('headroom_lite', 'primary');
+    const plist = generateEngineInstancePlist({
+      instance,
+      ...ENGINE_BINS,
+      nodePath: SERVICE_NODE_EXECUTABLE,
+    });
+    const unit = generateEngineInstanceUnit({
+      instance,
+      ...ENGINE_BINS,
+      nodePath: SERVICE_NODE_EXECUTABLE,
+    });
+    const expectedLaunchdCommand = `exec '${SERVICE_NODE_EXECUTABLE}' '${HEADROOM_LITE_FIXTURE.entrypoint}'`;
+    const expectedSystemdCommand = `ExecStart=${expectedSystemdArgument(SERVICE_NODE_EXECUTABLE)} ${expectedSystemdArgument(HEADROOM_LITE_FIXTURE.entrypoint)}`;
 
     assert.ok(plist.includes(expectedLaunchdCommand));
     assert.ok(unit.includes(expectedSystemdCommand));
@@ -259,10 +284,10 @@ describe('engine instance service generators', () => {
       instance,
       headroomBin: ENGINE_BINS.headroomBin,
       headroomLiteBin: EXTENSIONLESS_HEADROOM_LITE_FIXTURE.bin,
+      nodePath: SERVICE_NODE_EXECUTABLE,
     });
-    const escapedEntrypoint = EXTENSIONLESS_HEADROOM_LITE_FIXTURE.entrypoint.replace(/\$/g, () => '$$');
 
-    assert.ok(unit.includes(`ExecStart="${process.execPath}" "${escapedEntrypoint}"`));
+    assert.ok(unit.includes(`ExecStart=${expectedSystemdArgument(SERVICE_NODE_EXECUTABLE)} ${expectedSystemdArgument(EXTENSIONLESS_HEADROOM_LITE_FIXTURE.entrypoint)}`));
     assert.ok(!unit.includes(EXTENSIONLESS_HEADROOM_LITE_FIXTURE.rawShim));
   });
 
@@ -292,7 +317,11 @@ describe('engine instance service generators', () => {
         .join('')}`;
 
       it(`generates a ${engine} ${role} launchd service from its descriptor`, () => {
-        const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
+        const plist = generateEngineInstancePlist({
+          instance,
+          ...ENGINE_BINS,
+          ...(engine === 'headroom_lite' ? { nodePath: SERVICE_NODE_EXECUTABLE } : {}),
+        });
         if (engine === 'headroom_lite') {
           assert.ok(plist.includes(expectedBinary));
         } else {
@@ -310,9 +339,13 @@ describe('engine instance service generators', () => {
       });
 
       it(`generates a ${engine} ${role} systemd service from its descriptor`, () => {
-        const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS });
+        const unit = generateEngineInstanceUnit({
+          instance,
+          ...ENGINE_BINS,
+          ...(engine === 'headroom_lite' ? { nodePath: SERVICE_NODE_EXECUTABLE } : {}),
+        });
         if (engine === 'headroom_lite') {
-          assert.ok(unit.includes(expectedBinary.replace(/\$/g, () => '$$')));
+          assert.ok(unit.includes(expectedSystemdArgument(expectedBinary)));
         } else {
           assert.match(unit, new RegExp(expectedBinary));
         }
