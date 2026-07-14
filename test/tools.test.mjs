@@ -19,7 +19,7 @@ function hasPosixSh() {
 }
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
-import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
+import { parseHeadroomVersion, headroomHealthUrl, installHeadroom } from '../src/tools/headroom.mjs';
 import * as winswTools from '../src/tools/winsw.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
 import { writeManagedLauncher } from '../src/runtime/launcher.mjs';
@@ -223,6 +223,41 @@ describe('headroomHealthUrl', () => {
   });
 });
 
+describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', () => {
+  // A relocated MYELIN_DIR whose venv path carries shell metacharacters must be
+  // handed to `uv` as literal argv via execFileSync — never interpolated into an
+  // execSync shell string.
+  it('invokes uv with execFileSync ARGUMENT ARRAYS carrying the venv verbatim', () => {
+    const env = { MYELIN_DIR: '/srv/my "weird" $(calc) `bt` \'root\'' };
+    const calls = [];
+    const made = [];
+    installHeadroom({
+      home: '/home/tester',
+      env,
+      mkdirSyncImpl: (p) => { made.push(p); },
+      existsSyncImpl: () => true,
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); return Buffer.from(''); },
+    });
+
+    const venv = `${env.MYELIN_DIR}/venv`;
+    assert.equal(calls.length, 2, 'exactly the venv-create and pip-install calls');
+    // uv venv <venv>
+    assert.equal(calls[0].file, 'uv');
+    assert.deepEqual(calls[0].args, ['venv', venv]);
+    // uv pip install --python <venv> headroom-ai[all]
+    assert.equal(calls[1].file, 'uv');
+    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]']);
+    // Every arg is a discrete element; no arg is a composed shell command.
+    for (const c of calls) {
+      assert.ok(Array.isArray(c.args));
+      assert.ok(!c.args.some((a) => /uv (venv|pip)/.test(a)), 'no shell command string may be built');
+    }
+    // The venv element is byte-for-byte the MYELIN_DIR-derived path.
+    assert.equal(calls[0].args[1], venv);
+    assert.equal(calls[1].args[3], venv);
+  });
+});
+
 describe('writeManagedLauncher', () => {
   it('writes a POSIX launcher that invokes node with the managed launcher', () => {
     const home = makeTempHome('managed-launcher-posix');
@@ -374,6 +409,13 @@ describe('writeManagedLauncher', () => {
   // process.execPath (/usr/bin/node) and a $HOME-derived launcherPath are POSIX
   // paths native cmd.exe cannot run. The generated .cmd must carry NATIVE Windows
   // paths (/mnt/<drive>/... -> <Drive>:\...) or refuse rather than emit a broken shim.
+  //
+  // Host-independence: the `wsl: true` argument is the EXPLICIT injected signal
+  // that drives both the /mnt/<drive>→<Drive>:\ conversion AND the POSIX path
+  // building — writeManagedLauncher never reads ambient process.platform for
+  // these paths. So this asserts identically on macOS, Linux, AND a real Windows
+  // host (where process.platform === 'win32' would otherwise have pre-mangled
+  // `/mnt/d/...` into `\mnt\d\...` before conversion could run).
   it('WSL: bakes native Windows paths (/mnt/d -> D:\\) into the .cmd shim', () => {
     const written = {};
     const result = writeManagedLauncher({
@@ -395,9 +437,15 @@ describe('writeManagedLauncher', () => {
     // No unrunnable POSIX/WSL mount fragments leak into the native cmd shim.
     assert.ok(!shim.includes('/mnt/'), `no /mnt/ path may survive: ${shim}`);
     assert.ok(!shim.includes('/usr/'), `no /usr/ path may survive: ${shim}`);
+    // Regression guard for the Windows-host mangling: an ambient win32 join would
+    // have turned the launcher path into `\mnt\d\...` (backslash form) instead of
+    // converting it to `D:\...`. That backslash-mount form must never appear.
+    assert.ok(!shim.includes('\\mnt\\'), `no backslash-mangled \\mnt\\ path may survive: ${shim}`);
   });
 
   it('WSL: refuses to emit a .cmd when node/launcher paths have no native equivalent', () => {
+    // The `wsl: true` signal forces POSIX path building + rejectPosix regardless
+    // of the host, so this refusal is deterministic on macOS, Linux, and Windows.
     // A pure POSIX node path (/usr/bin/node) cannot be run by native cmd.exe.
     assert.throws(
       () => writeManagedLauncher({
@@ -412,7 +460,11 @@ describe('writeManagedLauncher', () => {
       /cannot generate a native Windows launcher/,
     );
 
-    // Even with a convertible node, a POSIX ($HOME-derived) launcher path is rejected.
+    // Even with a convertible node, a POSIX ($HOME-derived) launcher path is
+    // rejected. On a real Windows host an ambient win32 join would have mangled
+    // `/home/tester/...` into `\home\tester\...` (which normalizeWindowsFilesystem
+    // -Path would wrongly accept); the injected `wsl: true` keeps it POSIX so the
+    // rejectPosix guard fires.
     assert.throws(
       () => writeManagedLauncher({
         home: '/home/tester',

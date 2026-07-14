@@ -200,7 +200,19 @@ export function writeManagedLauncher({
   writeFileSyncFn = writeFileSync,
   chmodSyncFn = chmodSync,
 } = {}) {
-  const { root, launcherPath } = runtimePaths({ home, rootDir });
+  // Under WSL the launcher classifies the OS as 'windows' but the underlying
+  // paths (home, nodeBin, launcherPath) are POSIX (/home/... or /mnt/<drive>/...).
+  // If runtimePaths joined them with the host's separators, a real Windows host
+  // (process.platform === 'win32') would mangle `/mnt/d/...` into `\mnt\d\...`
+  // BEFORE renderWindowsLauncher could convert it to `D:\...` — the same input
+  // would then behave differently on Windows vs macOS/Linux. Pin the path style
+  // to POSIX from the EXPLICIT `wsl` signal so the /mnt/<drive>→<Drive>:\
+  // conversion and the refuse-on-non-convertible decision are deterministic on
+  // every host. For the non-WSL cases the ambient platform is the correct target
+  // (a native Windows host builds Windows paths; POSIX hosts build POSIX paths),
+  // so leave `platform` unset to preserve that behavior.
+  const pathPlatform = wsl ? 'linux' : undefined;
+  const { root, launcherPath } = runtimePaths({ home, rootDir, platform: pathPlatform });
   const binDir = joinManaged(root, 'bin');
   const commandPath = joinManaged(binDir, os === 'windows' ? 'myelin.cmd' : 'myelin');
 

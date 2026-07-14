@@ -266,6 +266,22 @@ function assertNoSystemdControlChars(value, label) {
   }
 }
 
+/**
+ * Guard EVERY environment key AND value spliced into `Environment=` lines. A
+ * newline in a MYELIN_DIR-derived (or otherwise forwarded) env key/value would
+ * otherwise start a NEW unit line — injecting arbitrary directives that sail
+ * past {@link validateSystemdUnit} (whose quote-balance check treats a newline
+ * as a plain line break). Applied to the fully-merged env of BOTH unit
+ * generators before any line is rendered.
+ * @param {Record<string, unknown>} mergedEnv
+ */
+function assertNoSystemdEnvControlChars(mergedEnv = {}) {
+  for (const [key, value] of Object.entries(mergedEnv)) {
+    assertNoSystemdControlChars(key, `Environment key ${JSON.stringify(key)}`);
+    assertNoSystemdControlChars(value, `Environment value for key ${JSON.stringify(key)}`);
+  }
+}
+
 export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
@@ -277,6 +293,7 @@ export function generateEngineInstanceUnit({ instance, envVars = {}, env = proce
   assertNoSystemdControlChars(command.executable, 'ExecStart executable');
   command.args.forEach((arg, i) => assertNoSystemdControlChars(arg, `ExecStart argument[${i}]`));
   const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
+  assertNoSystemdEnvControlChars(mergedEnv);
   const envLines = systemdEnvironmentLines(mergedEnv);
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   const execStart = instance.engine === 'headroom_lite'
@@ -338,6 +355,7 @@ export function removeEngineInstance(instance) {
 export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {}, env = process.env }) {
   const execArgs = args ?? ['--listen-port', String(port), '-s', addonPath];
   const mergedEnv = withForwardedMyelinDir(envVars, env);
+  assertNoSystemdEnvControlChars(mergedEnv);
   const envLines = systemdEnvironmentLines(mergedEnv);
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   const execStart = renderSystemdExecStart([mitmdumpBin, ...execArgs]);

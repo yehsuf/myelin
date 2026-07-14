@@ -11,6 +11,8 @@ import {
   buildMitmServiceInstallOptions,
   buildHeadroomStopExec,
   ensureManagedHeadroomService,
+  ensureManagedVenv,
+  installPipPackageInManagedVenv,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
   stopLegacyManagedProxies,
@@ -42,6 +44,60 @@ describe('shouldInstallPythonHeadroomPackage', () => {
         },
       },
     }), true);
+  });
+});
+
+describe('ensureManagedVenv / installPipPackageInManagedVenv (C: MYELIN_DIR venv never reaches a shell)', () => {
+  // A venv path derived from a relocated MYELIN_DIR is arbitrary user text. It
+  // MUST reach `uv` as a single literal argv element via execFileSync — never
+  // interpolated into an execSync shell string where `"`, `$(...)`, backticks or
+  // `'` could break out into command execution.
+  const HOSTILE_VENV = 'C:\\Users\\dev\\my "weird" $(calc) `bt` \'root\'\\venv';
+
+  it('ensureManagedVenv calls execFileSync(uv, [venv, <venv>]) with the venv as ONE literal argv element', () => {
+    const calls = [];
+    ensureManagedVenv(HOSTILE_VENV, {
+      existsSyncImpl: () => false, // pyvenv.cfg missing → must create
+      execFileSyncImpl: (file, args, opts) => { calls.push({ file, args, opts }); return Buffer.from(''); },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, 'uv', 'must invoke the uv binary directly (no shell)');
+    assert.ok(Array.isArray(calls[0].args), 'args must be an argv array, not a shell string');
+    assert.deepEqual(calls[0].args, ['venv', HOSTILE_VENV]);
+    // The venv is a discrete, byte-for-byte-verbatim element — never escaped,
+    // split, or embedded in a larger command string.
+    assert.equal(calls[0].args[1], HOSTILE_VENV);
+    assert.ok(!calls[0].args.some((a) => /uv venv/.test(a)), 'no shell command string may be built');
+  });
+
+  it('ensureManagedVenv does NOT recreate the venv when pyvenv.cfg already exists', () => {
+    const calls = [];
+    ensureManagedVenv(HOSTILE_VENV, {
+      existsSyncImpl: () => true, // already present
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); },
+    });
+    assert.deepEqual(calls, []);
+  });
+
+  it('installPipPackageInManagedVenv passes venv + spec as literal argv (no shell parses [extras] / >=)', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'headroom-ai[all]', {
+      execFileSyncImpl: (file, args, opts) => { calls.push({ file, args, opts }); },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, 'uv');
+    assert.deepEqual(calls[0].args, ['pip', 'install', '--python', HOSTILE_VENV, 'headroom-ai[all]']);
+    // venv + spec are each ONE argv element, verbatim.
+    assert.equal(calls[0].args[3], HOSTILE_VENV);
+    assert.equal(calls[0].args[4], 'headroom-ai[all]');
+  });
+
+  it('installPipPackageInManagedVenv keeps a litellm[proxy]>=1.92 spec intact as a literal argv element', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'litellm[proxy]>=1.92', {
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); },
+    });
+    assert.deepEqual(calls[0].args, ['pip', 'install', '--python', HOSTILE_VENV, 'litellm[proxy]>=1.92']);
   });
 });
 
@@ -1277,6 +1333,49 @@ describe('stopManagedUvToolProcess (C4: no name-based serena/semble kill)', () =
     assert.deepEqual(result.stopped, [5555]);
     assert.equal(result.skipped.length, 1);
     assert.equal(result.skipped[0].pid, 6666);
+  });
+
+  it('does NOT stop a SIBLING tool dir that shares a name prefix (tools-backup vs tools)', () => {
+    // Regression (I3): the ownership check used a bare substring match, so
+    // `...\uv\tools-backup\semble.exe` matched the tool dir `...\uv\tools`
+    // (the prefix `tools` is a substring of `tools-backup`). A PATH-COMPONENT
+    // boundary match must reject the sibling.
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR, // ...\uv\tools
+      processListFn: () => ([{
+        pid: 7777,
+        command: 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools-backup\\semble\\Scripts\\semble.exe --serve',
+        executablePath: 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools-backup\\semble\\Scripts\\semble.exe',
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'a sibling tools-backup path must never be stopped');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 7777);
+  });
+
+  it('DOES stop a genuine child under the tool dir at a component boundary (tools\\<x>)', () => {
+    // Cross-separator + case variation must still match: the tool dir uses `\`,
+    // the recorded command uses `/` and mixed case.
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR, // ...\uv\tools
+      processListFn: () => ([{
+        pid: 8888,
+        command: 'C:/Users/dev/AppData/Roaming/UV/Tools/semble/Scripts/semble.exe --serve',
+        executablePath: 'C:/Users/dev/AppData/Roaming/UV/Tools/semble/Scripts/semble.exe',
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [8888], 'a genuine child of the tool dir must be stopped');
+    assert.deepEqual(result.stopped, [8888]);
+    assert.deepEqual(result.skipped, []);
   });
 
   it('default stop path targets the pid (Stop-Process -Id) and NEVER a process name', () => {

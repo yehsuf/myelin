@@ -1163,4 +1163,57 @@ describe('bootstrap scripts', () => {
     assert.equal(out.unc, '\\\\server\\share\\m');
     assert.equal(out.abspass, `${base}/.myelin`);
   });
+
+  it('guards a blank/whitespace MYELIN_DIR with IsNullOrWhiteSpace BEFORE canonicalization (source)', () => {
+    const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
+
+    // A null/empty/whitespace-only MYELIN_DIR is treated as absent (parity with
+    // Node's resolveMyelinRoot `value.trim() ? value : undefined`).
+    assert.ok(
+      /\[string\]::IsNullOrWhiteSpace\(\$env:MYELIN_DIR\)/.test(script),
+      'MYELIN_DIR must be guarded with [string]::IsNullOrWhiteSpace',
+    );
+    // The whitespace fallback must run BEFORE Canonicalize-MyelinDir — otherwise
+    // a whitespace value would be rooted at USERPROFILE as `<USERPROFILE>\   `.
+    const guardIdx = script.search(/\$MyelinDir\s*=\s*if\s*\(\[string\]::IsNullOrWhiteSpace\(\$env:MYELIN_DIR\)\)/);
+    const canonIdx = script.indexOf('$MyelinDir = Canonicalize-MyelinDir $MyelinDir');
+    assert.ok(guardIdx >= 0, 'whitespace guard assignment must exist');
+    assert.ok(canonIdx >= 0, 'canonicalization must exist');
+    assert.ok(guardIdx < canonIdx, 'whitespace fallback must precede canonicalization');
+  });
+
+  it('install.ps1 resolves a blank/whitespace MYELIN_DIR to the SAME root as unset (behavioral)', { skip: !hasPwsh() }, () => {
+    const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
+    const fnMatch = script.match(/^function Canonicalize-MyelinDir \{[\s\S]*?^\}/m);
+    assert.ok(fnMatch, 'Canonicalize-MyelinDir function block should be extractable');
+    // Extract the REAL two-line resolution logic from install.ps1 (guard + canon).
+    const resolveMatch = script.match(
+      /\$MyelinDir = if \(\[string\]::IsNullOrWhiteSpace\(\$env:MYELIN_DIR\)\)[\s\S]*?\$MyelinDir = Canonicalize-MyelinDir \$MyelinDir/,
+    );
+    assert.ok(resolveMatch, 'MYELIN_DIR resolution (guard + canonicalization) should be extractable');
+
+    const base = '/home/canon-tester';
+    const run = (setup) => {
+      const harness = [
+        `$env:USERPROFILE = '${base}'`,
+        setup,
+        fnMatch[0],
+        resolveMatch[0],
+        '$MyelinDir',
+      ].join('\n');
+      const r = spawnSync('pwsh', ['-NoProfile', '-Command', harness], { encoding: 'utf8' });
+      assert.equal(r.status, 0, r.stderr || 'pwsh harness failed');
+      return r.stdout.trim();
+    };
+
+    const unset = run('Remove-Item Env:MYELIN_DIR -ErrorAction SilentlyContinue');
+    assert.ok(unset.length > 0);
+    assert.ok(unset.endsWith('.myelin'), `unset MYELIN_DIR should default to <home>/.myelin: ${unset}`);
+
+    // Blank / whitespace-only / tab-only / empty all resolve to the SAME default
+    // root as unset — never `<USERPROFILE>\   ` — mirroring resolveMyelinRoot.
+    assert.equal(run("$env:MYELIN_DIR = '   '"), unset, 'whitespace MYELIN_DIR must equal the unset default');
+    assert.equal(run('$env:MYELIN_DIR = "`t`t"'), unset, 'tab-only MYELIN_DIR must equal the unset default');
+    assert.equal(run("$env:MYELIN_DIR = ''"), unset, 'empty MYELIN_DIR must equal the unset default');
+  });
 });

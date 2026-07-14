@@ -1,4 +1,4 @@
-import { execFile, execSync } from 'node:child_process';
+import { execFile, execSync, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -31,15 +31,19 @@ export async function detectTool(name, versionFlag = '--version') {
 
 export async function detectUv() { return detectTool('uv', '--version'); }
 export async function detectNode() { return detectTool('node', '--version'); }
-export async function detectHeadroom() {
+export async function detectHeadroom({
+  headroomBinPathImpl,
+  existsSyncImpl = existsSync,
+  execFileSyncImpl = execFileSync,
+} = {}) {
   // headroom lives in the myelin venv, not in global PATH — check existence + run directly
-  const { headroomBinPath } = await import('../tools/headroom.mjs');
-  const { existsSync } = await import('node:fs');
+  const headroomBinPath = headroomBinPathImpl
+    ?? (await import('../tools/headroom.mjs')).headroomBinPath;
   const binPath = headroomBinPath();
-  if (!existsSync(binPath)) return { installed: false, version: null, path: null };
+  if (!existsSyncImpl(binPath)) return { installed: false, version: null, path: null };
   try {
-    const { execSync } = await import('node:child_process');
-    const stdout = execSync(`"${binPath}" --version`, { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+    // execFileSync: binPath (myelin-venv / MYELIN_DIR-derived) is a literal argv[0], never shell-parsed
+    const stdout = execFileSyncImpl(binPath, ['--version'], { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
     const version = stdout.trim().split('\n')[0].trim();
     return { installed: true, version, path: binPath };
   } catch {

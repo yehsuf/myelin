@@ -92,6 +92,38 @@ export function shouldInstallPythonHeadroomPackage({ cfg = {}, flags = {} } = {}
   return buildServiceEnginePlan(cfg).selectedEngine === 'headroom';
 }
 
+/**
+ * Create the managed Python venv via `uv` using an execFileSync ARGUMENT ARRAY
+ * so the venv path — which is MYELIN_DIR-derived (arbitrary user text) — is
+ * handed to `uv` as ONE literal argv element and never composed into a shell
+ * string. A relocated root containing `"`, `$(...)`, backticks, or `'` therefore
+ * cannot break out into command execution. The venv is only (re)created when its
+ * `pyvenv.cfg` is missing.
+ */
+export function ensureManagedVenv(venv, {
+  execFileSyncImpl = execFileSync,
+  existsSyncImpl = existsSync,
+  stdio = 'pipe',
+} = {}) {
+  const venvArg = String(venv);
+  if (!existsSyncImpl(join(venvArg, 'pyvenv.cfg'))) {
+    execFileSyncImpl('uv', ['venv', venvArg], { stdio });
+  }
+}
+
+/**
+ * Install a pip package spec INTO the managed venv via `uv pip install --python
+ * <venv> <spec>`, again as an execFileSync argument array. Both the venv path
+ * and the (fixed) package spec are literal argv elements — no shell parses
+ * `[extras]`, `>=`, or any metacharacter in a relocated venv path.
+ */
+export function installPipPackageInManagedVenv(venv, spec, {
+  execFileSyncImpl = execFileSync,
+  stdio = 'inherit',
+} = {}) {
+  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], { stdio });
+}
+
 function isVersionAtLeast(version, minimum) {
   const parse = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
   const a = parse(version ?? '0.0.0');
@@ -1631,14 +1663,30 @@ function legacyProcessInfo(pid, { execSyncImpl = execSync, powershellExe } = {})
 }
 
 function legacyManagedProcessIsOwned(processInfo, managedRoot) {
-  const needle = String(managedRoot ?? '').toLowerCase();
-  if (!needle || !processInfo) return false;
+  if (!processInfo) return false;
   // Require a live process (StartTime present) to avoid acting on a stale or
   // torn pid record, then verify command-path ownership under the managed dir.
   if (!processInfo.startTime) return false;
   return [processInfo.command, processInfo.executablePath].some((value) =>
-    String(value ?? '').toLowerCase().includes(needle)
+    pathReferencesManagedDir(value, managedRoot)
   );
+}
+
+/**
+ * Does `value` (a process command line or executable path) reference a file that
+ * lives INSIDE `dir`, matched at a PATH-COMPONENT boundary? A plain substring
+ * check wrongly treats a sibling like `...\uv\tools-backup\semble.exe` as owned
+ * by `...\uv\tools` (the prefix `tools` is a substring of `tools-backup`).
+ * Require `dir` to be followed by a path separator (or to equal the value
+ * exactly) after normalizing separators AND case, so `...\uv\tools` matches only
+ * a genuine `...\uv\tools\<child>` and never `...\uv\tools-backup\...`.
+ */
+function pathReferencesManagedDir(value, dir) {
+  const normalize = (s) => String(s ?? '').replace(/[\\/]+/g, '/').toLowerCase();
+  const needle = normalize(dir).replace(/\/+$/u, '');
+  if (!needle) return false;
+  const hay = normalize(value);
+  return hay === needle || hay.includes(`${needle}/`);
 }
 
 function defaultStopManagedPid(pid, { execSyncImpl = execSync, powershellExe } = {}) {
@@ -2061,7 +2109,8 @@ async function main() {
   try {
     const serenaEnv = execSync('uv tool dir', { stdio: 'pipe' }).toString().trim();
     const bottlePath = join(serenaEnv, 'serena-agent');
-    execSync(`uv pip install --python "${bottlePath}" "bottle<0.13"`, { stdio: 'pipe' });
+    // execFileSync: bottlePath (uv-tool-dir-derived venv) is a literal argv element, never shell-parsed
+    execFileSync('uv', ['pip', 'install', '--python', bottlePath, 'bottle<0.13'], { stdio: 'pipe' });
   } catch {}
   // Serena opens a browser tab/window every time its MCP server starts by
   // default (web_dashboard_open_on_launch: true) - quality-of-life fix,
@@ -2213,10 +2262,8 @@ async function main() {
   if (existingCfg.budget_routing?.litellm) {
     step('LiteLLM budget router...');
     try {
-      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
-        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
-      }
-      execSync(`uv pip install --python "${venv}" "litellm[proxy]>=1.92"`, { stdio: 'inherit' });
+      ensureManagedVenv(venv);
+      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92');
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
@@ -2268,12 +2315,10 @@ async function main() {
   if (installsPythonHeadroomPackage) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
-      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
-        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
-      }
-      // Single quotes break on Windows cmd — use double quotes or no quotes
-      const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
-      execSync(`uv pip install --python "${venv}" ${headroomPkg}`, { stdio: 'inherit' });
+      ensureManagedVenv(venv);
+      // execFileSync passes the spec as a literal argv element, so the `[all]`
+      // extras marker is never shell-globbed on any platform — no per-OS quoting.
+      installPipPackageInManagedVenv(venv, 'headroom-ai[all]');
       ok('headroom installed (headroom-ai from PyPI)');
     } else {
       skip(`headroom (${tools.headroom.version})`);

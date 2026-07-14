@@ -8,8 +8,8 @@ function normalizeRootArgs(arg) {
 }
 
 export function runtimePaths(arg) {
-  const { home, rootDir } = normalizeRootArgs(arg);
-  const { root, releasesDir, currentPointerPath, launcherPath } = managedPaths({ home, rootDir });
+  const { home, rootDir, platform } = normalizeRootArgs(arg);
+  const { root, releasesDir, currentPointerPath, launcherPath } = managedPaths({ home, rootDir, platform });
   return {
     root,
     releasesDir,

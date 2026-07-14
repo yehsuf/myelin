@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
@@ -29,13 +29,23 @@ export function headroomBinPath({ home = homedir(), env = process.env } = {}) {
     : joinManaged(venv, 'bin', 'headroom');
 }
 
-export async function installHeadroom({ home = homedir(), env = process.env } = {}) {
+export async function installHeadroom({
+  home = homedir(),
+  env = process.env,
+  execFileSyncImpl = execFileSync,
+  mkdirSyncImpl = mkdirSync,
+  existsSyncImpl = existsSync,
+} = {}) {
   const venv = headroomVenvPath({ home, env });
-  mkdirSync(managedPaths({ home, env }).root, { recursive: true });
-  execSync(`uv venv ${venv}`, { stdio: 'inherit' });
-  execSync(`uv pip install --python ${venv} "headroom-ai[all]"`, { stdio: 'inherit' });
+  mkdirSyncImpl(managedPaths({ home, env }).root, { recursive: true });
+  // execFileSync ARGUMENT ARRAYS: the venv path is MYELIN_DIR-derived (arbitrary
+  // user text) and must reach `uv` as ONE literal argv element, never composed
+  // into a shell string. A relocated root containing `"`, `$(...)`, backticks or
+  // `'` therefore cannot break out into command execution.
+  execFileSyncImpl('uv', ['venv', venv], { stdio: 'inherit' });
+  execFileSyncImpl('uv', ['pip', 'install', '--python', venv, 'headroom-ai[all]'], { stdio: 'inherit' });
   const binPath = headroomBinPath({ home, env });
-  return { binPath, ok: existsSync(binPath) };
+  return { binPath, ok: existsSyncImpl(binPath) };
 }
 
 export async function waitForHeadroom(port = 8787, timeoutMs = 5000) {

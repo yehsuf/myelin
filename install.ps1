@@ -30,7 +30,13 @@ function Canonicalize-MyelinDir {
     return (Join-Path $env:USERPROFILE $Root)
 }
 
-$MyelinDir = if ($env:MYELIN_DIR) { $env:MYELIN_DIR } else { "$env:USERPROFILE\.myelin" }
+# A null / empty / WHITESPACE-only MYELIN_DIR is treated as ABSENT and falls back
+# to the default managed root BEFORE canonicalization — mirroring Node's
+# resolveMyelinRoot, whose `value.trim() ? value : undefined` guard treats a
+# blank value as unset. Without this, `if ($env:MYELIN_DIR)` sees a whitespace-only
+# string as truthy and Canonicalize-MyelinDir would root it at USERPROFILE
+# (`<USERPROFILE>\   `), diverging from the staged Node runtime's `<home>\.myelin`.
+$MyelinDir = if ([string]::IsNullOrWhiteSpace($env:MYELIN_DIR)) { "$env:USERPROFILE\.myelin" } else { $env:MYELIN_DIR }
 $MyelinDir = Canonicalize-MyelinDir $MyelinDir
 $env:MYELIN_DIR = $MyelinDir
 $RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://github.com/yehsuf/myelin" }

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { detectOS, detectShell } from '../src/detect/os.mjs';
-import { detectTool, detectUv, detectNode, detectCopilotHud, detectCodegraph } from '../src/detect/tools.mjs';
+import { detectTool, detectUv, detectNode, detectCopilotHud, detectCodegraph, detectHeadroom } from '../src/detect/tools.mjs';
 import { detectCorporateProxy, detectCaBundles } from '../src/detect/proxy.mjs';
 import { isPortFree, findFreePort } from '../src/detect/port.mjs';
 
@@ -150,5 +150,39 @@ describe('port detection', () => {
   it('port 0 is never free', async () => {
     const r = await isPortFree(0);
     assert.equal(r, false);
+  });
+});
+
+describe('detectHeadroom — execFileSync argv safety (myelin-venv / MYELIN_DIR-derived binPath)', () => {
+  it('passes the headroom bin path as a literal argv[0], never a shell string', async () => {
+    // Simulate a relocated MYELIN_DIR whose venv path contains shell metacharacters
+    const evilBin = '/tmp/x"; $(touch pwn) \'/.venv/bin/headroom';
+    const calls = [];
+    const res = await detectHeadroom({
+      headroomBinPathImpl: () => evilBin,
+      existsSyncImpl: (p) => p === evilBin,
+      execFileSyncImpl: (file, args) => {
+        calls.push({ file, args });
+        return Buffer.from('headroom 9.9.9\n');
+      },
+    });
+    assert.equal(calls.length, 1);
+    // The dangerous path is argv[0], byte-for-byte — no shell interpolation
+    assert.equal(calls[0].file, evilBin);
+    assert.deepEqual(calls[0].args, ['--version']);
+    assert.equal(res.installed, true);
+    assert.equal(res.version, 'headroom 9.9.9');
+    assert.equal(res.path, evilBin);
+  });
+
+  it('reports not-installed without spawning when the bin path is absent', async () => {
+    let spawned = false;
+    const res = await detectHeadroom({
+      headroomBinPathImpl: () => '/no/such/headroom',
+      existsSyncImpl: () => false,
+      execFileSyncImpl: () => { spawned = true; return Buffer.from(''); },
+    });
+    assert.equal(spawned, false);
+    assert.deepEqual(res, { installed: false, version: null, path: null });
   });
 });

@@ -11,7 +11,7 @@ import {
 } from '../src/config/schema.mjs';
 import { loadConfig, readUserConfig, DEFAULT_CONFIG_PATH } from '../src/config/reader.mjs';
 import { writeConfig, setConfigValue, getConfigValue } from '../src/config/writer.mjs';
-import { platformConfigBanner, pruneConfig } from '../src/cli/config-cmd.mjs';
+import { platformConfigBanner, pruneConfig, buildConfigEditCommand } from '../src/cli/config-cmd.mjs';
 
 const TEST_DIR = join(homedir(), '.tokenstack-test');
 
@@ -354,6 +354,34 @@ describe('config CLI banner', () => {
   it('mentions nano on non-win32 platforms', () => {
     const banner = platformConfigBanner('darwin', '/Users/alice/.myelin/config.yaml');
     assert.ok(banner.includes('nano'));
+  });
+});
+
+describe('config edit — execFileSync argv safety (MYELIN_DIR-derived config path)', () => {
+  it('passes a config path with shell metacharacters as a single literal argv element', () => {
+    // Simulates a relocated MYELIN_DIR whose config path contains " $() ' ; injection attempts
+    const evilPath = '/tmp/x"; rm -rf $(echo pwn) \'#/config.yaml';
+    const { command, args } = buildConfigEditCommand('nano', evilPath);
+    assert.equal(command, 'nano');
+    assert.deepEqual(args, [evilPath]);
+    // The dangerous path is the final argv element, byte-for-byte — no shell string was built
+    assert.equal(args[args.length - 1], evilPath);
+    // No argument is a concatenated shell command line
+    assert.ok(!args.some(a => a.includes('nano ')));
+  });
+
+  it('keeps editor flags as separate argv elements with the config path last', () => {
+    const cfg = 'C:\\Users\\alice\\.myelin\\config.yaml';
+    const { command, args } = buildConfigEditCommand('code --wait', cfg);
+    assert.equal(command, 'code');
+    assert.deepEqual(args, ['--wait', cfg]);
+  });
+
+  it('tolerates an empty editor string without crashing', () => {
+    const cfg = '/home/u/.myelin/config.yaml';
+    const { command, args } = buildConfigEditCommand('', cfg);
+    assert.equal(command, '');
+    assert.deepEqual(args, [cfg]);
   });
 });
 

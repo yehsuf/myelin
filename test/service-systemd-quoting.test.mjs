@@ -180,4 +180,88 @@ describe('I7 systemd control-char guard (newline directive-injection defense)', 
     assert.ok(unit.includes('WorkingDirectory=/srv/managed/state/headroom-primary'));
     assert.ok(unit.includes('ExecStart=/opt/myelin/bin/headroom proxy --port 8787'));
   });
+
+  // Environment= lines are the other raw-directive vector: a newline in an env
+  // KEY or VALUE would start a fresh unit line, injecting directives that pass
+  // validateSystemdUnit's quote-balance check (which treats a newline as a plain
+  // break). Guard EVERY key AND value of the merged env in BOTH unit generators.
+  it('generateEngineInstanceUnit throws on a newline in an Environment VALUE', () => {
+    assert.throws(
+      () => generateEngineInstanceUnit({
+        instance: headroomInstance(),
+        ...ENGINE_BINS,
+        envVars: { MYELIN_EXTRA: '/srv/x\nExecStartPre=/bin/evil' },
+      }),
+      /Environment value[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('generateEngineInstanceUnit throws on a newline in an Environment KEY', () => {
+    assert.throws(
+      () => generateEngineInstanceUnit({
+        instance: headroomInstance(),
+        ...ENGINE_BINS,
+        envVars: { 'BAD\nExecStart=/bin/evil': 'value' },
+      }),
+      /Environment key[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('generateEngineInstanceUnit throws on a control char in a FORWARDED MYELIN_DIR env value', () => {
+    assert.throws(
+      () => generateEngineInstanceUnit({
+        instance: headroomInstance(),
+        ...ENGINE_BINS,
+        env: { MYELIN_DIR: '/srv/managed\nExecStart=/bin/evil' },
+      }),
+      /Environment value for key "MYELIN_DIR"[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('generateMitmUnit throws on a newline in an Environment VALUE', () => {
+    assert.throws(
+      () => generateMitmUnit({
+        mitmdumpBin: '/opt/bin/mitmdump',
+        port: 8888,
+        addonPath: '/opt/addon.py',
+        envVars: { HTTPS_PROXY: 'http://x\nExecStartPre=/bin/evil' },
+      }),
+      /Environment value[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('generateMitmUnit throws on a newline in an Environment KEY', () => {
+    assert.throws(
+      () => generateMitmUnit({
+        mitmdumpBin: '/opt/bin/mitmdump',
+        port: 8888,
+        addonPath: '/opt/addon.py',
+        envVars: { 'BAD\nRestart=no': 'value' },
+      }),
+      /Environment key[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('generateMitmUnit throws on a control char in a FORWARDED MYELIN_DIR env value', () => {
+    assert.throws(
+      () => generateMitmUnit({
+        mitmdumpBin: '/opt/bin/mitmdump',
+        port: 8888,
+        addonPath: '/opt/addon.py',
+        env: { MYELIN_DIR: '/srv/managed\rExecStart=/bin/evil' },
+      }),
+      /Environment value for key "MYELIN_DIR"[\s\S]*control character U\+000D/,
+    );
+  });
+
+  it('generateMitmUnit still renders a normal (control-char-free) env unchanged', () => {
+    const unit = generateMitmUnit({
+      mitmdumpBin: '/opt/bin/mitmdump',
+      port: 8888,
+      addonPath: '/opt/addon.py',
+      envVars: { HTTPS_PROXY: 'http://127.0.0.1:9000' },
+    });
+    assert.ok(unit.includes('Environment=HTTPS_PROXY=http://127.0.0.1:9000')
+      || unit.includes('Environment="HTTPS_PROXY=http://127.0.0.1:9000"'));
+  });
 });
