@@ -1933,12 +1933,14 @@ async function main() {
       ok('Migrated ~/.tokenstack → ~/.myelin');
       didMigrate = true;
     } catch {
-      // Fallback: copy + delete (handles cross-device or locked files)
+      // Fallback: copy + delete (handles cross-device or locked files).
+      // Uses fs cp/rm APIs — never a shell — so the managed `newDir`
+      // (MYELIN_DIR-derived, may contain spaces/$()/quotes) is never parsed by
+      // any shell. cpSync recurses; this branch only runs when newDir is absent.
       try {
-        execSync(os === 'windows'
-          ? `robocopy "${oldDir}" "${newDir}" /E /MOVE /NFL /NDL /NJH /NJS`
-          : `cp -r "${oldDir}" "${newDir}" && rm -rf "${oldDir}"`,
-          { stdio: 'pipe', shell: true });
+        const { cpSync, rmSync } = await import('node:fs');
+        cpSync(oldDir, newDir, { recursive: true });
+        rmSync(oldDir, { recursive: true, force: true });
         ok('Migrated ~/.tokenstack → ~/.myelin (via copy)');
         didMigrate = true;
       } catch (e2) {
@@ -1961,10 +1963,10 @@ async function main() {
       // running from newRepoDir) will finish removing oldDir.
       if (existsSync(oldRepo) && !existsSync(newRepoDir)) {
         try {
-          execSync(os === 'windows'
-            ? `robocopy "${oldRepo}" "${newRepoDir}" /E /NFL /NDL /NJH /NJS`
-            : `cp -r "${oldRepo}" "${newRepoDir}"`,
-            { stdio: 'pipe', shell: true });
+          // fs cp (never a shell): the managed `newRepoDir` is MYELIN_DIR-derived
+          // and must never be spliced into a `cp`/`robocopy` shell command.
+          const { cpSync } = await import('node:fs');
+          cpSync(oldRepo, newRepoDir, { recursive: true });
           ok('Copied repo to ~/.myelin/repo (removing ~/.tokenstack next run)');
         } catch (e) {
           warn(`Could not pre-copy repo to ~/.myelin/repo: ${e.message.split('\n')[0]}`);
@@ -2236,6 +2238,7 @@ async function main() {
     installTokenOptimizerForCopilot({
       os,
       exec: (command, options = {}) => execSync(command, { stdio: 'inherit', ...options }),
+      execFile: (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options }),
       log: (message = '') => console.log(`  ${message}`),
       warn,
     });
@@ -2660,7 +2663,7 @@ ${initSkillBody}`);
     if (os === 'windows') mkdirSync(join(profilePath, '..'), { recursive: true });
     const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
     const certLines = Object.entries(sslEnv)
-      .map(([k, v]) => `export ${k}=${v}`)
+      .map(([k, v]) => `export ${k}=${posixSingleQuote(v)}`)
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
@@ -2701,7 +2704,7 @@ ${initSkillBody}`);
       const psMyelinDir = profilePathBlock.windowsMyelinDirExport
         ? `${profilePathBlock.windowsMyelinDirExport}\n`
         : '';
-      const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
+      const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = ${powershellSingleQuote(v)}`).join('\n');
       const psPaths = renderWindowsProfilePathLines(profilePathBlock.windowsPathDirs);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {

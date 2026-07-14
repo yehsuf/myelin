@@ -54,8 +54,11 @@ litellm_settings:
 }
 
 /**
- * Generate the shell command to start LiteLLM.
- * Uses the myelin venv Python (where litellm is installed).
+ * Build the LiteLLM start invocation as an executable + argv ARRAY (never a
+ * shell string). Uses the myelin venv Python (where litellm is installed).
+ * Returning `{ file, args }` keeps the managed venv-python and config paths as
+ * discrete arguments, so no shell parses them even when the managed root
+ * contains spaces, `$()`, backticks, or quotes. Run via execFileSync(file,args).
  */
 export function generateLiteLLMStartCommand({ venvPath, configPath, port = 4000 } = {}) {
   // Derive the venv layout from the managed root's own path style rather than
@@ -65,7 +68,7 @@ export function generateLiteLLMStartCommand({ venvPath, configPath, port = 4000 
   const python = isWindowsStylePath(venvPath)
     ? joinManaged(venvPath, 'Scripts', 'python.exe')
     : joinManaged(venvPath, 'bin', 'python');
-  return `"${python}" -m litellm --config "${configPath}" --port ${port}`;
+  return { file: python, args: ['-m', 'litellm', '--config', configPath, '--port', String(port)] };
 }
 
 export function liteLLMConfigPath(home = homedir(), env = process.env) {

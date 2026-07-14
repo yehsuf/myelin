@@ -339,3 +339,74 @@ describe('isManagedRootRelocated — non-default explicit root only (I1)', () =>
     );
   });
 });
+
+// STEP 1 backstop: a managed root can never carry an ASCII control character.
+// A newline/CR/NUL in the root is the directive/line-injection vector for every
+// downstream generator (systemd unit, launchd/WinSW XML, shell profile block,
+// KEY=value/export line), so the resolver rejects it once, centrally — while
+// still allowing the legal-but-must-be-quoted metacharacters ($, backtick,
+// quote, space) that each splice site handles by single-quoting.
+describe('resolveMyelinRoot control-character rejection (STEP 1 backstop)', () => {
+  for (const [name, ch] of [
+    ['newline (LF)', '\n'],
+    ['carriage return (CR)', '\r'],
+    ['NUL', '\u0000'],
+    ['tab', '\t'],
+    ['DEL (U+007F)', '\u007F'],
+    ['unit separator (U+001F)', '\u001F'],
+  ]) {
+    it(`throws when an explicit MYELIN_DIR contains a ${name}`, () => {
+      assert.throws(
+        () => resolveMyelinRoot({ home, env: { MYELIN_DIR: `/managed${ch}evil` } }),
+        /control character/i,
+      );
+    });
+
+    it(`throws when an explicit rootDir contains a ${name}`, () => {
+      assert.throws(
+        () => resolveMyelinRoot({ home, env: {}, rootDir: `/managed${ch}evil` }),
+        /control character/i,
+      );
+    });
+
+    it(`throws when a relative rootDir with a ${name} is canonicalized against home`, () => {
+      assert.throws(
+        () => resolveMyelinRoot({ home, env: {}, rootDir: `sub${ch}dir` }),
+        /control character/i,
+      );
+    });
+
+    it(`throws when the default root's home carries a ${name}`, () => {
+      assert.throws(
+        () => resolveMyelinRoot({ home: `/home/al${ch}ice`, env: {} }),
+        /control character/i,
+      );
+    });
+  }
+
+  it('rejects a control char before managedPaths derives any child path', () => {
+    assert.throws(
+      () => managedPaths({ home, env: { MYELIN_DIR: '/managed\nevil' } }),
+      /control character/i,
+    );
+  });
+
+  it('allows a $() command-substitution root (quoted safely downstream, never rejected)', () => {
+    const root = resolveMyelinRoot({ home, env: { MYELIN_DIR: '/opt/$(printf pwn)/managed' } });
+    assert.equal(root, '/opt/$(printf pwn)/managed');
+    // Every derived path is produced without throwing.
+    const paths = managedPaths({ home, env: { MYELIN_DIR: '/opt/$(printf pwn)/managed' } });
+    assert.equal(paths.caBundlePath, '/opt/$(printf pwn)/managed/ca-bundle.pem');
+  });
+
+  it('allows a backtick / $VAR / quote / space root (all legal POSIX filename chars)', () => {
+    for (const raw of [
+      '/opt/`id`/managed',
+      '/opt/$HOME/managed',
+      "/opt/o'brien/managed",
+      '/opt/Managed Data/root',
+    ]) {
+      assert.equal(resolveMyelinRoot({ home, env: { MYELIN_DIR: raw } }), raw);
+    }
+  });
+});

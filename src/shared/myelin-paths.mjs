@@ -68,6 +68,39 @@ function isAbsoluteManagedRoot(p) {
 }
 
 /**
+ * Reject a resolved managed root that carries an ASCII control character
+ * (U+0000–U+001F or U+007F — the C0 range plus DEL, which includes NUL, TAB,
+ * LF, CR). Such a byte is NEVER legitimate in a filesystem path, and it is the
+ * line/directive-injection vector for every downstream generator: a newline in
+ * the root would start a NEW line inside a systemd unit, a launchd/WinSW XML
+ * value, a shell profile block, or a `KEY=value`/`export` line — smuggling in an
+ * arbitrary directive that per-splice quoting (single quotes, XML escaping) does
+ * not neutralize because the byte terminates the surrounding construct entirely.
+ *
+ * This is the systematic backstop: rejecting the byte once, at the single point
+ * where every managed path is resolved, guarantees no derived path
+ * (bin/venv/caBundle/runtime-bridge/cloneDir/…) can ever carry it, no matter
+ * which generator consumes it. It deliberately does NOT reject `$`, backticks,
+ * quotes, or spaces: those are legal in POSIX filenames and must instead be
+ * safely single-quoted at each splice site (see src/shared/shell-quote.mjs).
+ * @param {string} root
+ * @returns {string} the same root when clean
+ */
+function assertNoControlChars(root) {
+  const str = String(root);
+  const match = /[\u0000-\u001F\u007F]/u.exec(str);
+  if (match) {
+    const code = match[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+    throw new Error(
+      `Refusing to use managed root: it contains control character U+${code} `
+      + `(newline/CR/NUL/etc.), which is never valid in a path and is a `
+      + `directive/line-injection vector: ${JSON.stringify(str)}`,
+    );
+  }
+  return str;
+}
+
+/**
  * Normalize an explicit (caller/env supplied) managed root so it never yields
  * cwd-dependent state:
  *   - a leading `~`, `~/`, or `~\` expands to the home directory,
@@ -79,13 +112,14 @@ function isAbsoluteManagedRoot(p) {
  * @param {string} home
  */
 function normalizeExplicitRoot(value, home) {
+  assertNoControlChars(value);
   const homeModule = isWindowsStylePath(home) ? win32Path : posixPath;
   if (value === '~') return home;
   const tilde = /^~[\\/]([\s\S]*)$/.exec(value);
-  if (tilde) return homeModule.join(home, tilde[1]);
+  if (tilde) return assertNoControlChars(homeModule.join(home, tilde[1]));
   if (isAbsoluteManagedRoot(value)) return value;
   // Still non-absolute (relative) → root it at home, never the process cwd.
-  return homeModule.join(home, value);
+  return assertNoControlChars(homeModule.join(home, value));
 }
 
 /**
@@ -109,7 +143,10 @@ export function resolveMyelinRoot({ home, env = process.env, rootDir, platform =
   if (explicit !== undefined) {
     return normalizeExplicitRoot(explicit, home);
   }
-  return pathModuleForPlatform(platform).join(home, '.myelin');
+  // Guard the default too: a control character reaching here can only come from
+  // a poisoned `home`, and a newline in `<home>/.myelin` would inject directives
+  // into every downstream generator just the same.
+  return assertNoControlChars(pathModuleForPlatform(platform).join(home, '.myelin'));
 }
 
 /**

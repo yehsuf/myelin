@@ -36,6 +36,19 @@ function makeExecStub({ failOn = null } = {}) {
   };
 }
 
+function makeExecFileStub({ failOn = null } = {}) {
+  const calls = [];
+  return {
+    calls,
+    execFile(file, args = [], options = {}) {
+      calls.push({ file, args, options });
+      const joined = `${file} ${args.join(' ')}`;
+      if (failOn && joined.includes(failOn)) throw new Error(`${failOn} failed hard`);
+      return Buffer.from('');
+    },
+  };
+}
+
 describe('tokenOptimizerLicenseNotice', () => {
   it('mentions PolyForm Noncommercial and the repo URL', () => {
     const notice = tokenOptimizerLicenseNotice();
@@ -72,23 +85,29 @@ describe('defaultCloneDir — threads os/platform into the managed root', () => 
 describe('tokenOptimizerCopilotInstallSteps', () => {
   const cloneDir = '/Users/alice/.myelin/token-optimizer';
 
-  it('returns automatable darwin steps with clone/install commands', () => {
+  it('returns an argv git checkout + fixed-literal install commands (darwin)', () => {
     const plan = tokenOptimizerCopilotInstallSteps({ os: 'darwin', cloneDir });
     assert.equal(plan.automatable, true);
+    assert.equal(plan.cloneDir, cloneDir);
+    assert.deepEqual(plan.checkout, {
+      file: 'git',
+      args: ['clone', '--depth', '1', 'https://github.com/alexgreensh/token-optimizer.git', cloneDir],
+    });
     assert.deepEqual(plan.commands, [
-      `git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "${cloneDir}"`,
-      `cd "${cloneDir}"`,
       'bash install.sh --copilot',
       'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor',
     ]);
     assert.deepEqual(plan.manualInstructions, []);
+    // The managed cloneDir never lands inside a shell command string.
+    assert.ok(plan.commands.every((c) => !c.includes(cloneDir)), JSON.stringify(plan.commands));
   });
 
-  it('returns automatable linux steps with clone/install commands', () => {
+  it('returns automatable linux steps with an argv checkout ending in cloneDir', () => {
     const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', cloneDir });
     assert.equal(plan.automatable, true);
-    assert.equal(plan.commands[0], `git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "${cloneDir}"`);
-    assert.equal(plan.commands[2], 'bash install.sh --copilot');
+    assert.equal(plan.checkout.file, 'git');
+    assert.equal(plan.checkout.args.at(-1), cloneDir);
+    assert.equal(plan.commands[0], 'bash install.sh --copilot');
   });
 
   it('returns automatable win32 steps with py -3 native install commands', () => {
@@ -98,9 +117,11 @@ describe('tokenOptimizerCopilotInstallSteps', () => {
       existsSync: () => false,
     });
     assert.equal(plan.automatable, true);
+    assert.deepEqual(plan.checkout, {
+      file: 'git',
+      args: ['clone', '--depth', '1', 'https://github.com/alexgreensh/token-optimizer.git', 'C:\\Users\\alice\\.myelin\\token-optimizer'],
+    });
     assert.deepEqual(plan.commands, [
-      'git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "C:\\Users\\alice\\.myelin\\token-optimizer"',
-      'cd "C:\\Users\\alice\\.myelin\\token-optimizer"',
       'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-install',
       'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-doctor',
     ]);
@@ -114,7 +135,7 @@ describe('tokenOptimizerCopilotInstallSteps', () => {
       cloneDir,
       existsSync: path => path === `${cloneDir}/.git`,
     });
-    assert.equal(plan.commands[0], `git -C "${cloneDir}" pull --ff-only`);
+    assert.deepEqual(plan.checkout, { file: 'git', args: ['-C', cloneDir, 'pull', '--ff-only'] });
   });
 });
 
@@ -124,11 +145,13 @@ describe('installTokenOptimizerForCopilot', () => {
   it('always prints the license warning before running darwin/linux commands', () => {
     const consoleCapture = captureConsole();
     const execStub = makeExecStub();
+    const execFileStub = makeExecFileStub();
 
     const result = installTokenOptimizerForCopilot({
       os: 'darwin',
       cloneDir,
       exec: execStub.exec,
+      execFile: execFileStub.execFile,
       log: consoleCapture.log,
       warn: consoleCapture.warn,
     });
@@ -137,14 +160,17 @@ describe('installTokenOptimizerForCopilot', () => {
       type: 'warn',
       message: tokenOptimizerLicenseNotice(),
     });
+    // git checkout runs via execFile (argv) — cloneDir is an inert argument.
+    assert.deepEqual(execFileStub.calls.map((c) => ({ file: c.file, args: c.args })), [
+      { file: 'git', args: ['clone', '--depth', '1', 'https://github.com/alexgreensh/token-optimizer.git', cloneDir] },
+    ]);
+    // exec only runs the two fixed-literal commands, each with cwd=cloneDir.
     assert.deepEqual(execStub.calls.map(call => call.command), [
-      `git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "${cloneDir}"`,
       'bash install.sh --copilot',
       'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor',
     ]);
-    assert.equal(execStub.calls[0].options.cwd, undefined);
+    assert.equal(execStub.calls[0].options.cwd, cloneDir);
     assert.equal(execStub.calls[1].options.cwd, cloneDir);
-    assert.equal(execStub.calls[2].options.cwd, cloneDir);
     assert.deepEqual(result, {
       attempted: true,
       succeeded: true,
@@ -156,12 +182,14 @@ describe('installTokenOptimizerForCopilot', () => {
   it('installs natively on win32 via py -3 when the launcher is available', () => {
     const consoleCapture = captureConsole();
     const execStub = makeExecStub();
+    const execFileStub = makeExecFileStub();
     const cloneDir = 'C:\\Users\\alice\\.myelin\\token-optimizer';
 
     const result = installTokenOptimizerForCopilot({
       os: 'win32',
       cloneDir,
       exec: execStub.exec,
+      execFile: execFileStub.execFile,
       existsSync: () => false,
       log: consoleCapture.log,
       warn: consoleCapture.warn,
@@ -171,16 +199,19 @@ describe('installTokenOptimizerForCopilot', () => {
       type: 'warn',
       message: tokenOptimizerLicenseNotice(),
     });
+    // py -3 --version probe + the two install commands run via exec (shell);
+    // the git checkout runs via execFile (argv).
     assert.deepEqual(execStub.calls.map(call => call.command), [
       'py -3 --version',
-      `git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "${cloneDir}"`,
       'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-install',
       'set "TOKEN_OPTIMIZER_RUNTIME=copilot" && py -3 skills/token-optimizer/scripts/measure.py copilot-doctor',
     ]);
     assert.equal(execStub.calls[0].options.stdio, 'pipe');
-    assert.equal(execStub.calls[1].options.cwd, undefined);
+    assert.equal(execStub.calls[1].options.cwd, cloneDir);
     assert.equal(execStub.calls[2].options.cwd, cloneDir);
-    assert.equal(execStub.calls[3].options.cwd, cloneDir);
+    assert.deepEqual(execFileStub.calls.map((c) => ({ file: c.file, args: c.args })), [
+      { file: 'git', args: ['clone', '--depth', '1', 'https://github.com/alexgreensh/token-optimizer.git', cloneDir] },
+    ]);
     assert.deepEqual(result, {
       attempted: true,
       succeeded: true,
@@ -192,11 +223,13 @@ describe('installTokenOptimizerForCopilot', () => {
   it('prints the fallback Windows instructions when py -3 is unavailable', () => {
     const consoleCapture = captureConsole();
     const execStub = makeExecStub({ failOn: 'py -3 --version' });
+    const execFileStub = makeExecFileStub();
 
     const result = installTokenOptimizerForCopilot({
       os: 'win32',
       cloneDir: 'C:\\Users\\alice\\.myelin\\token-optimizer',
       exec: execStub.exec,
+      execFile: execFileStub.execFile,
       existsSync: () => false,
       log: consoleCapture.log,
       warn: consoleCapture.warn,
@@ -207,6 +240,7 @@ describe('installTokenOptimizerForCopilot', () => {
       message: tokenOptimizerLicenseNotice(),
     });
     assert.equal(execStub.calls.length, 1);
+    assert.equal(execFileStub.calls.length, 0);
     const output = consoleCapture.events.map(event => event.message).join('\n');
     assert.match(output, /Install Python 3 from https:\/\/python\.org\/downloads/i);
     assert.match(output, /legacy WSL flow/i);
@@ -220,14 +254,16 @@ describe('installTokenOptimizerForCopilot', () => {
     });
   });
 
-  it('gracefully warns and returns a failure result when exec throws', () => {
+  it('gracefully warns and returns a failure result when a command throws', () => {
     const consoleCapture = captureConsole();
     const execStub = makeExecStub({ failOn: 'bash install.sh --copilot' });
+    const execFileStub = makeExecFileStub();
 
     const result = installTokenOptimizerForCopilot({
       os: 'linux',
       cloneDir,
       exec: execStub.exec,
+      execFile: execFileStub.execFile,
       log: consoleCapture.log,
       warn: consoleCapture.warn,
     });
@@ -236,7 +272,8 @@ describe('installTokenOptimizerForCopilot', () => {
       type: 'warn',
       message: tokenOptimizerLicenseNotice(),
     });
-    assert.equal(execStub.calls.length, 2);
+    assert.equal(execFileStub.calls.length, 1); // git checkout ran via argv
+    assert.equal(execStub.calls.length, 1);     // failed on the first shell command
     assert.match(consoleCapture.events.map(event => event.message).join('\n'), /token-optimizer install failed/i);
     assert.equal(result.attempted, true);
     assert.equal(result.succeeded, false);
@@ -244,21 +281,67 @@ describe('installTokenOptimizerForCopilot', () => {
     assert.equal(result.cloneDir, cloneDir);
     assert.match(result.error, /bash install\.sh --copilot failed hard/);
   });
+
+  it('surfaces a git checkout failure without ever shelling the managed cloneDir', () => {
+    const consoleCapture = captureConsole();
+    const execStub = makeExecStub();
+    const execFileStub = makeExecFileStub({ failOn: 'git clone' });
+
+    const result = installTokenOptimizerForCopilot({
+      os: 'linux',
+      cloneDir,
+      exec: execStub.exec,
+      execFile: execFileStub.execFile,
+      log: consoleCapture.log,
+      warn: consoleCapture.warn,
+    });
+
+    assert.equal(execFileStub.calls.length, 1);
+    assert.equal(execStub.calls.length, 0); // no shell command ran at all
+    assert.equal(result.attempted, true);
+    assert.equal(result.succeeded, false);
+    assert.match(result.error, /git clone failed hard/);
+  });
+});
+
+describe('installTokenOptimizerForCopilot — managed cloneDir is shell-inert', () => {
+  it('runs a $()-laden cloneDir through execFile argv (no shell) and cwd (no `cd` string)', () => {
+    const cloneDir = '/opt/$(touch pwned)/token-optimizer';
+    const execStub = makeExecStub();
+    const execFileStub = makeExecFileStub();
+
+    installTokenOptimizerForCopilot({
+      os: 'linux',
+      cloneDir,
+      exec: execStub.exec,
+      execFile: execFileStub.execFile,
+      existsSync: () => false,
+      log: () => {},
+      warn: () => {},
+    });
+
+    // git received the poisoned dir only as a discrete argv element.
+    assert.equal(execFileStub.calls.length, 1);
+    assert.equal(execFileStub.calls[0].file, 'git');
+    assert.equal(execFileStub.calls[0].args.at(-1), cloneDir);
+    // No shell command string carries the injection; cwd carries the dir instead.
+    assert.ok(execStub.calls.every((c) => !c.command.includes('$(touch pwned)')), JSON.stringify(execStub.calls));
+    assert.ok(execStub.calls.every((c) => c.options.cwd === cloneDir), JSON.stringify(execStub.calls));
+  });
 });
 
 describe('tokenOptimizerCopilotInstallSteps — managed root relocation (MYELIN_DIR)', () => {
   it('roots the default clone dir under MYELIN_DIR when set', () => {
-    const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', env: { MYELIN_DIR: '/custom/mroot' } });
-    assert.ok(plan.commands[0].includes('/custom/mroot/token-optimizer'), plan.commands[0]);
-    assert.ok(plan.commands.includes('cd "/custom/mroot/token-optimizer"'), JSON.stringify(plan.commands));
+    const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', env: { MYELIN_DIR: '/custom/mroot' }, existsSync: () => false });
+    assert.equal(plan.cloneDir, '/custom/mroot/token-optimizer');
+    assert.equal(plan.checkout.args.at(-1), '/custom/mroot/token-optimizer');
   });
 
   it('defaults the clone dir under <home>/.myelin when MYELIN_DIR absent', () => {
     const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', env: {} });
-    assert.ok(
-      plan.commands.some((c) => c.includes(join('.myelin', 'token-optimizer'))),
-      JSON.stringify(plan.commands),
-    );
+    assert.ok(plan.cloneDir.includes(join('.myelin', 'token-optimizer')), plan.cloneDir);
+    // Whether it clones or pulls, the managed cloneDir is an argv element (never shell).
+    assert.ok(plan.checkout.args.includes(plan.cloneDir), JSON.stringify(plan.checkout));
   });
 });
 

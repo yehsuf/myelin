@@ -36,15 +36,18 @@ describe('generateLiteLLMConfig', () => {
 });
 
 describe('generateLiteLLMStartCommand', () => {
-  it('includes the config path and port', () => {
-    const cmd = generateLiteLLMStartCommand({
+  it('returns an argv plan carrying the config path and port', () => {
+    const plan = generateLiteLLMStartCommand({
       venvPath: '/home/user/.myelin/venv',
       configPath: '/home/user/.myelin/litellm-config.yaml',
       port: 4000,
     });
-    assert.ok(cmd.includes('litellm-config.yaml'));
-    assert.ok(cmd.includes('--port 4000'));
-    assert.ok(cmd.includes('-m litellm'));
+    assert.equal(plan.file, '/home/user/.myelin/venv/bin/python');
+    assert.deepEqual(plan.args, [
+      '-m', 'litellm',
+      '--config', '/home/user/.myelin/litellm-config.yaml',
+      '--port', '4000',
+    ]);
   });
 
   it('derives the venv python layout + separators from the venv style, not the host', () => {
@@ -53,16 +56,29 @@ describe('generateLiteLLMStartCommand', () => {
       venvPath: '/srv/managed/venv',
       configPath: '/srv/managed/litellm-config.yaml',
     });
-    assert.ok(posix.includes('/srv/managed/venv/bin/python'), posix);
-    assert.ok(!posix.includes('\\'), posix);
+    assert.equal(posix.file, '/srv/managed/venv/bin/python');
+    assert.ok(!posix.file.includes('\\'), posix.file);
     // Windows venv (even resolved on a POSIX host) -> Scripts\python.exe,
     // backslashes only. A host-native join would splice a forward slash.
     const win = generateLiteLLMStartCommand({
       venvPath: 'D:\\managed\\venv',
       configPath: 'D:\\managed\\litellm-config.yaml',
     });
-    assert.ok(win.includes('D:\\managed\\venv\\Scripts\\python.exe'), win);
-    assert.ok(!win.includes('/venv'), win);
+    assert.equal(win.file, 'D:\\managed\\venv\\Scripts\\python.exe');
+    assert.ok(!win.file.includes('/venv'), win.file);
+  });
+
+  it('keeps a $()-laden managed path inert as discrete argv, never a shell token', () => {
+    const plan = generateLiteLLMStartCommand({
+      venvPath: '/opt/$(touch pwned)/venv',
+      configPath: '/opt/$(touch pwned)/litellm-config.yaml',
+    });
+    // The dangerous value lives ONLY inside discrete argv elements — execFileSync
+    // passes them straight to the OS with no shell to interpret `$()`.
+    assert.equal(plan.file, '/opt/$(touch pwned)/venv/bin/python');
+    assert.ok(plan.args.includes('/opt/$(touch pwned)/litellm-config.yaml'), JSON.stringify(plan.args));
+    assert.equal(typeof plan.file, 'string');
+    assert.ok(Array.isArray(plan.args));
   });
 });
 
