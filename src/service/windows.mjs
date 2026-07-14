@@ -1,7 +1,7 @@
 import { execFileSync, execSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, win32 as pathWin32 } from 'node:path';
+import { dirname, join, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
 import { installWinsw, winswFilesystemPath } from '../tools/winsw.mjs';
 import { powerShellExecutable } from '../detect/os.mjs';
@@ -166,7 +166,7 @@ export function runPs(script, {
     : join(home, '.myelin', 'state');
   const stateDir = wsl ? winswFilesystemPathFor(nativeStateDir, { isWslImpl }) : nativeStateDir;
   const filename = `myelin-${processId}-${nowImpl()}.ps1`;
-  const tmp = join(stateDir, filename);
+  const tmp = wsl ? pathPosix.join(stateDir, filename) : join(stateDir, filename);
   const powershellScriptPath = wsl ? pathWin32.join(nativeStateDir, filename) : tmp;
   mkdirSyncImpl(stateDir, { recursive: true });
   writeFileSyncImpl(tmp, script, 'utf8');

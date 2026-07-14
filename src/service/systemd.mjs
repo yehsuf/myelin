@@ -1,5 +1,5 @@
 import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
@@ -187,7 +187,7 @@ export function copilotHeadroomUnitPath() {
 }
 
 export function mitmUnitPath(home = homedir()) {
-  return join(home, '.config', 'systemd', 'user', 'myelin-mitmproxy.service');
+  return pathPosix.join(home, '.config', 'systemd', 'user', 'myelin-mitmproxy.service');
 }
 
 export function installService(opts) {

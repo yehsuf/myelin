@@ -1,5 +1,5 @@
 import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
@@ -115,7 +115,7 @@ export function plistPath() {
 }
 
 export function mitmPlistPath(home = homedir()) {
-  return join(home, 'Library', 'LaunchAgents', `${MITM_LABEL}.plist`);
+  return pathPosix.join(home, 'Library', 'LaunchAgents', `${MITM_LABEL}.plist`);
 }
 
 /** Generic plist generator — use for any long-running LaunchAgent.
