@@ -55,6 +55,11 @@ import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
 import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
 import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
+import { updatePaths } from './update/update-orchestrator.mjs';
+import {
+  resolveManagedCompressionBinary,
+  resolveManagedMitmBinary,
+} from './update/managed-service-binary.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -515,6 +520,8 @@ export async function applyServiceEngineInstallPlan({
   isWslImpl = isWsl,
   defaultWindowsHomeImpl = defaultWindowsHome,
   resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
+  managedCompressionBin = null,
+  skipObsoleteCleanup = false,
 } = {}) {
   const wsl = os === 'windows' && isWslImpl();
   const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
@@ -530,20 +537,26 @@ export async function applyServiceEngineInstallPlan({
   if (resolvedPlan.engine === 'headroom') {
     platformOptions.headroomBin = resolveWindowsServiceExecutableImpl({
       engine: resolvedPlan.engine,
-      candidate: headroomBin,
+      candidate: managedCompressionBin ?? headroomBin,
       serviceHome,
       servicePlatform: os,
       wsl,
     });
   } else if (resolvedPlan.engine === 'headroom_lite') {
-    const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
-    const headroomLite = await detectTool('headroom-lite', '--version');
-    if (!headroomLite.installed || !headroomLite.path) {
-      throw new Error('headroom-lite selected but not installed');
+    // Staged apply threads a pinned managed binary; otherwise the globally
+    // installed headroom-lite is detected and used.
+    let liteCandidate = managedCompressionBin;
+    if (!liteCandidate) {
+      const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+      const headroomLite = await detectTool('headroom-lite', '--version');
+      if (!headroomLite.installed || !headroomLite.path) {
+        throw new Error('headroom-lite selected but not installed');
+      }
+      liteCandidate = headroomLite.path;
     }
     platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({
       engine: resolvedPlan.engine,
-      candidate: headroomLite.path,
+      candidate: liteCandidate,
       serviceHome,
       servicePlatform: os,
       wsl,
@@ -552,38 +565,42 @@ export async function applyServiceEngineInstallPlan({
     throw new Error(`Unsupported engine: ${resolvedPlan.engine}`);
   }
 
-  await removeSelectedLegacyWindowsInstances({
-    os,
-    cfg,
-    home,
-    warn: warnFn,
-    removeEngineInstanceImpl,
-    defaultWindowsHomeImpl,
-  });
-  await removeSelectedAlternateManagerInstances({
-    os,
-    plan: resolvedPlan,
-    winManager,
-    home,
-    warn: warnFn,
-    removeEngineInstanceImpl,
-  });
-  await removeObsoleteOwnedInstances({
-    selectedEngine: resolvedPlan.engine,
-    cfg,
-    winManager,
-    home,
-    warn: warnFn,
-    removeEngineInstanceImpl,
-  });
-  await removeDisabledOwnedCopilotInstance({
-    plan: resolvedPlan,
-    cfg,
-    winManager,
-    home,
-    warn: warnFn,
-    removeEngineInstanceImpl,
-  });
+  // Staged apply must never remove or mutate globally-owned service instances;
+  // obsolete-instance cleanup is suppressed while a release transaction applies.
+  if (!skipObsoleteCleanup) {
+    await removeSelectedLegacyWindowsInstances({
+      os,
+      cfg,
+      home,
+      warn: warnFn,
+      removeEngineInstanceImpl,
+      defaultWindowsHomeImpl,
+    });
+    await removeSelectedAlternateManagerInstances({
+      os,
+      plan: resolvedPlan,
+      winManager,
+      home,
+      warn: warnFn,
+      removeEngineInstanceImpl,
+    });
+    await removeObsoleteOwnedInstances({
+      selectedEngine: resolvedPlan.engine,
+      cfg,
+      winManager,
+      home,
+      warn: warnFn,
+      removeEngineInstanceImpl,
+    });
+    await removeDisabledOwnedCopilotInstance({
+      plan: resolvedPlan,
+      cfg,
+      winManager,
+      home,
+      warn: warnFn,
+      removeEngineInstanceImpl,
+    });
+  }
 
   for (const instance of resolvedPlan.instances) {
     await installEngineInstanceImpl(instance, {
@@ -1560,24 +1577,108 @@ export async function applyMitmServiceInstallPlan({
  * Mac: brew. Windows: pip (pipx). Linux: pip via uv.
  * Returns the mitmdump binary path.
  */
-async function ensureMitmproxy(os) {
-  let bin = detectMitmdump(os);
+export async function ensureMitmproxy(os, {
+  wsl = false,
+  serviceHome,
+  installIfMissing = true,
+  detectMitmdumpImpl = detectMitmdump,
+  resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
+  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
+} = {}) {
+  const windowsServiceFromWsl = os === 'windows' && wsl;
+  const resolveDetectedMitmdump = () => {
+    const candidate = detectMitmdumpImpl(os);
+    if (!windowsServiceFromWsl) return candidate;
+    return resolveWindowsServiceExecutableImpl(
+      {
+        backend: 'mitmdump',
+        candidate,
+        serviceHome,
+        servicePlatform: os,
+        wsl,
+      },
+      { execFileSyncImpl },
+    );
+  };
+
+  let bin = null;
+  let resolutionError = null;
+  try {
+    bin = resolveDetectedMitmdump();
+  } catch (error) {
+    if (!windowsServiceFromWsl) throw error;
+    resolutionError = error;
+  }
   if (bin) return bin;
 
-  console.log('  Installing mitmproxy…');
-  try {
-    if (os === 'darwin') {
-      // brew exits non-zero if already installed via different formula; ignore exit code
-      try { execSync('brew install mitmproxy', { stdio: 'inherit' }); } catch {}
-    } else if (os === 'windows') {
-      try { execSync('pip install --user mitmproxy', { stdio: 'inherit' }); } catch {}
-    } else {
-      try { execSync('pip install --user mitmproxy', { stdio: 'inherit' }); } catch {}
-    }
-  } catch {}
+  if (!installIfMissing) {
+    // Detect-only mode: mitmproxy is a managed pinned component provisioned by
+    // the atomic staged release. An atomic update must never mutate global
+    // component state, so we never fall through to a package-manager install.
+    return null;
+  }
 
-  bin = detectMitmdump(os);
+  console.log('  Installing mitmproxy…');
+  if (os === 'darwin') {
+    // brew exits non-zero if already installed via different formula; ignore exit code
+    try { execSyncImpl('brew install mitmproxy', { stdio: 'inherit' }); } catch {}
+  } else if (windowsServiceFromWsl) {
+    const script = `$launchers = @(
+  @{ Name = 'py.exe'; Prefix = @('-3') },
+  @{ Name = 'python.exe'; Prefix = @() }
+)
+foreach ($launcher in $launchers) {
+  $command = Get-Command -Name $launcher.Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $command) { continue }
+  $path = if ($command.Source) { $command.Source } else { $command.Path }
+  if (-not $path) { continue }
+  $windowsPath = $path.Replace('/', '\\')
+  $isWslUnc = $windowsPath.StartsWith('\\\\wsl.localhost\\', [System.StringComparison]::OrdinalIgnoreCase) -or
+    $windowsPath.StartsWith('\\\\wsl$\\', [System.StringComparison]::OrdinalIgnoreCase)
+  if ($isWslUnc -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    continue
+  }
+  $arguments = @()
+  $arguments += $launcher.Prefix
+  $arguments += @('-m', 'pip', 'install', '--user', 'mitmproxy')
+  & $path @arguments
+  exit $LASTEXITCODE
+}
+Write-Error 'Windows Python was not found in PATH.'
+exit 1`;
+    try {
+      execFileSyncImpl(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        {
+          stdio: 'inherit',
+          windowsHide: true,
+        },
+      );
+    } catch {}
+  } else if (os === 'windows') {
+    try {
+      execSyncImpl('pip install --user mitmproxy', { stdio: 'inherit' });
+    } catch {}
+  } else {
+    try {
+      execSyncImpl('pip install --user mitmproxy', { stdio: 'inherit' });
+    } catch {}
+  }
+
+  try {
+    bin = resolveDetectedMitmdump();
+  } catch (error) {
+    if (!windowsServiceFromWsl) throw error;
+    resolutionError = error;
+  }
   if (bin) { ok(`mitmproxy (${bin})`); return bin; }
+  if (windowsServiceFromWsl) {
+    throw resolutionError ?? new Error(
+      'Unable to resolve a Windows-service executable for mitmdump from WSL. Install mitmproxy with Windows Python so mitmdump.exe is available in the Windows user PATH or a Windows Python Scripts directory.',
+    );
+  }
   const installCmd = os === 'darwin' ? 'brew install mitmproxy'
                    : os === 'windows' ? 'pip install mitmproxy'
                    : 'pip3 install --user mitmproxy';
@@ -1845,6 +1946,9 @@ async function main() {
       check:           { type: 'boolean', default: false },
       'dry-run':       { type: 'boolean', default: false },
       yes:             { type: 'boolean', default: false, short: 'y' },
+      'update-apply':  { type: 'boolean', default: false },
+      'update-token':  { type: 'string' },
+      'staged-release':{ type: 'string' },
     },
     strict: false,
   });
@@ -1855,6 +1959,11 @@ async function main() {
   const managed = managedPaths({ home, env: process.env });
   const claudeCC = !flags['copilot-only'];
   const copilot  = !flags['claude-only'];
+  // During an atomic staged apply (`--update-apply`) the managed components are
+  // already pinned and provisioned by the staged release. Global (unpinned)
+  // component installs must be suppressed so the transaction never mutates
+  // legacy/global state (Task 10 finding 3).
+  const runGlobalComponentInstalls = !flags['update-apply'];
 
   console.log('\n🧬 Myelin Installer — ' + os + '\n');
 
@@ -1869,6 +1978,10 @@ async function main() {
     }
   } catch {}
 
+  // Staged-release apply (--update-apply) must never mutate legacy global
+  // state; skip the one-time ~/.tokenstack migration entirely in that mode.
+  let didMigrate = false;
+  if (!flags['dry-run'] && !flags['update-apply']) {
   // Migrate ~/.tokenstack → ~/.myelin (one-time)
   const oldDir = join(home, '.tokenstack');
   const newDir = managed.root;
@@ -1876,7 +1989,6 @@ async function main() {
   const nestedOld = join(newDir, '.tokenstack');
   const runningFromOld = process.argv[1]?.startsWith(oldDir);
   const runningFromNested = process.argv[1]?.startsWith(nestedOld);
-  let didMigrate = false;
 
   if (existsSync(nestedOld)) {
     // Move non-repo contents of .myelin/.tokenstack up into .myelin
@@ -2016,6 +2128,7 @@ async function main() {
   for (const v of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'HEADROOM_CA_BUNDLE', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO']) {
     if (process.env[v]?.includes('.tokenstack')) delete process.env[v];
   }
+  } // end legacy migration (skipped under --update-apply)
 
   console.log('Detecting existing installations...');
 
@@ -2082,11 +2195,16 @@ async function main() {
 
 
   step('[1/7] Package manager...');
-  await ensureUv();
-  ok('uv ready');
+  if (runGlobalComponentInstalls) {
+    await ensureUv();
+    ok('uv ready');
+  } else {
+    skip('package manager (managed component provisioned by staged release)');
+  }
 
   // 2. Code discovery tools
   step('[2/7] Code discovery tools...');
+  if (runGlobalComponentInstalls) {
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
     if (os === 'windows') {
@@ -2313,10 +2431,14 @@ async function main() {
     }
   }
 
+  } else {
+    skip('code-discovery tools (managed components provisioned by staged release)');
+  }
+
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');
   if (installsPythonHeadroomPackage) {
-    if (!tools.headroom.installed) {
+    if (!tools.headroom.installed && runGlobalComponentInstalls) {
       console.log('  Installing headroom...');
       ensureManagedVenv(venv);
       // execFileSync passes the spec as a literal argv element, so the `[all]`
@@ -2333,7 +2455,9 @@ async function main() {
   // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain
   // This is required when a corporate SSL interceptor (e.g. NetFree/Hot) uses an intermediate
   // CA that isn't in the system trust store. We extract it from the live connection.
-  const combinedCert = await buildCombinedCaCert(caBundles[0]?.path ?? null, home, { force: didMigrate });
+  const combinedCert = flags['update-apply']
+    ? null
+    : await buildCombinedCaCert(caBundles[0]?.path ?? null, home, { force: didMigrate });
   if (combinedCert && combinedCert !== caBundles[0]?.path) {
     // Update sslEnv to point to the combined cert
     Object.keys(sslEnv).forEach(k => { sslEnv[k] = combinedCert; });
@@ -2341,10 +2465,12 @@ async function main() {
   }
 
   if (!flags['no-rtk']) {
-    if (!tools.rtk.installed) {
+    if (!tools.rtk.installed && runGlobalComponentInstalls) {
       console.log('  Installing RTK...');
       await installRtk(os);
       tools.rtk = await detectRtk();
+    } else if (!tools.rtk.installed) {
+      skip('rtk (managed component provisioned by staged release)');
     } else {
       skip(`rtk (${tools.rtk.version})`);
     }
@@ -2354,9 +2480,28 @@ async function main() {
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
   const mitmEnabled = existingCfg?.proxy?.mitm?.enabled !== false;
-  const mitmdumpBin = mitmEnabled ? await ensureMitmproxy(os) : null;
+  let mitmdumpBin = null;
+  if (flags['update-apply']) {
+    // Staged apply: resolve the pinned managed mitmproxy binary provisioned by
+    // the release transaction. Never install or touch a global mitmproxy.
+    if (mitmEnabled) {
+      mitmdumpBin = resolveManagedMitmBinary({
+        componentsRoot: updatePaths(home).componentsRoot,
+        platform: os,
+      }).binPath;
+    }
+  } else if (!mitmEnabled) {
+    // proxy.mitm.enabled=false → no binary needed
+  } else {
+    mitmdumpBin ??= await ensureMitmproxy(os, { installIfMissing: runGlobalComponentInstalls });
+  }
   if (!mitmEnabled) {
     skip('mitmproxy setup skipped (proxy.mitm.enabled=false)');
+  } else if (flags['update-apply']) {
+    // Staged apply reuses the CA trust bundle already provisioned by the release
+    // transaction; it must never regenerate or append to global CA bundles.
+    if (mitmdumpBin) ok('mitmproxy ready (managed release binary)');
+    else warn('managed mitmproxy binary missing from staged release');
   } else if (mitmdumpBin) {
     await ensureMitmCA(home, mitmdumpBin);
     // non-interactive when --yes: auto-append CA to bundle without prompting
@@ -2381,6 +2526,15 @@ async function main() {
       : loadedCfg;
     const enginePlan = buildEngineInstancePlan(cfg);
     const primaryInstance = enginePlan.instances.find(({ role }) => role === 'primary');
+    // Staged apply (--update-apply) binds the pinned managed compression binary
+    // provisioned by the release transaction instead of a global install.
+    const managedCompressionBin = flags['update-apply']
+      ? resolveManagedCompressionBinary({
+          backend: enginePlan.engine === 'headroom' ? 'headroom-original' : 'headroom-lite',
+          componentsRoot: updatePaths(home).componentsRoot,
+          platform: os,
+        }).binPath
+      : null;
     const binPath = enginePlan.engine === 'headroom' ? headroomBinPath() : undefined;
     const envVars = { HEADROOM_PORT: String(primaryInstance.port), ...sslEnv };
     const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
@@ -2395,6 +2549,8 @@ async function main() {
       winManager,
       home,
       headroomBin: binPath,
+      managedCompressionBin,
+      skipObsoleteCleanup: flags['update-apply'],
       envVars,
       warnFn: warn,
     });
