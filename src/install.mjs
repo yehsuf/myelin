@@ -55,11 +55,12 @@ import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
 import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
 import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
-import { updatePaths } from './update/update-orchestrator.mjs';
+import { updatePaths, createUpdateLock } from './update/update-orchestrator.mjs';
 import {
   resolveManagedCompressionBinary,
   resolveManagedMitmBinary,
 } from './update/managed-service-binary.mjs';
+import { selectedBackend } from './update/engine-selection.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -503,6 +504,80 @@ function engineInstanceServiceEnv(instance, envVars = {}) {
     ...connectionEnv
   } = envVars;
   return connectionEnv;
+}
+
+/**
+ * Cross-validates a staged `--update-apply` request against the environment the
+ * update orchestrator exported, then asserts the transaction's update lock is
+ * held. This fences an ordinary install from masquerading as a staged apply and
+ * ensures no staged mutation proceeds without the orchestrator's live lock.
+ * Returns the validated nested token on success; throws otherwise.
+ */
+export function assertStagedApplyAuthorization({
+  flags,
+  env = process.env,
+  configPath,
+  lockPath,
+  createLock = createUpdateLock,
+} = {}) {
+  const nestedToken = flags?.['update-token'];
+  const stagedRelease = flags?.['staged-release'];
+  if (
+    typeof nestedToken !== 'string'
+    || nestedToken.length === 0
+    || nestedToken !== env.MYELIN_UPDATE_TRANSACTION_TOKEN
+    || typeof stagedRelease !== 'string'
+    || resolve(stagedRelease) !== resolve(env.MYELIN_UPDATE_STAGED_RELEASE ?? '')
+    || configPath !== env.MYELIN_UPDATE_CONFIG_PATH
+  ) {
+    throw new Error('Invalid staged update apply request.');
+  }
+  createLock({ useWorkerHeartbeat: false }).assertHeld({ token: nestedToken }, lockPath);
+  return nestedToken;
+}
+
+/**
+ * Builds the mutation fence used before every install side effect. Under a
+ * staged apply it re-asserts the orchestrator's nested lock; for an ordinary
+ * install it re-asserts the global install lock acquired at startup. A missing
+ * lock is a hard failure so no install can mutate global state unguarded.
+ */
+export function createInstallMutationFence({
+  nestedToken = null,
+  installGlobalLock = null,
+  lockPath,
+  createLock = createUpdateLock,
+} = {}) {
+  return () => {
+    if (nestedToken) {
+      createLock({ useWorkerHeartbeat: false }).assertHeld({ token: nestedToken }, lockPath);
+      return;
+    }
+    if (installGlobalLock) {
+      installGlobalLock.lock.assertHeld(installGlobalLock.token, lockPath);
+      return;
+    }
+    throw new Error('Install mutation fence requires a held global update lock.');
+  };
+}
+
+/**
+ * Resolves the pinned managed compression binary to bind during a staged apply.
+ * When compression is disabled (`proxy.compression.enabled === false`), no
+ * compression binary is resolved or staged — a disabled proxy update must never
+ * provision a compression backend. Returns null outside of a staged apply.
+ */
+export function resolveStagedCompressionBinary({
+  updateApply,
+  cfg = {},
+  componentsRoot,
+  platform,
+  resolveBinary = resolveManagedCompressionBinary,
+} = {}) {
+  if (!updateApply) return null;
+  const backend = selectedBackend(cfg);
+  if (backend === 'disabled') return null;
+  return resolveBinary({ backend, componentsRoot, platform })?.binPath ?? null;
 }
 
 export async function applyServiceEngineInstallPlan({
@@ -1949,6 +2024,7 @@ async function main() {
       'update-apply':  { type: 'boolean', default: false },
       'update-token':  { type: 'string' },
       'staged-release':{ type: 'string' },
+      config:          { type: 'string' },
     },
     strict: false,
   });
@@ -1964,6 +2040,36 @@ async function main() {
   // component installs must be suppressed so the transaction never mutates
   // legacy/global state (Task 10 finding 3).
   const runGlobalComponentInstalls = !flags['update-apply'];
+
+  // Mutation fence (Task 10 finding 1). Every install side effect must run under
+  // a held update lock: a staged apply re-asserts the orchestrator's nested lock
+  // (after validating the exported transaction environment), while an ordinary
+  // install acquires the global update lock so it can never race a concurrent
+  // update/install. dry-run/check perform no mutations and take no lock.
+  const transactionPaths = updatePaths(home);
+  const configPath = flags.config ?? DEFAULT_CONFIG_PATH;
+  const nestedToken = flags['update-apply']
+    ? assertStagedApplyAuthorization({ flags, configPath, lockPath: transactionPaths.lockPath })
+    : null;
+  let installGlobalLock = null;
+  let stopInstallHeartbeat = null;
+  if (!flags['update-apply'] && !flags.check && !flags['dry-run']) {
+    const lock = createUpdateLock();
+    const token = lock.acquire(transactionPaths.lockPath);
+    installGlobalLock = { lock, token };
+    stopInstallHeartbeat = lock.startHeartbeat(token, transactionPaths.lockPath);
+    process.once('exit', () => {
+      try {
+        stopInstallHeartbeat?.();
+        lock.release(token, transactionPaths.lockPath);
+      } catch {}
+    });
+  }
+  const assertInstallMutationFence = createInstallMutationFence({
+    nestedToken,
+    installGlobalLock,
+    lockPath: transactionPaths.lockPath,
+  });
 
   console.log('\n🧬 Myelin Installer — ' + os + '\n');
 
@@ -2195,6 +2301,7 @@ async function main() {
 
 
   step('[1/7] Package manager...');
+  assertInstallMutationFence();
   if (runGlobalComponentInstalls) {
     await ensureUv();
     ok('uv ready');
@@ -2204,6 +2311,7 @@ async function main() {
 
   // 2. Code discovery tools
   step('[2/7] Code discovery tools...');
+  assertInstallMutationFence();
   if (runGlobalComponentInstalls) {
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
@@ -2437,6 +2545,7 @@ async function main() {
 
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');
+  assertInstallMutationFence();
   if (installsPythonHeadroomPackage) {
     if (!tools.headroom.installed && runGlobalComponentInstalls) {
       console.log('  Installing headroom...');
@@ -2514,6 +2623,7 @@ async function main() {
   // 4. Service
   if (!flags['no-headroom'] && flags.profile === 'proxy') {
     step('[4/7] Background service...');
+    assertInstallMutationFence();
     const loadedCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const cfg = selectedInstallEngine === 'headroom' && port !== (loadedCfg.proxy?.headroom?.port ?? 8787)
       ? {
@@ -2527,14 +2637,14 @@ async function main() {
     const enginePlan = buildEngineInstancePlan(cfg);
     const primaryInstance = enginePlan.instances.find(({ role }) => role === 'primary');
     // Staged apply (--update-apply) binds the pinned managed compression binary
-    // provisioned by the release transaction instead of a global install.
-    const managedCompressionBin = flags['update-apply']
-      ? resolveManagedCompressionBinary({
-          backend: enginePlan.engine === 'headroom' ? 'headroom-original' : 'headroom-lite',
-          componentsRoot: updatePaths(home).componentsRoot,
-          platform: os,
-        }).binPath
-      : null;
+    // provisioned by the release transaction instead of a global install. When
+    // compression is disabled no compression binary is resolved or staged.
+    const managedCompressionBin = resolveStagedCompressionBinary({
+      updateApply: flags['update-apply'],
+      cfg,
+      componentsRoot: transactionPaths.componentsRoot,
+      platform: os,
+    });
     const binPath = enginePlan.engine === 'headroom' ? headroomBinPath() : undefined;
     const envVars = { HEADROOM_PORT: String(primaryInstance.port), ...sslEnv };
     const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
@@ -2607,6 +2717,7 @@ async function main() {
 
   // 5. Config files
   step('[5/7] Configuration files...');
+  assertInstallMutationFence();
 
   // ~/.myelin/config.yaml
   if (!existsSync(DEFAULT_CONFIG_PATH)) {

@@ -163,3 +163,45 @@ adopting main's canonical config tests (net different test set, all green).
 ## Not done (per guardrails)
 No push, no merge to main, no tag, no publish, no installer/service/live-HOME action.
 Parent will review and push.
+
+---
+
+## Review-fix pass (8-finding code review of the reconcile branch)
+
+**Status:** ✅ COMPLETE — all 8 confirmed findings fixed RED→GREEN. Full suite
+`node --test test/*.test.mjs` = **955 pass / 0 fail** under isolated
+`HOME`/`USERPROFILE`. `node --check src/install.mjs` OK. Not pushed / not merged /
+no tag / no publish / no installer/service/live-HOME action. `proxy.engine` model
+and all existing feature guarantees preserved.
+
+New test suite: `test/reconcile-review-fixes.test.mjs` (27 tests, one describe
+block per finding).
+
+### Findings & fixes
+
+| # | Sev | Area | Fix | Tests |
+|---|-----|------|-----|-------|
+| 1 | High | install.mjs mutation fence | Restored the staged-apply authorization + global-install-lock mutation fence dropped during Option A. `assertStagedApplyAuthorization` validates the exported transaction env (token / staged-release dir / config path) and re-asserts the orchestrator's nested lock; ordinary installs acquire the global update lock (+heartbeat, released on exit). `createInstallMutationFence` re-asserts the held lock before **every** numbered phase `[1/7]…[5/7]`. Fails closed with no held lock. | 7 |
+| 2 | High | install.mjs compression-disabled | `resolveStagedCompressionBinary` gates on `selectedBackend(cfg)`; when `proxy.compression.enabled === false` the backend is `disabled` and **no** compression binary is resolved/staged. Replaces the buggy `enginePlan.engine ? 'headroom-original' : 'headroom-lite'` resolution that always staged a backend and `.binPath`-dereferenced a possibly-null result. | 4 |
+| 3 | High | install.mjs global-install suppression | Verified/locked `runGlobalComponentInstalls = !flags['update-apply']` gates package-manager, code-discovery, headroom and rtk installs, threads `installIfMissing` into mitmproxy, and skips the one-time legacy migration; each mutation phase is fenced. | 5 |
+| 4 | High | staged-child identity | Pre-spawn `unresolvedChild` marker + `onChildSpawn` pid-fill + post-completion resolved-mark in `activateUpdate`; recovery defers while a recorded child is alive. | 2 |
+| 5 | High | WSL POSIX storage | `resolveStoragePlatform` maps windows-bridged WSL → `linux` for component/release/lock/journal storage while service management stays on `windows`; threaded through 19 storage sites. | 3 |
+| 6 | High | ownership-preserving lock release | `release()` rewritten to rename-verify-restore-unlink; never unlinks a concurrently-reclaimed lock. | 2 |
+| 7 | High | WinSW fail-closed checksum | `stageGithubBinary` resolves a reviewer-pinned checksum first and gates with `ERR_COMPONENT_CHECKSUM_MISSING`; manifest `winsw` entry gained `requireVerifiedChecksum:true` + pinned SHA256s (x64/x86/net461). | 4 |
+| 8 | High | workflow SHA pinning | `release-publish.yml` pins `actions/checkout@11bd719…` (v4.2.2) and `actions/setup-node@49933ea…` (v4.4.0) to immutable commit SHAs. | 2 |
+
+### Reconcile note (test drift caught by full-suite run)
+`test/release-publish-workflow.test.mjs` located the checkout step via the literal
+`actions/checkout@v4`; finding-8 SHA pinning made that finder miss. Updated the
+finder to `step.uses?.startsWith('actions/checkout@')` — preserves the test's real
+intent (`with.ref === '${{ github.event.workflow_run.head_sha }}'`) independent of
+the pinned SHA.
+
+### Concerns / follow-ups
+1. Findings 1–3 are exercised at unit/source level (injected-dependency fence
+   functions + install.mjs source-structure assertions), not via an end-to-end
+   `install.mjs --update-apply` spawn against a fixture. A behavioral e2e apply
+   test would be more robust but requires a full staged-release fixture.
+2. Ordinary `myelin install` now acquires the shared update lock for its whole
+   run (matching the feature's design). Concurrent `install` + `update` now
+   mutually exclude — intended, but a behavior change vs. the reconcile tip.

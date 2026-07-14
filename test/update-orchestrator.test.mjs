@@ -771,3 +771,86 @@ describe('strict health verification', () => {
     assert.ok(now <= 120_000);
   });
 });
+
+describe('finding 4: staged-apply child identity is durably recorded before spawn', () => {
+  function activatePlan() {
+    return {
+      ...planUpdate({
+        config: { proxy: { engine: 'headroom_lite' } },
+        manifest: {
+          headroomLite: {
+            kind: 'npm-git',
+            package: 'github:yehsuf/headroom-lite',
+            version: '0.31.0',
+            ref: 'v0.31.0',
+            bin: 'headroom-lite',
+          },
+        },
+        target: { version: '1.1.0' },
+      }),
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+    };
+  }
+
+  it('writes an unresolved child marker before spawning and records the pid', async () => {
+    const events = [];
+    const deps = baseDeps(events);
+    const journals = [];
+    deps.writeJournal = async journal => {
+      events.push(`journal:${journal.phase}`);
+      journals.push(journal);
+    };
+    let markerAtSpawn;
+    deps.runStagedApply = async ({ onChildSpawn }) => {
+      events.push('staged-apply');
+      // A durable marker must already exist before the child does any work.
+      markerAtSpawn = journals.at(-1);
+      if (onChildSpawn) await onChildSpawn({ pid: 4242 });
+    };
+
+    const result = await activateUpdate(activatePlan(), deps);
+    assert.equal(result.ok, true);
+
+    // (1) A prepared-phase journal carrying an unresolved child marker was
+    //     persisted before runStagedApply ran.
+    assert.ok(markerAtSpawn, 'a journal must be written before the staged apply');
+    assert.ok(markerAtSpawn.unresolvedChild, 'unresolved child marker must precede spawn');
+    assert.equal(markerAtSpawn.unresolvedChild.resolved, false);
+    assert.equal(markerAtSpawn.phase, 'prepared');
+
+    // (2) The concrete child pid was durably recorded.
+    assert.ok(
+      journals.some(journal => journal.unresolvedChild?.pid === 4242),
+      'the staged child pid must be durably recorded',
+    );
+
+    // (3) After a clean child exit the marker is resolved so later recovery
+    //     does not block forever on a defunct pid.
+    const lastWithChild = [...journals].reverse().find(journal => journal.unresolvedChild);
+    assert.equal(lastWithChild.unresolvedChild.resolved, true);
+  });
+
+  it('defers recovery while a recorded staged child is still alive', async () => {
+    const events = [];
+    const deps = baseDeps(events);
+    const journal = preparedJournal({
+      unresolvedChild: {
+        pid: 4242,
+        resolved: false,
+        recordedAt: Date.now(),
+        reason: 'staged apply in progress',
+      },
+    });
+    deps.readJournal = async () => journal;
+    deps.isStagedChildAlive = async () => true;
+
+    await assert.rejects(
+      () => recoverUpdateJournal(deps),
+      error => {
+        assert.equal(error.code, 'ERR_UPDATE_RECOVERY_CHILD_ALIVE');
+        return true;
+      },
+    );
+    assert.equal(events.includes('restore-release'), false, 'must not roll back while child alive');
+  });
+})

@@ -539,6 +539,21 @@ function verifyChecksum(buffer, checksum) {
   };
 }
 
+function pinnedChecksum(component, assetName) {
+  const map = component?.checksums;
+  if (!map || typeof map !== 'object') return null;
+  const key = Object.keys(map).find((name) => name.toLowerCase() === assetName.toLowerCase());
+  if (key === undefined) return null;
+  const value = map[key];
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/iu.test(value)) {
+    throw installerError(
+      `Reviewer-pinned checksum for ${assetName} is malformed.`,
+      'ERR_COMPONENT_CHECKSUM',
+    );
+  }
+  return { algorithm: 'sha256', expected: value.toLowerCase(), source: 'manifest-pinned' };
+}
+
 function archiveError(message) {
   return installerError(message, 'ERR_COMPONENT_ARCHIVE_UNSAFE');
 }
@@ -826,7 +841,8 @@ function stageGithubBinary({ name, component, destination, plan, exec, fs }) {
   }
   validateDownloadUrl(asset.browser_download_url);
 
-  let checksum = directAssetChecksum(asset);
+  let checksum = pinnedChecksum(component, asset.name);
+  if (!checksum) checksum = directAssetChecksum(asset);
   if (!checksum) {
     const checksumAsset = selectChecksumAsset(release);
     if (checksumAsset) {
@@ -849,6 +865,12 @@ function stageGithubBinary({ name, component, destination, plan, exec, fs }) {
     maxBuffer: MAX_ARCHIVE_BYTES,
   }, plan.platform));
   const checksumResult = verifyChecksum(downloaded, checksum);
+  if (component.requireVerifiedChecksum && checksumResult.verified !== true) {
+    throw installerError(
+      `Refusing to stage ${name}: no verified checksum available for ${asset.name}.`,
+      'ERR_COMPONENT_CHECKSUM_MISSING',
+    );
+  }
   const entries = archiveEntries(asset.name, downloaded);
   assertFreshStageDestination(destination, fs);
   if (entries) {

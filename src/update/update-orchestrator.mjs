@@ -489,7 +489,36 @@ export function createUpdateLock({
 
   function release(token, path) {
     const owner = assertHeld(token, path);
-    fs.unlinkSync(path);
+    // Ownership-preserving release: atomically move the lock aside under a
+    // token-scoped name, then re-verify the moved record still identifies us.
+    // If a concurrent reclaim replaced the lock in the race window between the
+    // ownership check above and this rename, the moved record will not match
+    // our token/pid; restore it and fence rather than unlink a lock we no
+    // longer own.
+    const releasePath = `${path}.release-${owner.token}`;
+    try {
+      fs.renameSync(path, releasePath);
+    } catch (error) {
+      if (isMissing(error)) throw lockFenced(path);
+      throw error;
+    }
+    durable.fsyncDirectory(dirname(path));
+
+    let moved;
+    try {
+      moved = read(releasePath, { allowMissing: true });
+    } catch {
+      moved = null;
+    }
+    if (moved === null || moved.token !== owner.token || moved.pid !== owner.pid) {
+      try {
+        fs.renameSync(releasePath, path);
+        durable.fsyncDirectory(dirname(path));
+      } catch {}
+      throw lockFenced(path);
+    }
+
+    fs.unlinkSync(releasePath);
     removeHeartbeat(path, owner);
     durable.fsyncDirectory(dirname(path));
   }
@@ -1344,6 +1373,21 @@ export async function activateUpdate(plan, deps = {}, context = {}) {
     await mutate(deps, context, deps.writeConfig ?? (() => {}), desired.config, plan);
     await mutate(deps, context, deps.applyReleasePair ?? (() => {}), desired.release, plan);
     await mutate(deps, context, deps.installLauncher ?? (() => {}), desired.release, plan);
+    // Durably record that a staged-apply child is about to run BEFORE spawning
+    // it. If the parent crashes mid-apply, recovery must find this marker and
+    // refuse to roll back until the child is confirmed gone; a fresh lock token
+    // does not fence an already-spawned child. The pid is unknown until spawn,
+    // so it is filled in via onChildSpawn; an unknown pid is treated as alive.
+    journal = {
+      ...journal,
+      unresolvedChild: {
+        pid: null,
+        reason: 'staged apply in progress',
+        recordedAt: Date.now(),
+        resolved: false,
+      },
+    };
+    await mutate(deps, context, deps.writeJournal ?? (() => {}), journal);
     await mutate(deps, context, deps.runStagedApply ?? (() => {}), {
       plan,
       stagedRelease: plan.stagedRelease,
@@ -1351,7 +1395,29 @@ export async function activateUpdate(plan, deps = {}, context = {}) {
       config: desired.config,
       snapshot,
       abortSignal: context.abortSignal,
+      onChildSpawn: async ({ pid } = {}) => {
+        journal = {
+          ...journal,
+          unresolvedChild: {
+            ...journal.unresolvedChild,
+            pid: typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : null,
+            recordedAt: Date.now(),
+          },
+        };
+        await mutate(deps, context, deps.writeJournal ?? (() => {}), journal);
+      },
     });
+    // The staged apply resolved (child exited cleanly). Mark the child resolved
+    // durably so a later recovery does not block indefinitely on a defunct pid.
+    journal = {
+      ...journal,
+      unresolvedChild: {
+        ...journal.unresolvedChild,
+        resolved: true,
+        resolvedAt: Date.now(),
+      },
+    };
+    await mutate(deps, context, deps.writeJournal ?? (() => {}), journal);
     await mutate(deps, context, deps.startServices ?? (() => {}), desired.services, plan);
     await mutate(deps, context, deps.startSupervisors ?? (() => {}), desired.supervisors, plan);
     if (typeof deps.captureDesiredState === 'function') {
@@ -2057,6 +2123,7 @@ async function defaultRunStagedApply({
   config,
   snapshot,
   abortSignal,
+  onChildSpawn,
   spawnImpl = spawn,
   scheduler,
   termGraceMs,
@@ -2148,12 +2215,32 @@ async function defaultRunStagedApply({
       });
     });
     if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
+    // Handlers are wired synchronously above so no exit/error event is lost.
+    // Now report the spawned child's identity so the caller can durably record
+    // it for crash recovery; a failure to persist that marker fails closed.
+    if (typeof onChildSpawn === 'function') {
+      Promise.resolve()
+        .then(() => onChildSpawn({ pid: child?.pid ?? null }))
+        .catch(error => settle(() => reject(error)));
+    }
   });
+}
+
+/**
+ * Resolves the platform used for on-disk update storage (components, releases,
+ * lock, journal, config snapshots). On WSL, detectOS() reports 'windows' so
+ * that service management bridges to the Windows host, but the filesystem is
+ * POSIX (ext4). Storage therefore must use POSIX path semantics while service
+ * management keeps the Windows platform.
+ */
+export function resolveStoragePlatform(platform, { wsl = false } = {}) {
+  return wsl ? 'linux' : platform;
 }
 
 function defaultDependencies({
   home = homedir(),
   platform = detectOS(),
+  storagePlatform = resolveStoragePlatform(platform, { wsl: detectOS(true).wsl }),
   fs = nodeFs,
   metadataAdapter = defaultMetadataAdapter(fs),
   serviceAdapter = createPlatformServiceTransactionAdapter({
@@ -2162,7 +2249,7 @@ function defaultDependencies({
     fs,
     metadataAdapter,
   }),
-  lock = createUpdateLock({ fs, platform }),
+  lock = createUpdateLock({ fs, platform: storagePlatform }),
   journal,
   configPath,
   stagedApplySpawn = spawn,
@@ -2176,7 +2263,7 @@ function defaultDependencies({
   const journalStore = journal ?? createUpdateJournalStore({
     path: paths.journalPath,
     fs,
-    platform,
+    platform: storagePlatform,
   });
 
   const captureSnapshot = async plan => ({
@@ -2187,12 +2274,12 @@ function defaultDependencies({
     }),
     release: readReleasePointers({
       releasesRoot: paths.releasesRoot,
-      platform,
+      platform: storagePlatform,
       fs,
     }),
     components: Object.fromEntries((plan.components ?? []).map(({ name }) => [
       name,
-      readPointersReadOnly(paths.componentsRoot, name, { platform, fs }),
+      readPointersReadOnly(paths.componentsRoot, name, { platform: storagePlatform, fs }),
     ])),
     services: await serviceAdapter.captureServices({ plan }),
     supervisors: await serviceAdapter.captureSupervisors({ plan }),
@@ -2205,12 +2292,12 @@ function defaultDependencies({
     }),
     release: readReleasePointers({
       releasesRoot: paths.releasesRoot,
-      platform,
+      platform: storagePlatform,
       fs,
     }),
     components: Object.fromEntries((plan.components ?? []).map(({ name }) => [
       name,
-      readPointersReadOnly(paths.componentsRoot, name, { platform, fs }),
+      readPointersReadOnly(paths.componentsRoot, name, { platform: storagePlatform, fs }),
     ])),
     services: await serviceAdapter.captureServices({ plan }),
     supervisors: await serviceAdapter.captureSupervisors({ plan }),
@@ -2224,7 +2311,7 @@ function defaultDependencies({
         root: paths.componentsRoot,
         name,
         pointers: pair,
-        platform,
+        platform: storagePlatform,
         fs,
       });
     }
@@ -2236,7 +2323,7 @@ function defaultDependencies({
   const defaultApplyReleasePair = async pair => restoreRelease({
     releasesRoot: paths.releasesRoot,
     pointers: pair,
-    platform,
+    platform: storagePlatform,
     fs,
   });
 
@@ -2253,14 +2340,14 @@ function defaultDependencies({
     stageRelease: target => stageRelease({
       target,
       releasesRoot: paths.releasesRoot,
-      platform,
+      platform: storagePlatform,
       fs,
     }),
     readStagedManifest: importStagedManifest,
     detectInstalled: async manifest => ({
       release: readReleasePointers({
         releasesRoot: paths.releasesRoot,
-        platform,
+        platform: storagePlatform,
         fs,
       }),
       components: Object.fromEntries(Object.entries(manifest).map(([name, component]) => [
@@ -2270,16 +2357,16 @@ function defaultDependencies({
             name,
             component,
             root: paths.componentsRoot,
-            platform,
+            platform: storagePlatform,
           }),
-          ...readPointersReadOnly(paths.componentsRoot, name, { platform, fs }),
+          ...readPointersReadOnly(paths.componentsRoot, name, { platform: storagePlatform, fs }),
         },
       ])),
     }),
     detectInstalledReadOnly: async manifest => ({
       release: readReleasePointers({
         releasesRoot: paths.releasesRoot,
-        platform,
+        platform: storagePlatform,
         fs,
       }),
       components: Object.fromEntries(Object.entries(manifest).map(([name, component]) => [
@@ -2289,9 +2376,9 @@ function defaultDependencies({
             name,
             component,
             root: paths.componentsRoot,
-            platform,
+            platform: storagePlatform,
           }),
-          ...readPointersReadOnly(paths.componentsRoot, name, { platform, fs }),
+          ...readPointersReadOnly(paths.componentsRoot, name, { platform: storagePlatform, fs }),
         },
       ])),
     }),
@@ -2304,7 +2391,7 @@ function defaultDependencies({
       name: component.name,
       component: component.component,
       root: paths.componentsRoot,
-      platform,
+      platform: storagePlatform,
       fs,
     }),
     isComponentStaged: async component => {
@@ -2313,7 +2400,7 @@ function defaultDependencies({
         component.name,
         component.component.version,
       );
-      return isStageComplete(destination, { fs, platform });
+      return isStageComplete(destination, { fs, platform: storagePlatform });
     },
     captureSnapshot,
     captureDesiredState,
@@ -2324,7 +2411,7 @@ function defaultDependencies({
     writeConfig: config => writeRawConfigSnapshot(config, {
       path: effectiveConfigPath,
       fs,
-      platform,
+      platform: storagePlatform,
       metadataAdapter,
     }),
     applyReleasePair: defaultApplyReleasePair,
@@ -2333,13 +2420,14 @@ function defaultDependencies({
       platform,
       fs,
     }),
-    runStagedApply: async ({ plan, stagedRelease, lockToken, snapshot, abortSignal }) => defaultRunStagedApply({
+    runStagedApply: async ({ plan, stagedRelease, lockToken, snapshot, abortSignal, onChildSpawn }) => defaultRunStagedApply({
       stagedRelease,
       lockToken,
       configPath: effectiveConfigPath,
       config: plan?.config,
       snapshot,
       abortSignal,
+      onChildSpawn,
       spawnImpl: stagedApplySpawn,
       scheduler: stagedAbortScheduler,
       termGraceMs: stagedAbortTermGraceMs,
@@ -2353,7 +2441,7 @@ function defaultDependencies({
     restoreConfig: config => writeRawConfigSnapshot(config, {
       path: effectiveConfigPath,
       fs,
-      platform,
+      platform: storagePlatform,
       metadataAdapter,
     }),
     restoreServiceDefinitions: serviceAdapter.restoreServiceDefinitions,

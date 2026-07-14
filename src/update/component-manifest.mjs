@@ -203,6 +203,12 @@ const RELEASED_COMPONENTS = {
     version: '3.0.0-alpha.11',
     ref: 'v3.0.0-alpha.11',
     bin: 'WinSW.exe',
+    requireVerifiedChecksum: true,
+    checksums: {
+      'WinSW-x64.exe': 'a2daa6a33a9c2b791ae31d9092e7935c339d1e03e89bfb747618ce2f4e819e20',
+      'WinSW-x86.exe': '3201432b44825b0dc763eb4052dc84b179314e2a338794c9f5f797e8fe2bb0fc',
+      'WinSW-net461.exe': '91bce26b4fa3a7534e7967c1804d7417737b7169014435e5b3b31924bf19f3ee',
+    },
   },
   codegraph: {
     kind: 'npm',

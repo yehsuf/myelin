@@ -99,7 +99,7 @@ test('publisher trust guard accepts only a same-repository run against the defau
 
 test('publisher checks out the triggering run\'s trusted commit, not any dispatch input', () => {
   const steps = loadPublishSteps();
-  const checkout = steps.find((step) => step.uses === 'actions/checkout@v4');
+  const checkout = steps.find((step) => step.uses?.startsWith('actions/checkout@'));
   assert.ok(checkout, 'expected a checkout step');
   assert.equal(checkout.with?.ref, '${{ github.event.workflow_run.head_sha }}');
 });
