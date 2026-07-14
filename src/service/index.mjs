@@ -70,6 +70,20 @@ export async function installMitmService(opts) {
   }
 }
 
+export async function removeMitmService(opts = {}) {
+  const os = opts.os ?? detectOS();
+  if (os === 'darwin') {
+    const { removeMitmService: remove } = await import('./launchd.mjs');
+    return remove(opts);
+  }
+  if (os === 'linux') {
+    const { removeMitmService: remove } = await import('./systemd.mjs');
+    return remove(opts);
+  }
+  const { removeMitmService: remove } = await import('./windows.mjs');
+  return remove(opts);
+}
+
 /**
  * Install a watchdog that periodically revives dropped or hung services.
  * macOS always gets the launchd watchdog; Windows can opt into a Scheduled

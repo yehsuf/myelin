@@ -34,7 +34,13 @@ import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
-import { installService, installMitmService, installEngineInstance, removeEngineInstance } from './service/index.mjs';
+import {
+  installService,
+  installMitmService,
+  installEngineInstance,
+  removeEngineInstance,
+  removeMitmService,
+} from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
 import {
   defaultWindowsHome,
@@ -349,6 +355,27 @@ async function removeSelectedLegacyWindowsInstances({
   return true;
 }
 
+async function removeSelectedAlternateManagerInstances({
+  os,
+  plan,
+  winManager,
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  if (os !== 'windows') return false;
+  const alternateManager = winManager === 'winsw' ? 'registry' : 'winsw';
+  for (const instance of plan.instances ?? []) {
+    await removeEngineInstanceImpl(instance, {
+      manager: alternateManager,
+      home,
+      warn: warnFn,
+      includeLegacy: false,
+    });
+  }
+  return true;
+}
+
 async function removeDisabledOwnedCopilotInstance({
   plan,
   cfg = {},
@@ -444,6 +471,14 @@ export async function applyServiceEngineInstallPlan({
     warn: warnFn,
     removeEngineInstanceImpl,
     defaultWindowsHomeImpl,
+  });
+  await removeSelectedAlternateManagerInstances({
+    os,
+    plan: resolvedPlan,
+    winManager,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
   });
   await removeObsoleteOwnedInstances({
     selectedEngine: resolvedPlan.engine,
@@ -994,10 +1029,11 @@ export function buildDownstreamProxyServiceInstallOptions({
   const resolvedEnginePlan = { ...(installPlan?.enginePlan ?? installPlan ?? buildServiceEnginePlan(cfg)) };
   const windowsServiceCfg = cfg?.proxy?.windows_service ?? {};
   const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const mitmEnabled = mitmCfg.enabled !== false;
   const { copilotHeadroomPort } = resolveMitmCompression(cfg);
   const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
   return {
-    mitmOpts: mitmdumpBin ? buildMitmServiceInstallOptions({
+    mitmOpts: mitmEnabled && mitmdumpBin ? buildMitmServiceInstallOptions({
       cfg,
       os,
       home,
@@ -1014,13 +1050,31 @@ export function buildDownstreamProxyServiceInstallOptions({
       intervalMinutes: watchdogInterval,
       instances: resolvedEnginePlan.instances ?? buildEngineInstancePlan(cfg).instances,
       headroomPort: resolvedEnginePlan.selectedPort,
-      mitmPort: mitmCfg.port ?? 8888,
-      ...(copilotHeadroomPort && mitmdumpBin ? {
+      ...(mitmEnabled ? { mitmPort: mitmCfg.port ?? 8888 } : {}),
+      ...(mitmEnabled && copilotHeadroomPort && mitmdumpBin ? {
         copilotHeadroomPort,
         egressPort: mitmCfg.egress_port ?? 8889,
       } : {}),
     },
   };
+}
+
+export async function applyMitmServiceInstallPlan({
+  cfg = {},
+  os,
+  home,
+  winManager,
+  mitmOpts,
+  installMitmServiceImpl = installMitmService,
+  removeMitmServiceImpl = removeMitmService,
+} = {}) {
+  if (cfg?.proxy?.mitm?.enabled === false) {
+    await removeMitmServiceImpl({ os, manager: winManager, home });
+    return { installed: false, removed: true };
+  }
+  if (!mitmOpts) return { installed: false, removed: false };
+  await installMitmServiceImpl(mitmOpts);
+  return { installed: true, removed: false };
 }
 
 /**
@@ -1582,8 +1636,11 @@ async function main() {
   }
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
-  const mitmdumpBin = await ensureMitmproxy(os);
-  if (mitmdumpBin) {
+  const mitmEnabled = existingCfg?.proxy?.mitm?.enabled !== false;
+  const mitmdumpBin = mitmEnabled ? await ensureMitmproxy(os) : null;
+  if (!mitmEnabled) {
+    skip('mitmproxy setup skipped (proxy.mitm.enabled=false)');
+  } else if (mitmdumpBin) {
     await ensureMitmCA(home, mitmdumpBin);
     // non-interactive when --yes: auto-append CA to bundle without prompting
     await installMitmproxyCA(home, !flags['yes']);
@@ -1638,15 +1695,21 @@ async function main() {
     });
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
-    if (downstreamProxyInstallOpts.mitmOpts) {
-      const mitmOpts = downstreamProxyInstallOpts.mitmOpts;
-      try {
-        await installMitmService(mitmOpts);
+    try {
+      const mitmResult = await applyMitmServiceInstallPlan({
+        cfg,
+        os,
+        home,
+        winManager,
+        mitmOpts: downstreamProxyInstallOpts.mitmOpts,
+      });
+      if (mitmResult.installed) {
+        const mitmOpts = downstreamProxyInstallOpts.mitmOpts;
         ok(`mitmproxy service registered (port ${mitmOpts.port}${mitmOpts.egressPort ? ` + egress ${mitmOpts.egressPort}` : ''})`);
-
-      } catch (e) {
-        warn(`mitmproxy service registration failed: ${e.message}`);
       }
+      if (mitmResult.removed) ok('disabled mitmproxy service registration removed');
+    } catch (e) {
+      warn(`mitmproxy service registration failed: ${e.message}`);
     }
 
     // Watchdog: macOS uses a launchd poller; Windows can opt into a

@@ -146,15 +146,34 @@ function withPowerShell(args, powershellExe = powerShellExecutable()) {
   return `${powershellExe} ${args}`;
 }
 
-function runPs(script, { stdio = 'pipe', powershellExe = powerShellExecutable() } = {}) {
-  const stateDir = join(homedir(), '.myelin', 'state');
-  mkdirSync(stateDir, { recursive: true });
-  const tmp = join(stateDir, `myelin-${process.pid}-${Date.now()}.ps1`);
-  writeFileSync(tmp, script, 'utf8');
+export function runPs(script, {
+  stdio = 'pipe',
+  powershellExe = powerShellExecutable(),
+  home = homedir(),
+  isWslImpl = isWsl,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  processId = process.pid,
+  nowImpl = Date.now,
+  mkdirSyncImpl = mkdirSync,
+  writeFileSyncImpl = writeFileSync,
+  execSyncImpl = execSync,
+  unlinkSyncImpl = unlinkSync,
+} = {}) {
+  const wsl = isWslImpl();
+  const windowsHome = defaultWindowsHomeImpl(home);
+  const nativeStateDir = isWindowsAbsolutePath(windowsHome)
+    ? pathWin32.join(windowsHome, '.myelin', 'state')
+    : join(home, '.myelin', 'state');
+  const stateDir = wsl ? winswFilesystemPathFor(nativeStateDir, { isWslImpl }) : nativeStateDir;
+  const filename = `myelin-${processId}-${nowImpl()}.ps1`;
+  const tmp = join(stateDir, filename);
+  const powershellScriptPath = wsl ? pathWin32.join(nativeStateDir, filename) : tmp;
+  mkdirSyncImpl(stateDir, { recursive: true });
+  writeFileSyncImpl(tmp, script, 'utf8');
   try {
-    execSync(withPowerShell(`-ExecutionPolicy Bypass -File "${tmp}"`, powershellExe), { stdio });
+    execSyncImpl(withPowerShell(`-ExecutionPolicy Bypass -File "${powershellScriptPath}"`, powershellExe), { stdio });
   } finally {
-    try { unlinkSync(tmp); } catch {}
+    try { unlinkSyncImpl(tmp); } catch {}
   }
 }
 
@@ -891,7 +910,7 @@ export function uninstallWindowsWatchdogTask({
 } = {}) {
   const scriptPath = winswWatchdogScriptPath({ id, home });
   const logPath = winswWatchdogLogPath({ id, home });
-  runPsFn(generateWindowsWatchdogTaskDeleteScript({ taskName }));
+  runPsFn(generateWindowsWatchdogTaskDeleteScript({ taskName }), { home });
   for (const path of [
     winswFilesystemPathFor(scriptPath, { isWslImpl }),
     winswFilesystemPathFor(logPath, { isWslImpl }),
@@ -937,7 +956,7 @@ export async function installWinswService({
 
   if (existsSyncImpl(serviceFilesystemExePath)) {
     try {
-      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
+      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
     } catch {}
   }
 
@@ -960,7 +979,7 @@ export async function installWinswService({
     resetFailure,
   });
   writeFileSyncImpl(configFilesystemPath, xml, 'utf8');
-  runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }));
+  runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
   return { id, serviceExePath, configPath, logDir };
 }
 
@@ -1004,7 +1023,7 @@ export function restartWinswService({
   if (!existsSyncImpl(winswFilesystemPathFor(serviceExePath, { isWslImpl })) ||
       !existsSyncImpl(winswFilesystemPathFor(configPath, { isWslImpl }))) return false;
   try {
-    runPsFn(`& ${psQuote(serviceExePath)} restart ${psQuote(configPath)} | Out-Null`);
+    runPsFn(`& ${psQuote(serviceExePath)} restart ${psQuote(configPath)} | Out-Null`, { home });
     return true;
   } catch {
     try {
@@ -1012,7 +1031,7 @@ export function restartWinswService({
 try { & ${psQuote(serviceExePath)} stop ${psQuote(configPath)} --force --no-wait | Out-Null } catch {}
 Start-Sleep -Seconds 1
 & ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null
-`);
+`, { home });
       return true;
     } catch {
       return false;
@@ -1033,13 +1052,13 @@ export function uninstallWinswService({
   if (!existsSyncImpl(winswFilesystemPathFor(serviceExePath, { isWslImpl }))) {
     if (legacyRunKey) {
       try {
-        runPsFn(`Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`);
+        runPsFn(`Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`, { home });
       } catch {}
     }
     return false;
   }
   try {
-    runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
+    runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home });
     return true;
   } catch {
     return false;
@@ -1240,7 +1259,13 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
   });
 }
 
-export async function installEngineInstance(instance, { manager = 'registry', envVars = {}, home, ...options } = {}) {
+export async function installEngineInstance(instance, {
+  manager = 'registry',
+  envVars = {},
+  home,
+  runPsFn = runPs,
+  ...options
+} = {}) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
   const launch = commandForWindowsExecutable(
@@ -1249,7 +1274,7 @@ export async function installEngineInstance(instance, { manager = 'registry', en
   );
   const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   if (manager !== 'winsw') {
-    runPs(generateEngineInstanceRunScript({ instance, envVars, ...options }));
+    runPsFn(generateEngineInstanceRunScript({ instance, envVars, ...options }), { home });
     return { ok: true, manager: 'registry', id: identity.id };
   }
   return installWinswService({
@@ -1607,7 +1632,7 @@ export function removeEngineInstance(instance, {
     return removed;
   }
   for (const { instance: ownedInstance } of identities) {
-    runPsFn(generateEngineInstanceRemovalScript({ instance: ownedInstance, home }));
+    runPsFn(generateEngineInstanceRemovalScript({ instance: ownedInstance, home }), { home });
   }
   return true;
 }
@@ -2085,9 +2110,75 @@ Write-Host "[myelin] mitmproxy started (hidden)"
 `;
 }
 
+export function generateManagedMitmRemovalScript({ home } = {}) {
+  const launcherPath = managedMitmLauncherPath({ home });
+  const pidPath = managedMitmPidPath({ home });
+  const launcherRegex = escapePs(escapePsRegex(windowsPath(launcherPath)));
+  return `
+$launcherPath = '${escapePs(windowsPath(launcherPath))}'
+$pidPath = '${escapePs(windowsPath(pidPath))}'
+$launcherRegex = '${launcherRegex}'
+$runKeyValue = [string]((Get-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -ErrorAction SilentlyContinue).'${MITM_KEY}')
+$launcherMatches = $runKeyValue -match '-File\\s+"' -and $runKeyValue -match $launcherRegex
+if ($launcherMatches) {
+  if (Test-Path $pidPath) {
+    $managedPid = (Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($managedPid -and $managedPid.ToString().Trim() -match '^[0-9]+$') {
+      $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
+      if ($proc -and $proc.Name -ieq 'mitmdump.exe') {
+        $parent = if ($proc.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+        if ($parent -and $parent.CommandLine -match $launcherRegex) {
+          Stop-Process -Id $managedPid -Force -ErrorAction SilentlyContinue
+        }
+      }
+    }
+    Remove-Item -Path $pidPath -ErrorAction SilentlyContinue
+  }
+  Get-CimInstance Win32_Process -Filter "Name = 'mitmdump.exe'" | ForEach-Object {
+    $parent = if ($_.ParentProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId = $($_.ParentProcessId)" -ErrorAction SilentlyContinue } else { $null }
+    if ($parent -and $parent.CommandLine -match $launcherRegex) {
+      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+  Remove-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -ErrorAction SilentlyContinue
+}
+`;
+}
+
+export function removeMitmService({
+  manager = 'registry',
+  home,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
+  uninstallWinswServiceImpl = uninstallWinswService,
+  runPsFn = runPs,
+  isWslImpl = isWsl,
+} = {}) {
+  const serviceExePath = winswExecutablePath({ id: MITM_SERVICE_ID, home });
+  const configPath = winswConfigPath({ id: MITM_SERVICE_ID, home });
+  const config = readWindowsFileText(configPath, {
+    existsSyncImpl,
+    readFileSyncImpl,
+    execSyncImpl,
+    powershellExe,
+    isWslImpl,
+  });
+  const ownedWinSw = existsSyncImpl(winswFilesystemPathFor(serviceExePath, { isWslImpl }))
+    && /<id>\s*myelin-mitmproxy\s*<\/id>/iu.test(config)
+    && /<name>\s*Myelin Mitmproxy\s*<\/name>/iu.test(config);
+  let removed = false;
+  if (ownedWinSw) {
+    removed = uninstallWinswServiceImpl({ id: MITM_SERVICE_ID, home, isWslImpl }) || removed;
+  }
+  runPsFn(generateManagedMitmRemovalScript({ home }), { home });
+  return removed || manager === 'registry';
+}
+
 export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort, manager = 'registry' }) {
   if (manager !== 'winsw') {
-    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort, home }));
+    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort, home }), { home });
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
@@ -2248,7 +2339,7 @@ export function installWindowsWatchdogTask({
     winswConfigPath: configPath,
     logPath,
   }), 'utf8');
-  runPsFn(generateWindowsWatchdogTaskCreateScript({ taskName, scriptPath, intervalMinutes }));
+  runPsFn(generateWindowsWatchdogTaskCreateScript({ taskName, scriptPath, intervalMinutes }), { home: winHome });
   return { taskName, scriptPath, logPath };
 }
 

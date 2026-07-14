@@ -912,12 +912,22 @@ export async function defaultRestartMitm({
   log,
   warn,
   homedirImpl = homedir,
+  defaultWindowsHomeImpl = defaultWindowsHome,
   detectMitmdumpImpl = detectMitmdump,
   buildMitmServiceInstallOptionsImpl = buildMitmServiceInstallOptions,
   installMitmServiceImpl = installMitmService,
+  removeMitmServiceImpl = async (options) => {
+    const { removeMitmService } = await import('../service/index.mjs');
+    return removeMitmService(options);
+  },
 } = {}) {
+  const home = os === 'windows' ? defaultWindowsHomeImpl(homedirImpl()) : homedirImpl();
+  if (cfg?.proxy?.mitm?.enabled === false) {
+    await removeMitmServiceImpl({ os, manager: winManager, home });
+    log('  ✓ disabled mitmproxy service removed');
+    return;
+  }
   try {
-    const home = homedirImpl();
     const mitmdumpBin = detectMitmdumpImpl(os);
     if (!mitmdumpBin) throw new Error('mitmdump not found — run: myelin install --yes');
     const mitmOpts = buildMitmServiceInstallOptionsImpl({
@@ -950,14 +960,15 @@ export async function defaultRestartWatchdog({
     const primary = resolvedPlan.instances.find((instance) => instance.role === 'primary');
     const copilot = resolvedPlan.instances.find((instance) => instance.role === 'copilot');
     const intervalMinutes = Number(cfg?.proxy?.windows_service?.watchdog_interval_minutes ?? 2) || 2;
+    const mitmEnabled = cfg?.proxy?.mitm?.enabled !== false;
     const installed = await installWatchdogImpl({
       home,
       enabled: winManager === 'winsw' && (cfg?.proxy?.windows_service?.watchdog_enabled ?? false),
       intervalMinutes,
       instances: resolvedPlan.instances,
       headroomPort: primary?.port,
-      mitmPort: cfg?.proxy?.mitm?.port ?? 8888,
-      ...(copilot ? {
+      ...(mitmEnabled ? { mitmPort: cfg?.proxy?.mitm?.port ?? 8888 } : {}),
+      ...(mitmEnabled && copilot ? {
         copilotHeadroomPort: copilot.port,
         egressPort: cfg?.proxy?.mitm?.egress_port ?? 8889,
       } : {}),
@@ -1094,7 +1105,7 @@ export async function restartEngineInstance(instance, {
         servicePlatform: os,
         wsl,
       });
-      options.envVars = buildManagedHeadroomEnv(cfg);
+      options.envVars = instance.role === 'primary' ? buildManagedHeadroomEnv(cfg) : {};
     } else if (instance.engine === 'headroom_lite') {
       const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
       const headroomLite = await detectTool('headroom-lite', '--version');

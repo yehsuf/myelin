@@ -543,6 +543,50 @@ describe('runRestart descriptor plan', () => {
     }
   });
 
+  it('keeps Python Copilot restart env scoped to its descriptor loopback targets', async () => {
+    const installed = [];
+    const instance = {
+      engine: 'headroom',
+      role: 'copilot',
+      id: 'headroom-copilot',
+      port: 9788,
+      stateDir: '/Users/alice/.myelin/state/headroom-copilot',
+      logPath: '/Users/alice/.myelin/headroom-copilot.log',
+      healthUrl: 'http://127.0.0.1:9788/health',
+      env: {
+        ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889',
+        OPENAI_TARGET_API_URL: 'http://127.0.0.1:8889',
+        HEADROOM_MODE: 'observe',
+        NO_PROXY: '127.0.0.1,localhost,::1',
+      },
+    };
+
+    const restarted = await restartEngineInstance(instance, {
+      os: 'linux',
+      cfg: {
+        proxy: {
+          headroom: {
+            port: 8787,
+            openai_target_url: 'https://api.githubcopilot.com',
+            mode: 'cache',
+          },
+        },
+      },
+      home: '/Users/alice',
+      headroomBinPathImpl: () => '/opt/myelin/headroom',
+      removeEngineInstanceImpl: async () => {},
+      installEngineInstanceImpl: async (installedInstance, options) => installed.push({ installedInstance, options }),
+      waitForHealthUrlImpl: async () => true,
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(restarted, true);
+    assert.equal(installed[0].options.envVars.HEADROOM_PORT, undefined);
+    assert.equal(installed[0].options.envVars.OPENAI_TARGET_API_URL, undefined);
+    assert.deepEqual(installed[0].installedInstance.env, instance.env);
+  });
+
   it('removes the disabled same-engine Copilot role through the generic owner', async () => {
     const removed = [];
 
@@ -1216,9 +1260,62 @@ describe('defaultRestartWatchdog', () => {
     assert.equal(installs[0].copilotHeadroomPort, undefined);
     assert.equal(installs[0].egressPort, undefined);
   });
+
+  it('does not hand disabled MITM ports to the watchdog', async () => {
+    const installs = [];
+
+    await defaultRestartWatchdog({
+      os: 'darwin',
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          mitm: { enabled: false, port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      winManager: 'registry',
+      homedirImpl: () => '/Users/alice',
+      installWatchdogImpl: async (options) => installs.push(options),
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(installs[0].mitmPort, undefined);
+    assert.equal(installs[0].egressPort, undefined);
+    assert.equal(installs[0].copilotHeadroomPort, undefined);
+  });
 });
 
 describe('defaultRestartMitm', () => {
+  it('removes only the registered Myelin MITM service without probing or recreating it when disabled', async () => {
+    const removals = [];
+
+    await defaultRestartMitm({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          mitm: { enabled: false, port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'winsw' },
+        },
+      },
+      winManager: 'winsw',
+      homedirImpl: () => 'C:\\Users\\alice',
+      detectMitmdumpImpl: () => assert.fail('disabled MITM must not be probed'),
+      installMitmServiceImpl: () => assert.fail('disabled MITM must not be installed'),
+      removeMitmServiceImpl: async (options) => removals.push(options),
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(removals, [{
+      os: 'windows',
+      manager: 'winsw',
+      home: 'C:\\Users\\alice',
+    }]);
+  });
+
   for (const os of ['darwin', 'linux', 'windows']) {
     it(`reinstalls the mitm service definition for ${os} with the selected engine port`, async () => {
       const installs = [];

@@ -186,8 +186,8 @@ export function copilotHeadroomUnitPath() {
   return join(homedir(), '.config', 'systemd', 'user', 'myelin-copilot-headroom.service');
 }
 
-export function mitmUnitPath() {
-  return join(homedir(), '.config', 'systemd', 'user', 'myelin-mitmproxy.service');
+export function mitmUnitPath(home = homedir()) {
+  return join(home, '.config', 'systemd', 'user', 'myelin-mitmproxy.service');
 }
 
 export function installService(opts) {
@@ -228,6 +228,19 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   // connection to api.business.githubcopilot.com. `restart` is always
   // correct: starts if stopped, cleanly restarts if already running.
   execSync('systemctl --user restart myelin-mitmproxy.service');
+}
+
+export function removeMitmService({
+  home = homedir(),
+  existsSyncImpl = existsSync,
+  unlinkSyncImpl = unlinkSync,
+  execSyncImpl = execSync,
+} = {}) {
+  const p = mitmUnitPath(home);
+  try { execSyncImpl('systemctl --user disable --now myelin-mitmproxy.service', { stdio: 'ignore' }); } catch {}
+  if (existsSyncImpl(p)) unlinkSyncImpl(p);
+  execSyncImpl('systemctl --user daemon-reload');
+  return true;
 }
 
 export function mitmServiceStatus() {

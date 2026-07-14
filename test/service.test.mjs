@@ -9,12 +9,14 @@ import {
   generateGenericPlist,
   generateLaunchdWatchdogScript,
   generateEngineInstancePlist,
+  removeMitmService as removeLaunchdMitmService,
 } from '../src/service/launchd.mjs';
 import {
   generateSystemdUnit,
   generateCopilotHeadroomUnit,
   generateMitmUnit,
   generateEngineInstanceUnit,
+  removeMitmService as removeSystemdMitmService,
 } from '../src/service/systemd.mjs';
 import {
   buildManagedHeadroomStopScript,
@@ -29,6 +31,7 @@ import {
   generateCopilotHeadroomRunScript,
   generateHeadroomRunScript,
   generateMitmRunScript,
+  generateManagedMitmRemovalScript,
   generateSetUserEnvVarsScript,
   generateWindowsWatchdogHealthcheckScript,
   generateWindowsWatchdogTaskDeleteScript,
@@ -42,6 +45,8 @@ import {
   normalizeWindowsFilesystemPath,
   resolveWslWindowsHome,
   removeEngineInstance as removeWindowsEngineInstance,
+  removeMitmService,
+  runPs,
   serviceStatus,
   spawnDetachedService,
   stopManagedHeadroomProcess,
@@ -63,6 +68,99 @@ const ENGINE_BINS = {
   headroomBin: '/opt/myelin/bin/headroom',
   headroomLiteBin: '/opt/myelin/bin/headroom-lite',
 };
+
+describe('runPs WSL script path', () => {
+  it('writes the transient script through the Windows mount and invokes PowerShell with its native path', () => {
+    const operations = [];
+
+    runPs('Write-Host ready', {
+      home: '/home/alice',
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      powershellExe: 'powershell.exe',
+      processId: 123,
+      nowImpl: () => 456,
+      mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
+      writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
+      execSyncImpl: (command) => operations.push({ type: 'exec', command }),
+      unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
+    });
+
+    const mountedScript = '/mnt/c/Users/alice/.myelin/state/myelin-123-456.ps1';
+    const nativeScript = 'C:\\Users\\alice\\.myelin\\state\\myelin-123-456.ps1';
+    assert.deepEqual(operations, [
+      { type: 'mkdir', path: '/mnt/c/Users/alice/.myelin/state' },
+      { type: 'write', path: mountedScript, content: 'Write-Host ready' },
+      { type: 'exec', command: `powershell.exe -ExecutionPolicy Bypass -File "${nativeScript}"` },
+      { type: 'unlink', path: mountedScript },
+    ]);
+  });
+});
+
+describe('WSL PowerShell registration paths', () => {
+  const home = 'C:\\Users\\alice';
+
+  it('passes the resolved Windows home to registry, WinSW, and watchdog PowerShell calls', async () => {
+    const registryCalls = [];
+    const winswCalls = [];
+    const watchdogCalls = [];
+    const instance = {
+      engine: 'headroom',
+      role: 'primary',
+      id: 'headroom-primary',
+      port: 8787,
+      stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+      healthUrl: 'http://127.0.0.1:8787/health',
+      env: {},
+    };
+
+    await windowsService.installEngineInstance(instance, {
+      manager: 'registry',
+      home,
+      headroomBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      runPsFn: (script, options) => registryCalls.push({ script, options }),
+    });
+    await windowsService.installWinswService({
+      id: instance.id,
+      name: 'Myelin Headroom Primary',
+      description: 'Myelin headroom primary',
+      executable: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      arguments: 'proxy --port 8787',
+      logPath: instance.logPath,
+      workingDirectory: instance.stateDir,
+      home,
+      installWinswImpl: async () => ({
+        path: 'C:\\Users\\alice\\.myelin\\bin\\winsw.exe',
+        filesystemPath: '/mnt/c/Users/alice/.myelin/bin/winsw.exe',
+      }),
+      mkdirSyncImpl: () => {},
+      existsSyncImpl: () => false,
+      copyFileSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      runPsFn: (script, options) => winswCalls.push({ script, options }),
+    });
+    windowsService.installWindowsWatchdogTask({
+      id: instance.id,
+      healthUrl: instance.healthUrl,
+      home,
+      existsSyncImpl: () => true,
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      runPsFn: (script, options) => watchdogCalls.push({ script, options }),
+    });
+
+    assert.equal(registryCalls.length, 1);
+    assert.match(registryCalls[0].script, /MyelinHeadroomPrimary/);
+    assert.equal(registryCalls[0].options.home, home);
+    assert.equal(winswCalls.length, 1);
+    assert.match(winswCalls[0].script, /headroom-primary\.exe/);
+    assert.equal(winswCalls[0].options.home, home);
+    assert.equal(watchdogCalls.length, 1);
+    assert.match(watchdogCalls[0].script, /Myelin Headroom Primary Watchdog/);
+    assert.equal(watchdogCalls[0].options.home, home);
+  });
+});
 
 function engineInstance(engine, role) {
   const port = role === 'primary' ? 8790 : 8788;
@@ -518,6 +616,17 @@ describe('Windows engine descriptor migration ownership', () => {
 
 
 describe('generateLaunchdWatchdogScript', () => {
+  it('omits MITM probes when no MITM port is active', () => {
+    const script = generateLaunchdWatchdogScript({
+      home: '/Users/alice',
+      headroomPort: 8787,
+    });
+
+    assert.ok(!script.includes("check_and_revive 8888 mitmproxy '*.mitmproxy.plist'"));
+    assert.ok(!script.includes("check_and_revive 8889 mitmproxy-egress '*.mitmproxy.plist'"));
+    assert.ok(script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+  });
+
   it('omits the main Headroom stanza when headroomPort is undefined', () => {
     const script = generateLaunchdWatchdogScript({
       home: '/Users/alice',
@@ -1554,6 +1663,82 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
     const script = generateMitmRunScript(MITM_OPTS);
     assert.ok(script.includes('--listen-port 8888'));
     assert.ok(!script.includes('regular@'));
+  });
+
+  describe('Windows MITM removal ownership', () => {
+    const home = 'C:\\Users\\alice';
+
+    it('stops and unregisters only the exact Myelin launcher-owned registry process', () => {
+      const script = generateManagedMitmRemovalScript({ home });
+
+      assert.match(script, /\$runKeyValue/);
+      assert.match(script, /\$launcherMatches/);
+      assert.match(script, /if \(\$launcherMatches\) \{/);
+      assert.match(script, /\$parent\.CommandLine -match \$launcherRegex/);
+      assert.match(script, /Stop-Process -Id \$managedPid/);
+      assert.match(script, /Remove-ItemProperty -Path .*MyelinMitmproxy/);
+      assert.doesNotMatch(script, /Stop-Process -Name mitmdump/);
+    });
+
+    it('does not uninstall a WinSW configuration that is not Myelin MITM', () => {
+      const uninstalls = [];
+      const registryScripts = [];
+
+      const removed = removeMitmService({
+        manager: 'winsw',
+        home,
+        existsSyncImpl: () => true,
+        readFileSyncImpl: () => [
+          '<service>',
+          '  <id>unowned-service</id>',
+          '  <name>Unowned Service</name>',
+          '</service>',
+        ].join('\n'),
+        uninstallWinswServiceImpl: (options) => uninstalls.push(options),
+        runPsFn: (script) => registryScripts.push(script),
+      });
+
+      assert.equal(removed, false);
+      assert.deepEqual(uninstalls, []);
+      assert.equal(registryScripts.length, 1);
+      assert.match(registryScripts[0], /\$launcherMatches/);
+    });
+  });
+
+  describe('Unix MITM registration removal', () => {
+    it('removes only the Myelin launchd label and plist', () => {
+      const commands = [];
+      const removed = [];
+
+      removeLaunchdMitmService({
+        home: '/Users/alice',
+        uid: '501',
+        existsSyncImpl: () => true,
+        unlinkSyncImpl: (path) => removed.push(path),
+        execSyncImpl: (command) => commands.push(command),
+      });
+
+      assert.deepEqual(commands, ['launchctl bootout gui/501/com.myelin.mitmproxy']);
+      assert.deepEqual(removed, ['/Users/alice/Library/LaunchAgents/com.myelin.mitmproxy.plist']);
+    });
+
+    it('removes only the Myelin systemd unit', () => {
+      const commands = [];
+      const removed = [];
+
+      removeSystemdMitmService({
+        home: '/home/alice',
+        existsSyncImpl: () => true,
+        unlinkSyncImpl: (path) => removed.push(path),
+        execSyncImpl: (command) => commands.push(command),
+      });
+
+      assert.deepEqual(commands, [
+        'systemctl --user disable --now myelin-mitmproxy.service',
+        'systemctl --user daemon-reload',
+      ]);
+      assert.deepEqual(removed, ['/home/alice/.config/systemd/user/myelin-mitmproxy.service']);
+    });
   });
   it('uses ingress plus loopback-bound egress --mode args when egressPort is given', () => {
     const script = generateMitmRunScript({ ...MITM_OPTS, egressPort: 8889 });

@@ -114,8 +114,8 @@ export function plistPath() {
   return join(homedir(), 'Library', 'LaunchAgents', `${LABEL}.plist`);
 }
 
-export function mitmPlistPath() {
-  return join(homedir(), 'Library', 'LaunchAgents', `${MITM_LABEL}.plist`);
+export function mitmPlistPath(home = homedir()) {
+  return join(home, 'Library', 'LaunchAgents', `${MITM_LABEL}.plist`);
 }
 
 /** Generic plist generator — use for any long-running LaunchAgent.
@@ -283,6 +283,19 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   execSync(`launchctl bootstrap gui/${uid} ${p}`);
 }
 
+export function removeMitmService({
+  home = homedir(),
+  uid = process.getuid?.() ?? execSync('id -u').toString().trim(),
+  existsSyncImpl = existsSync,
+  unlinkSyncImpl = unlinkSync,
+  execSyncImpl = execSync,
+} = {}) {
+  const p = mitmPlistPath(home);
+  try { execSyncImpl(`launchctl bootout gui/${uid}/${MITM_LABEL}`, { stdio: 'ignore' }); } catch {}
+  if (existsSyncImpl(p)) unlinkSyncImpl(p);
+  return true;
+}
+
 export function mitmServiceStatus() {
   try {
     const out = execSync(`launchctl list ${MITM_LABEL} 2>&1`).toString();
@@ -328,15 +341,15 @@ export function copilotHeadroomServiceStatus(opts = {}) {
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function generateLaunchdWatchdogScript({ home, headroomPort, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
+export function generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
   const la = join(home, 'Library', 'LaunchAgents');
   const watchdogLog = join(home, '.myelin', 'watchdog.log');
   const checks = [
-    `check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`,
+    ...(mitmPort != null ? [`check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`] : []),
     ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
     ...(copilotHeadroomPort ? [`check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'`] : []),
-    ...(egressPort ? [`check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'`] : []),
+    ...(mitmPort != null && egressPort ? [`check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'`] : []),
   ];
 
   return `#!/usr/bin/env bash
@@ -374,7 +387,7 @@ ${checks.join('\n')}
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, headroomPort, mitmPort = 8888, copilotHeadroomPort, egressPort } = {}) {
+export function installWatchdog({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
   const binDir = join(home, '.myelin', 'bin');
   mkdirSync(binDir, { recursive: true });

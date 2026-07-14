@@ -5,6 +5,7 @@ import { win32 as pathWin32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   applyServiceEngineInstallPlan,
+  applyMitmServiceInstallPlan,
   buildDownstreamProxyServiceInstallOptions,
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
@@ -242,6 +243,8 @@ describe('applyServiceEngineInstallPlan', () => {
       'remove:legacy:headroom-primary:winsw',
       'remove:legacy:headroom-copilot:registry',
       'remove:legacy:headroom-copilot:winsw',
+      'remove:headroom-primary:winsw',
+      'remove:headroom-copilot:winsw',
       'remove:headroom_lite-primary:registry',
       'remove:headroom_lite-copilot:registry',
       'install:headroom-primary',
@@ -545,7 +548,7 @@ describe('applyServiceEngineInstallPlan', () => {
 
         const obsoletePort = obsoleteEngine === 'headroom' ? 8787 : 8790;
         assert.deepEqual(removed
-          .filter(({ legacy }) => !legacy)
+          .filter(({ legacy, engine }) => !legacy && engine === obsoleteEngine)
           .map(({ id, port, healthUrl }) => ({ id, port, healthUrl })), [
           {
             id: `${obsoleteEngine}-primary`,
@@ -560,6 +563,67 @@ describe('applyServiceEngineInstallPlan', () => {
         ]);
       });
     }
+  }
+
+  for (const {
+    selectedEngine,
+    manager,
+    alternateManager,
+  } of [
+    { selectedEngine: 'headroom', manager: 'registry', alternateManager: 'winsw' },
+    { selectedEngine: 'headroom_lite', manager: 'winsw', alternateManager: 'registry' },
+  ]) {
+    it(`removes only selected ${selectedEngine} descriptors from ${alternateManager} before installing through ${manager}`, async () => {
+      const removed = [];
+      const installed = [];
+
+      await applyServiceEngineInstallPlan({
+        cfg: {
+          proxy: {
+            engine: selectedEngine,
+            headroom: { port: 8787 },
+            headroom_lite: { port: 8790 },
+            copilot_headroom: { enabled: true, port: 9788 },
+            windows_service: { manager },
+          },
+        },
+        os: 'windows',
+        home: 'C:\\Users\\alice',
+        headroomBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+        detectToolImpl: async () => ({ installed: true, path: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe' }),
+        removeEngineInstanceImpl: async (instance, options) => removed.push({ instance, options }),
+        installEngineInstanceImpl: async (instance) => installed.push(instance),
+      });
+
+      assert.deepEqual(
+        removed
+          .filter(({ instance }) => !instance.legacy && instance.engine === selectedEngine)
+          .map(({ instance, options }) => ({
+            id: instance.id,
+            role: instance.role,
+            manager: options.manager,
+            includeLegacy: options.includeLegacy,
+          })),
+        [
+          {
+            id: `${selectedEngine}-primary`,
+            role: 'primary',
+            manager: alternateManager,
+            includeLegacy: false,
+          },
+          {
+            id: `${selectedEngine}-copilot`,
+            role: 'copilot',
+            manager: alternateManager,
+            includeLegacy: false,
+          },
+        ],
+      );
+      assert.deepEqual(installed.map(({ id }) => id), [
+        `${selectedEngine}-primary`,
+        `${selectedEngine}-copilot`,
+      ]);
+    });
   }
 
   for (const selectedEngine of ['headroom', 'headroom_lite']) {
@@ -789,6 +853,61 @@ describe('buildMitmServiceInstallOptions', () => {
 });
 
 describe('buildDownstreamProxyServiceInstallOptions', () => {
+  it('removes the existing Myelin MITM registration instead of installing when disabled', async () => {
+    const removals = [];
+
+    const result = await applyMitmServiceInstallPlan({
+      cfg: { proxy: { mitm: { enabled: false } } },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      winManager: 'registry',
+      mitmOpts: { port: 8888 },
+      installMitmServiceImpl: () => assert.fail('disabled MITM must not be installed'),
+      removeMitmServiceImpl: async (options) => removals.push(options),
+    });
+
+    assert.deepEqual(result, { installed: false, removed: true });
+    assert.deepEqual(removals, [{
+      os: 'windows',
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+    }]);
+  });
+
+  it('omits disabled MITM provisioning and its watchdog probes', () => {
+    const options = buildDownstreamProxyServiceInstallOptions({
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          mitm: { enabled: false, port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true },
+        },
+      },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
+      winManager: 'winsw',
+      installPlan: {
+        enginePlan: {
+          selectedPort: 8787,
+          instances: [{
+            id: 'headroom-primary',
+            role: 'primary',
+            port: 8787,
+            healthUrl: 'http://127.0.0.1:8787/health',
+          }],
+        },
+      },
+    });
+
+    assert.equal(options.mitmOpts, null);
+    assert.equal(options.watchdogOpts.mitmPort, undefined);
+    assert.equal(options.watchdogOpts.egressPort, undefined);
+    assert.equal(options.watchdogOpts.copilotHeadroomPort, undefined);
+  });
+
   it('passes selected descriptor IDs to a WinSW install watchdog instead of legacy service IDs', () => {
     const instances = [
       {
