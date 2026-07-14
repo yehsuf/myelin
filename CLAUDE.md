@@ -65,6 +65,20 @@ ssh yeh-legion "cd %USERPROFILE%\\.myelin\\repo && git fetch origin && git check
 ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout feat/my-feature && npm test'
 ```
 
+> **⚠️ MANDATORY — always reset the install machines back to `main` when done (test pass OR fail).**
+> The Windows/Linux `~/.myelin/repo` are **install targets, never dev checkouts** — leaving them on a
+> feature branch makes `myelin`/services run unmerged code and produces the recurring "why is this
+> machine on a branch?" drift. Reset each regardless of the test result:
+>
+> ```bash
+> ssh yeh-legion "cd %USERPROFILE%\\.myelin\\repo && git checkout -B main origin/main"
+> ssh muc-lhvsuz 'cd ~/.myelin/repo && git checkout -B main origin/main'
+> ```
+>
+> If a machine's repo was cloned single-branch (fetch refspec pinned to a feature branch, no `main`),
+> first repair it:
+> `git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && git fetch origin`.
+
 ### Merge + cleanup
 
 ```bash
