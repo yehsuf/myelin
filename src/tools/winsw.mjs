@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { win32 as pathWin32 } from 'node:path';
 import { isWsl } from '../detect/wsl.mjs';
 import { resolveMyelinRoot, joinManaged } from '../shared/myelin-paths.mjs';
+import { normalizeWindowsFilesystemPath } from '../service/windows.mjs';
 
 export const WINSW_REPO = 'winsw/winsw';
 // Pinned to the current 3.x line this Windows keepalive work was researched
@@ -29,8 +30,20 @@ export function getWinswVersionStatus(raw = '') {
   };
 }
 
+export function toNativeWinswCommandPath(value = '') {
+  const raw = String(value ?? '');
+  // A mounted-WSL managed root (/mnt/<drive>/...) is a Node-filesystem *view*
+  // of a Windows path. PowerShell / WinSW consume the COMMAND path natively, so
+  // they need the real Windows form (<Drive>:\...). Native paths pass through
+  // unchanged; only the /mnt/<drive> case is rewritten.
+  if (!/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(raw)) return raw;
+  return normalizeWindowsFilesystemPath(raw, { rejectPosix: false });
+}
+
 export function winswBinPath({ home = homedir(), env = process.env } = {}) {
-  return joinManaged(resolveMyelinRoot({ home, env, platform: 'windows' }), 'bin', 'winsw.exe');
+  return toNativeWinswCommandPath(
+    joinManaged(resolveMyelinRoot({ home, env, platform: 'windows' }), 'bin', 'winsw.exe'),
+  );
 }
 
 export function winswFilesystemPath(value = '', { wsl = isWsl() } = {}) {

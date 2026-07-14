@@ -118,6 +118,47 @@ describe('detectWinsw', () => {
     );
   });
 
+  it('I5: returns a NATIVE D:\\ WinSW command path when the managed root is a mounted /mnt/d WSL path', () => {
+    const env = { MYELIN_DIR: '/mnt/d/managed' };
+    // PowerShell/WinSW consume the command path natively, so it MUST be D:\...
+    assert.equal(
+      winswBinPath({ home: '/home/alice', env }),
+      'D:\\managed\\bin\\winsw.exe',
+    );
+    // ...while the Node-filesystem view of that command path stays under /mnt/d.
+    assert.equal(
+      winswTools.winswFilesystemPath(winswBinPath({ home: '/home/alice', env }), { wsl: true }),
+      '/mnt/d/managed/bin/winsw.exe',
+    );
+  });
+
+  it('I5: downloads WinSW to the /mnt/d filesystem path while keeping the native D:\\ command path', async () => {
+    const filesystemOps = [];
+    const responses = [
+      {
+        ok: true,
+        json: async () => ({
+          assets: [{ name: 'WinSW-x64.exe', browser_download_url: 'https://example.test/winsw.exe' }],
+        }),
+      },
+      { ok: true, arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer },
+    ];
+    const result = await winswTools.downloadWinsw({
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/mnt/d/managed' },
+      arch: 'x64',
+      wsl: true,
+      fetchImpl: async () => responses.shift(),
+      mkdirSyncImpl: (path) => filesystemOps.push({ op: 'mkdir', path }),
+      writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      chmodSyncImpl: (path) => filesystemOps.push({ op: 'chmod', path }),
+    });
+
+    assert.equal(result.path, 'D:\\managed\\bin\\winsw.exe');
+    assert.equal(result.filesystemPath, '/mnt/d/managed/bin/winsw.exe');
+    assert.ok(filesystemOps.every(({ path }) => path.startsWith('/mnt/d/')));
+  });
+
   it('downloads WinSW through its mounted filesystem path while retaining the Windows command path', async () => {
     const filesystemOps = [];
     const responses = [
