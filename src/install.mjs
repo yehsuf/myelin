@@ -54,6 +54,7 @@ import { execSync, spawn } from 'node:child_process';
 import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
 import { managedPaths, joinManaged } from './shared/myelin-paths.mjs';
+import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -789,12 +790,20 @@ function resolveManagedMainRepoUrl({
 }
 
 /**
- * Wrap a value in POSIX single quotes so an arbitrary managed-root path (spaces,
- * `$`, globbing chars, …) survives verbatim when sourced from a shell profile.
- * Embedded single quotes are closed, escaped, and reopened (`'\''`).
+ * Build the shell line that defines the `myelin` command in the managed profile
+ * block. The managed command path is MYELIN_DIR-derived and thus arbitrary text
+ * (a relocated root can contain spaces, `$(...)`, backticks, `$VAR`, or quotes),
+ * so it is emitted as an inert single-quoted literal:
+ *   - POSIX: `alias myelin='<path>'` — the single quotes stop any expansion or
+ *     command substitution when the profile is sourced or the alias is invoked.
+ *   - Windows: `function global:myelin { & '<path>' @args }` — the PowerShell
+ *     call operator with a single-quoted (verbatim) literal, so `$(...)`/`$var`
+ *     in the path never expand when the function runs.
  */
-function posixSingleQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+export function managedMyelinCommandLine({ os, commandPath }) {
+  return os === 'windows'
+    ? `function global:myelin { & ${powershellSingleQuote(commandPath)} @args }`
+    : `alias myelin=${posixSingleQuote(commandPath)}`;
 }
 
 /**
@@ -2341,9 +2350,7 @@ ${initSkillBody}`);
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
     const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
-    const myelinCmd = os === 'windows'
-      ? `function global:myelin { & "${managedRuntime.commandPath}" @args }`
-      : `alias myelin='"${managedRuntime.commandPath}"'`;
+    const myelinCmd = managedMyelinCommandLine({ os, commandPath: managedRuntime.commandPath });
     const profilePathBlock = managedProfilePathBlock({ os, home });
     const extraPath = profilePathBlock.posixExport;
     const myelinDirExport = profilePathBlock.posixMyelinDirExport;

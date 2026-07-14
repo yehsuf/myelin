@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from '
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
+import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
 export const RTK_PINNED_VERSION = '0.43.0';
 
@@ -177,12 +178,17 @@ export function copilotRtkHookPath(home = homedir()) {
  *      spawns hooks with (the original Windows failure: `rtk` off PATH -> 127).
  *   3. `2>/dev/null` — the guard's stderr is dropped; only a decision on stdout
  *      reaches Copilot.
+ *
+ * The node path and the managed-runtime CLI path are MYELIN_DIR-derived and thus
+ * arbitrary text; both are POSIX single-quoted so a relocated root containing
+ * `$(...)`, backticks, `$VAR`, or a quote is an inert literal that can never be
+ * executed or expanded when Copilot runs the hook.
  */
 export function buildRtkGuardBashCommand({ nodePath = process.execPath, repoRoot } = {}) {
   const root = repoRoot ?? resolveMyelinRepoRoot();
   const node = toPosixPath(nodePath);
   const cli = toPosixPath(root).replace(/\/?$/, '/') + 'src/cli/index.mjs';
-  return `"${node}" "${cli}" rtk-guard copilot 2>/dev/null; exit 0`;
+  return `${posixSingleQuote(node)} ${posixSingleQuote(cli)} rtk-guard copilot 2>/dev/null; exit 0`;
 }
 
 /** The full fail-open replacement for `~/.copilot/hooks/rtk-rewrite.json`.

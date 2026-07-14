@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { posix } from 'node:path';
-import { managedProfilePathBlock } from '../src/install.mjs';
+import { managedProfilePathBlock, managedMyelinCommandLine } from '../src/install.mjs';
 
 describe('managedProfilePathBlock — managed bin root in shell profile', () => {
   it('posix default keeps shell-portable $HOME/.myelin/bin', () => {
@@ -181,5 +181,74 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
 
     assert.ok(windowsPathDirs.includes('C:\\Users\\alice\\myelin\\bin'), windowsPathDirs.join(','));
     assert.ok(!windowsPathDirs.some((path) => path.startsWith('/mnt/c/')), windowsPathDirs.join(','));
+  });
+});
+
+// I2 (SECURITY): the `myelin` command line emitted into the managed profile block
+// embeds the MYELIN_DIR-derived managed command path. A relocated managed root
+// containing $(...), backticks, $VAR, or a quote must be an inert single-quoted
+// literal — never executed/expanded when the profile is sourced or the alias run.
+describe('managedMyelinCommandLine — POSIX alias single-quotes the managed path (I2)', () => {
+  it('single-quotes a normal managed command path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'darwin', commandPath: '/home/alice/.myelin/bin/myelin' }),
+      "alias myelin='/home/alice/.myelin/bin/myelin'",
+    );
+  });
+
+  it('neutralizes $(...) command substitution in the managed command path', () => {
+    const line = managedMyelinCommandLine({ os: 'linux', commandPath: '/opt/$(printf INJECTED)/bin/myelin' });
+    assert.equal(line, "alias myelin='/opt/$(printf INJECTED)/bin/myelin'");
+    assert.ok(!line.includes('"'), line);
+  });
+
+  it('neutralizes backtick command substitution in the managed command path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'darwin', commandPath: '/opt/`id`/bin/myelin' }),
+      "alias myelin='/opt/`id`/bin/myelin'",
+    );
+  });
+
+  it('neutralizes $VAR expansion in the managed command path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'linux', commandPath: '/opt/$HOME/bin/myelin' }),
+      "alias myelin='/opt/$HOME/bin/myelin'",
+    );
+  });
+
+  it('escapes an embedded single quote in the managed command path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'darwin', commandPath: "/opt/o'brien/bin/myelin" }),
+      "alias myelin='/opt/o'\\''brien/bin/myelin'",
+    );
+  });
+
+  it('neutralizes an embedded double quote in the managed command path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'linux', commandPath: '/opt/a"; rm -rf ~; "b/bin/myelin' }),
+      "alias myelin='/opt/a\"; rm -rf ~; \"b/bin/myelin'",
+    );
+  });
+});
+
+describe('managedMyelinCommandLine — Windows function single-quotes the managed path (I2)', () => {
+  it('uses the PowerShell call operator with a single-quoted literal path', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'windows', commandPath: 'C:\\Users\\alice\\.myelin\\bin\\myelin.cmd' }),
+      "function global:myelin { & 'C:\\Users\\alice\\.myelin\\bin\\myelin.cmd' @args }",
+    );
+  });
+
+  it('neutralizes PowerShell subexpression $(...) in the managed path', () => {
+    const line = managedMyelinCommandLine({ os: 'windows', commandPath: 'D:\\$(rm x)\\bin\\myelin.cmd' });
+    assert.equal(line, "function global:myelin { & 'D:\\$(rm x)\\bin\\myelin.cmd' @args }");
+    assert.ok(!line.includes('"'), line);
+  });
+
+  it('doubles an embedded single quote per PowerShell literal-string rules', () => {
+    assert.equal(
+      managedMyelinCommandLine({ os: 'windows', commandPath: "D:\\o'brien\\myelin.cmd" }),
+      "function global:myelin { & 'D:\\o''brien\\myelin.cmd' @args }",
+    );
   });
 });

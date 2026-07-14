@@ -32,7 +32,11 @@ export function pathModuleForPlatform(platform = process.platform) {
 export function isWindowsStylePath(p) {
   if (typeof p !== 'string' || p.length === 0) return false;
   if (/^[a-zA-Z]:[\\/]/.test(p)) return true; // drive-rooted (C:\ or C:/)
-  if (p.startsWith('\\\\')) return true; // UNC (\\server\share)
+  // UNC in either slash style (\\server\share or //server/share). This MUST be
+  // checked before the POSIX-absolute test below: a forward-slash UNC path is
+  // Windows-style, and treating it as POSIX makes posix.join collapse the
+  // leading `//` into `/`, silently retargeting the managed root.
+  if (p.startsWith('\\\\') || p.startsWith('//')) return true;
   if (p.startsWith('/')) return false; // POSIX absolute
   return p.includes('\\'); // any other backslash-bearing path
 }
@@ -51,23 +55,61 @@ export function joinManaged(base, ...segments) {
 }
 
 /**
+ * Is a resolved path absolute in its OWN separator style? A Windows-style path
+ * is absolute when drive-rooted or UNC; a POSIX-style path is absolute when it
+ * begins with `/`. Used by {@link resolveMyelinRoot} to decide whether an
+ * explicit root still needs canonicalizing against home.
+ * @param {string} p
+ */
+function isAbsoluteManagedRoot(p) {
+  return isWindowsStylePath(p)
+    ? win32Path.isAbsolute(p)
+    : posixPath.isAbsolute(p);
+}
+
+/**
+ * Normalize an explicit (caller/env supplied) managed root so it never yields
+ * cwd-dependent state:
+ *   - a leading `~`, `~/`, or `~\` expands to the home directory,
+ *   - any still non-absolute value is canonicalized against home,
+ *   - an already-absolute value (either separator style) passes through verbatim.
+ * The join uses home's OWN separator style so a POSIX home stays POSIX and a
+ * Windows home stays backslashed regardless of the ambient platform token.
+ * @param {string} value
+ * @param {string} home
+ */
+function normalizeExplicitRoot(value, home) {
+  const homeModule = isWindowsStylePath(home) ? win32Path : posixPath;
+  if (value === '~') return home;
+  const tilde = /^~[\\/]([\s\S]*)$/.exec(value);
+  if (tilde) return homeModule.join(home, tilde[1]);
+  if (isAbsoluteManagedRoot(value)) return value;
+  // Still non-absolute (relative) → root it at home, never the process cwd.
+  return homeModule.join(home, value);
+}
+
+/**
  * Resolve the managed Myelin runtime root. Precedence, highest first:
  *   1. an explicit `rootDir` argument (used to thread a caller-selected root
  *      through the release/runtime helpers without touching global env),
  *   2. the `MYELIN_DIR` environment variable,
  *   3. the default `<home>/.myelin` (joined with the explicit `platform`'s
  *      separator).
+ *
+ * An explicit `rootDir`/`MYELIN_DIR` is passed through {@link normalizeExplicitRoot}
+ * so a `~`-prefixed or relative value expands/canonicalizes against home instead
+ * of the (cwd-dependent) working directory. Blank/whitespace-only explicit values
+ * are treated as absent so they don't shadow a legitimately-set lower-precedence
+ * source, matching the historical behavior.
  */
 export function resolveMyelinRoot({ home, env = process.env, rootDir, platform = process.platform } = {}) {
   const nonBlank = (value) =>
     typeof value === 'string' && value.trim() ? value : undefined;
-  // A blank/whitespace-only explicit rootDir is treated as absent so it does
-  // not shadow a legitimately-set MYELIN_DIR.
-  return (
-    nonBlank(rootDir) ??
-    nonBlank(env?.MYELIN_DIR) ??
-    pathModuleForPlatform(platform).join(home, '.myelin')
-  );
+  const explicit = nonBlank(rootDir) ?? nonBlank(env?.MYELIN_DIR);
+  if (explicit !== undefined) {
+    return normalizeExplicitRoot(explicit, home);
+  }
+  return pathModuleForPlatform(platform).join(home, '.myelin');
 }
 
 /** Pure path helpers derived from the single resolved managed root. */

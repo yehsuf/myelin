@@ -61,6 +61,68 @@ describe('resolveMyelinRoot precedence', () => {
   });
 });
 
+// ── I3: a ~-prefixed or relative MYELIN_DIR/rootDir must never yield
+// cwd-dependent state. A leading `~`/`~/`/`~\` expands to home; any still
+// non-absolute value is canonicalized against home (never the cwd). Absolute
+// roots (either separator style) pass through verbatim. Precedence and
+// blank/whitespace handling are preserved.
+describe('resolveMyelinRoot — tilde/relative expansion, POSIX root style (I3)', () => {
+  it('expands a leading ~/ against the POSIX home', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', rootDir: '~/managed', env: {} }), '/home/alice/managed');
+  });
+  it('expands a bare ~ to the POSIX home directory', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', rootDir: '~', env: {} }), '/home/alice');
+  });
+  it('expands a leading ~/ from MYELIN_DIR against the POSIX home', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: { MYELIN_DIR: '~/mroot' } }), '/home/alice/mroot');
+  });
+  it('canonicalizes a relative rootDir against the POSIX home (never the cwd)', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', rootDir: 'managed', env: {} }), '/home/alice/managed');
+  });
+  it('canonicalizes a relative MYELIN_DIR against the POSIX home', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: { MYELIN_DIR: 'state/managed' } }), '/home/alice/state/managed');
+  });
+  it('passes an absolute POSIX rootDir through verbatim', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', rootDir: '/custom/mroot', env: {} }), '/custom/mroot');
+  });
+  it('passes a forward-slash UNC rootDir through verbatim (absolute, never canonicalized)', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', rootDir: '//server/share', env: {} }), '//server/share');
+  });
+});
+
+describe('resolveMyelinRoot — tilde/relative expansion, Windows root style (I3)', () => {
+  it('expands a leading ~/ against a Windows home in Windows style', () => {
+    assert.equal(resolveMyelinRoot({ home: 'C:\\Users\\u', rootDir: '~/managed', env: {} }), 'C:\\Users\\u\\managed');
+  });
+  it('expands a leading ~\\ against a Windows home in Windows style', () => {
+    assert.equal(resolveMyelinRoot({ home: 'C:\\Users\\u', rootDir: '~\\managed', env: {} }), 'C:\\Users\\u\\managed');
+  });
+  it('canonicalizes a relative rootDir against a Windows home in Windows style', () => {
+    assert.equal(resolveMyelinRoot({ home: 'C:\\Users\\u', rootDir: 'managed', env: {} }), 'C:\\Users\\u\\managed');
+  });
+  it('passes an absolute Windows rootDir through verbatim', () => {
+    assert.equal(resolveMyelinRoot({ home: 'C:\\Users\\u', rootDir: 'D:\\managed', env: {} }), 'D:\\managed');
+  });
+  it('passes a drive-rooted forward-slash Windows rootDir through verbatim', () => {
+    assert.equal(resolveMyelinRoot({ home: 'C:\\Users\\u', rootDir: 'D:/managed', env: {} }), 'D:/managed');
+  });
+});
+
+describe('resolveMyelinRoot — precedence & blank handling preserved after I3', () => {
+  it('still falls back to <home>/.myelin when no explicit root is set', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: {} }), '/home/alice/.myelin');
+  });
+  it('still treats a blank rootDir as absent and falls through to MYELIN_DIR', () => {
+    assert.equal(resolveMyelinRoot({ home: '/home/alice', env: { MYELIN_DIR: '/env-root' }, rootDir: '   ' }), '/env-root');
+  });
+  it('still prefers an explicit rootDir over MYELIN_DIR, expanding both consistently', () => {
+    assert.equal(
+      resolveMyelinRoot({ home: '/home/alice', env: { MYELIN_DIR: '~/from-env' }, rootDir: '~/from-arg' }),
+      '/home/alice/from-arg',
+    );
+  });
+});
+
 // ── Explicit-platform separators (the Windows-host regression) ──────────────
 // These prove the output separator is decided by the EXPLICIT `platform` input,
 // never the host's process.platform. They must hold identically on a POSIX host
@@ -152,6 +214,33 @@ describe('isWindowsStylePath', () => {
     assert.equal(isWindowsStylePath('a/b/c'), false);
     assert.equal(isWindowsStylePath(''), false);
     assert.equal(isWindowsStylePath(undefined), false);
+  });
+});
+
+// ── I4: forward-slash UNC must be detected as Windows-style ─────────────────
+// `//server/share` is a UNC path, not a POSIX-absolute path. Before the fix it
+// was misclassified as POSIX and `posix.join` collapsed the leading `//` into a
+// single `/`, silently retargeting the managed root to a different location.
+describe('isWindowsStylePath — UNC in both slash styles (I4)', () => {
+  it('classifies a backslash UNC path as Windows-style', () => {
+    assert.equal(isWindowsStylePath('\\\\server\\share'), true);
+  });
+  it('classifies a forward-slash UNC path as Windows-style', () => {
+    assert.equal(isWindowsStylePath('//server/share'), true);
+  });
+  it('keeps a normal POSIX root POSIX', () => {
+    assert.equal(isWindowsStylePath('/home/u/.myelin'), false);
+    assert.equal(isWindowsStylePath('/opt/myelin'), false);
+  });
+});
+
+describe('joinManaged — preserves the UNC prefix in both slash styles (I4)', () => {
+  it('does not collapse a forward-slash UNC root', () => {
+    // Must stay a UNC path (double leading separator), never `/server/share/...`.
+    assert.equal(joinManaged('//server/share', 'x', 'y'), '\\\\server\\share\\x\\y');
+  });
+  it('keeps a backslash UNC root UNC', () => {
+    assert.equal(joinManaged('\\\\server\\share', 'x'), '\\\\server\\share\\x');
   });
 });
 

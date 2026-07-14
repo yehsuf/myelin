@@ -29,18 +29,28 @@ check_git() {
   fi
 }
 
+json_escape() {
+  # Escape a value for safe embedding inside a JSON string literal: backslash
+  # first, then double-quote. A managed root/release id with `"` or `\` would
+  # otherwise corrupt current.json.
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 write_current_release_pointer() {
   RELEASE_ID="$1"
   RUNTIME_ROOT="$2"
   CURRENT_POINTER="$MYELIN_DIR/current.json"
   TEMP_POINTER="$CURRENT_POINTER.$$".tmp
 
+  ESC_RELEASE_ID="$(json_escape "$RELEASE_ID")"
+  ESC_RUNTIME_ROOT="$(json_escape "$RUNTIME_ROOT")"
+
   mkdir -p "$MYELIN_DIR"
   cat > "$TEMP_POINTER" <<EOF
 {
   "version": 1,
-  "releaseId": "$RELEASE_ID",
-  "runtimeRoot": "$RUNTIME_ROOT"
+  "releaseId": "$ESC_RELEASE_ID",
+  "runtimeRoot": "$ESC_RUNTIME_ROOT"
 }
 EOF
   mv "$TEMP_POINTER" "$CURRENT_POINTER"

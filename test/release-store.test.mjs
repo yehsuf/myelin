@@ -941,6 +941,36 @@ describe('bootstrap scripts', () => {
     assert.ok(/if \[ "\$ACTIVATE" = "1" \]/.test(script));
   });
 
+  // M3: the current.json pointer embeds RUNTIME_ROOT/RELEASE_ID as JSON string
+  // values. A managed root containing a `"` or `\` must be escaped, or the file
+  // is corrupt (invalid JSON that readCurrentRelease then fails to parse).
+  it('escapes RUNTIME_ROOT/RELEASE_ID into valid JSON in install.sh', () => {
+    const script = readFileSync(join(process.cwd(), 'install.sh'), 'utf8');
+
+    // The pointer writer must route BOTH interpolated values through the escaper
+    // rather than splicing the raw variables straight into the JSON heredoc.
+    const fnMatch = /^json_escape\(\) \{[\s\S]*?^\}/m.exec(script);
+    assert.ok(fnMatch, 'install.sh must define a json_escape helper');
+    assert.ok(/json_escape "\$RELEASE_ID"/.test(script), 'RELEASE_ID must be escaped');
+    assert.ok(/json_escape "\$RUNTIME_ROOT"/.test(script), 'RUNTIME_ROOT must be escaped');
+
+    // Behavioral (bats-free) check: run the actual shell helper on a path with a
+    // quote AND a backslash and confirm the emitted JSON string round-trips.
+    const runEscape = (value) => {
+      const harness = `${fnMatch[0]}\njson_escape "$1"\n`;
+      const res = spawnSync('sh', ['-s', value], { input: harness, encoding: 'utf8' });
+      assert.equal(res.status, 0, res.stderr);
+      return res.stdout.replace(/\n$/, ''); // mirror $(...) trailing-newline stripping
+    };
+
+    for (const nasty of ['/opt/a"b\\c/myelin', '/srv/quote"only', 'C:\\back\\slash\\only', 'main-"$(id)"']) {
+      const escaped = runEscape(nasty);
+      const json = `{\n  "version": 1,\n  "runtimeRoot": "${escaped}"\n}\n`;
+      const parsed = JSON.parse(json); // throws if escaping is wrong
+      assert.equal(parsed.runtimeRoot, nasty, `round-trip failed for ${nasty}`);
+    }
+  });
+
   it('stages and runs the managed runtime installer from install.ps1', () => {
     const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
 
