@@ -740,14 +740,23 @@ function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
  */
 function resolveRepoRoot(home, os) {
   const sep = os === 'windows' ? '\\' : '/';
-  const canonical = join(home, '.myelin', 'repo');
+  const serviceHome = os === 'windows' ? defaultWindowsHome(home) : home;
+  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(serviceHome)) {
+    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
+  }
+  const canonical = os === 'windows'
+    ? pathWin32.join(serviceHome, '.myelin', 'repo')
+    : join(home, '.myelin', 'repo');
   if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
   const currentRoot = fileURLToPath(new URL('..', import.meta.url));
   if (os === 'windows') {
-    const normalizedCurrentRoot = normalizeWindowsFilesystemPath(currentRoot);
-    if (!/^[a-zA-Z]:\\/u.test(normalizedCurrentRoot) && !normalizedCurrentRoot.startsWith('\\\\')) {
-      return canonical + sep;
+    if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(currentRoot) || /^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(currentRoot)) {
+      return normalizeWindowsFilesystemPath(currentRoot);
     }
+    // A native WSL checkout (for example /home/alice/repo) is not a path a
+    // Windows service can execute or import from. Keep service assets bound to
+    // the canonical Windows checkout rather than emitting an invalid \home path.
+    return canonical + sep;
   }
   return currentRoot;
 }
@@ -892,6 +901,8 @@ export function buildMitmServiceInstallOptions({
   winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
   headroomPort = selectedEnginePort(cfg),
   enginePlan = buildEngineInstancePlan(cfg),
+  mitmAddonPathImpl = mitmAddonPath,
+  defaultWindowsHomeImpl = defaultWindowsHome,
 } = {}) {
   const mitmCfg = cfg?.proxy?.mitm ?? {};
   const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
@@ -900,10 +911,17 @@ export function buildMitmServiceInstallOptions({
     : undefined;
   const copilotEngineUrl = copilotInstance ? `http://127.0.0.1:${copilotInstance.port}` : undefined;
   const egressPort = copilotInstance ? (mitmCfg.egress_port ?? 8889) : undefined;
-  const normalizedHomeCandidate = os === 'windows' ? normalizeWindowsFilesystemPath(home) : home;
+  const windowsHome = os === 'windows' &&
+    /^\/(?!mnt\/[a-zA-Z](?:\/|$))/u.test(String(home ?? ''))
+    ? defaultWindowsHomeImpl(home)
+    : home;
+  const normalizedHomeCandidate = os === 'windows' ? normalizeWindowsFilesystemPath(windowsHome) : home;
   const effectiveHome = os === 'windows' && !/^(?:[a-z]:\\|\\\\)/i.test(normalizedHomeCandidate)
-    ? defaultWindowsHome(home)
+    ? defaultWindowsHomeImpl(home)
     : normalizedHomeCandidate;
+  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(effectiveHome)) {
+    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
+  }
   const envVars = {
     MYELIN_HEADROOM_PORT: String(headroomPort),
     MYELIN_COMPRESS,
@@ -923,7 +941,9 @@ export function buildMitmServiceInstallOptions({
   return {
     mitmdumpBin: os === 'windows' ? normalizeWindowsFilesystemPath(mitmdumpBin) : mitmdumpBin,
     port: mitmCfg.port ?? 8888,
-    addonPath: os === 'windows' ? normalizeWindowsFilesystemPath(mitmAddonPath(effectiveHome, os)) : mitmAddonPath(effectiveHome, os),
+    addonPath: os === 'windows'
+      ? normalizeWindowsFilesystemPath(mitmAddonPathImpl(effectiveHome, os), { rejectPosix: true })
+      : mitmAddonPathImpl(effectiveHome, os),
     envVars,
     upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
     logPath: os === 'windows' ? normalizeWindowsFilesystemPath(join(effectiveHome, '.myelin', 'mitmproxy.log')) : join(effectiveHome, '.myelin', 'mitmproxy.log'),

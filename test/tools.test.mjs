@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
+import * as winswTools from '../src/tools/winsw.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
 
 describe('RTK version parsing', () => {
@@ -98,6 +99,42 @@ describe('detectWinsw', () => {
     assert.equal(state.installed, true);
     assert.equal(state.path, 'C:\\Users\\alice\\.myelin\\bin\\winsw.exe');
     assert.equal(state.parsedVersion, WINSW_PINNED_VERSION.replace(/^v/, ''));
+  });
+
+  it('maps WinSW assets to a WSL-mounted filesystem path without altering its Windows command path', () => {
+    assert.equal(
+      winswTools.winswFilesystemPath('C:\\Users\\alice\\.myelin\\bin\\winsw.exe', { wsl: true }),
+      '/mnt/c/Users/alice/.myelin/bin/winsw.exe',
+    );
+  });
+
+  it('downloads WinSW through its mounted filesystem path while retaining the Windows command path', async () => {
+    const filesystemOps = [];
+    const responses = [
+      {
+        ok: true,
+        json: async () => ({
+          assets: [{ name: 'WinSW-x64.exe', browser_download_url: 'https://example.test/winsw.exe' }],
+        }),
+      },
+      {
+        ok: true,
+        arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+      },
+    ];
+    const result = await winswTools.downloadWinsw({
+      home: 'C:\\Users\\alice',
+      arch: 'x64',
+      wsl: true,
+      fetchImpl: async () => responses.shift(),
+      mkdirSyncImpl: (path) => filesystemOps.push({ op: 'mkdir', path }),
+      writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      chmodSyncImpl: (path) => filesystemOps.push({ op: 'chmod', path }),
+    });
+
+    assert.equal(result.path, 'C:\\Users\\alice\\.myelin\\bin\\winsw.exe');
+    assert.equal(result.filesystemPath, '/mnt/c/Users/alice/.myelin/bin/winsw.exe');
+    assert.ok(filesystemOps.every(({ path }) => path.startsWith('/mnt/c/')));
   });
 });
 

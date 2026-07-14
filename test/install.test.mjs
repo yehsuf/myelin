@@ -9,6 +9,7 @@ import {
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
   ensureManagedHeadroomService,
+  mitmAddonPath,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
 } from '../src/install.mjs';
@@ -595,6 +596,31 @@ describe('applyServiceEngineInstallPlan', () => {
         engine === obsoleteEngine || (engine === selectedEngine && role === 'copilot')));
     });
   }
+
+  it('removes an inactive Copilot descriptor and installs only the primary when compression is disabled', async () => {
+    const installed = [];
+    const removed = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: false },
+          headroom_lite: { port: 8790 },
+          copilot_headroom: { enabled: true, port: 9788 },
+          mitm: { port: 8888, egress_port: 8889 },
+        },
+      },
+      os: 'linux',
+      home: '/home/alice',
+      detectToolImpl: async () => ({ installed: true, path: '/opt/myelin/headroom-lite' }),
+      installEngineInstanceImpl: async (instance) => installed.push(instance),
+      removeEngineInstanceImpl: async (instance) => removed.push(instance),
+    });
+
+    assert.deepEqual(installed.map(({ id }) => id), ['headroom_lite-primary']);
+    assert.ok(removed.some(({ id }) => id === 'headroom_lite-copilot'));
+  });
 });
 
 describe('buildMitmServiceInstallOptions', () => {
@@ -698,6 +724,67 @@ describe('buildMitmServiceInstallOptions', () => {
     assert.equal(opts.envVars.MYELIN_COMPRESS, '0');
     assert.equal(opts.envVars.MYELIN_COPILOT_ENGINE_URL, undefined);
     assert.equal(opts.egressPort, undefined);
+  });
+
+  it('rejects a native WSL addon path instead of embedding a broken \\home service asset path', () => {
+    assert.throws(
+      () => buildMitmServiceInstallOptions({
+        os: 'windows',
+        home: 'C:\\Users\\alice',
+        mitmdumpBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe',
+        mitmAddonPathImpl: () => '/home/alice/repo/src/mitm/copilot_addon.py',
+        cfg: {
+          proxy: {
+            mitm: { port: 8888 },
+          },
+        },
+      }),
+      /POSIX.*Windows-service|Windows-service.*POSIX/i,
+    );
+  });
+
+  it('resolves a native WSL home to a Windows-service addon path without emitting \\home', () => {
+    const opts = buildMitmServiceInstallOptions({
+      os: 'windows',
+      home: '/home/alice',
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      mitmdumpBin: '/mnt/c/Users/alice/.myelin/venv/Scripts/mitmdump.exe',
+      mitmAddonPathImpl: (home) => `${home}\\repo\\src\\mitm\\copilot_addon.py`,
+      cfg: {
+        proxy: {
+          mitm: { port: 8888 },
+        },
+      },
+    });
+
+    assert.equal(opts.home, 'C:\\Users\\alice');
+    assert.equal(opts.addonPath, 'C:\\Users\\alice\\repo\\src\\mitm\\copilot_addon.py');
+    assert.ok(!opts.addonPath.startsWith('\\home'));
+  });
+
+  it('rejects an unresolved WSL home instead of constructing a \\home service asset path', () => {
+    assert.throws(
+      () => buildMitmServiceInstallOptions({
+        os: 'windows',
+        home: '/home/alice',
+        defaultWindowsHomeImpl: () => '\\home\\alice',
+        mitmdumpBin: '/mnt/c/Users/alice/.myelin/venv/Scripts/mitmdump.exe',
+        mitmAddonPathImpl: (home) => `${home}\\repo\\src\\mitm\\copilot_addon.py`,
+        cfg: {
+          proxy: {
+            mitm: { port: 8888 },
+          },
+        },
+      }),
+      /Windows-service.*home|home.*Windows-service/i,
+    );
+  });
+
+  it('rejects a native WSL repo root before addon service paths can become \\home paths', () => {
+    assert.throws(
+      () => mitmAddonPath('/home/alice', 'windows'),
+      /Windows-service.*home|home.*Windows-service/i,
+    );
   });
 });
 

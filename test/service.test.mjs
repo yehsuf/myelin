@@ -39,6 +39,7 @@ import {
   mitmServiceStatus,
   parseManagedMitmStatus,
   parseWinswServiceStatus,
+  normalizeWindowsFilesystemPath,
   resolveWslWindowsHome,
   removeEngineInstance as removeWindowsEngineInstance,
   serviceStatus,
@@ -375,6 +376,19 @@ describe('Windows engine descriptor migration ownership', () => {
     assert.match(script, /\$ownedProcess = \$null/);
     assert.match(script, /\$trackedMatches = \$false/);
     assert.match(script, /Stop-Process -Id \$ownedProcess\.ProcessId/);
+  });
+
+  it('falls back to a verified Lite listener when a stale pid file cannot establish ownership', () => {
+    const script = generateEngineInstanceRemovalScript({
+      instance: { ...COPILOT_INSTANCE, engine: 'headroom_lite', id: 'headroom_lite-copilot' },
+      home: HOME,
+    });
+
+    assert.match(script, /\$liteFallbackPort/);
+    assert.match(script, /HEADROOM_LITE_PORT/);
+    assert.match(script, /\$liteFallbackLauncherMatches/);
+    assert.match(script, /\$liteFallbackCommandMatches/);
+    assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort \$liteFallbackPort/);
   });
 
   it('uninstalls an owned WinSW descriptor whose verified configuration uses the old port', () => {
@@ -1144,6 +1158,170 @@ describe('WSL Windows-service executable resolution', () => {
       }),
       /Unable to resolve a Windows-service executable for headroom from WSL/,
     );
+  });
+
+  it('rejects a native WSL path instead of converting it into a \\home command path', () => {
+    assert.throws(
+      () => normalizeWindowsFilesystemPath('/home/alice/.myelin/bin/headroom.exe', { rejectPosix: true }),
+      /POSIX.*Windows-service|Windows-service.*POSIX/i,
+    );
+  });
+});
+
+describe('WinSW WSL filesystem split', () => {
+  const home = 'C:\\Users\\alice';
+  const id = 'headroom-primary';
+  const serviceDirectory = '/mnt/c/Users/alice/.myelin/services/headroom-primary';
+
+  it('writes installed assets through mounted filesystem paths while keeping PowerShell command paths native', async () => {
+    const filesystemOps = [];
+    const powerShellScripts = [];
+
+    await windowsService.installWinswService({
+      id,
+      name: 'Myelin Headroom Primary',
+      description: 'Myelin headroom primary',
+      executable: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      arguments: 'proxy --port 8787',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+      workingDirectory: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+      home,
+      isWslImpl: () => true,
+      installWinswImpl: async () => ({
+        path: 'C:\\Users\\alice\\.myelin\\bin\\winsw.exe',
+        filesystemPath: '/mnt/c/Users/alice/.myelin/bin/winsw.exe',
+      }),
+      mkdirSyncImpl: (path) => filesystemOps.push({ op: 'mkdir', path }),
+      existsSyncImpl: (path) => {
+        filesystemOps.push({ op: 'exists', path });
+        return false;
+      },
+      copyFileSyncImpl: (source, target) => filesystemOps.push({ op: 'copy', source, target }),
+      writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      runPsFn: (script) => powerShellScripts.push(script),
+    });
+
+    assert.ok(filesystemOps.every(({ path, source, target }) =>
+      [path, source, target].filter(Boolean).every((value) => value.startsWith('/mnt/c/'))));
+    assert.ok(powerShellScripts[0].includes("'C:\\Users\\alice\\.myelin\\services\\headroom-primary\\headroom-primary.exe'"));
+    assert.ok(powerShellScripts[0].includes("'C:\\Users\\alice\\.myelin\\services\\headroom-primary\\headroom-primary.xml'"));
+  });
+
+  it('uses a mounted filesystem path for status reads while preserving Windows command paths for PowerShell', () => {
+    const filesystemReads = [];
+    const powerShellCommands = [];
+    const status = windowsService.winswServiceStatus({
+      id: 'headroom-primary',
+      home: 'C:\\Users\\alice',
+      isWslImpl: () => true,
+      existsSyncImpl: (path) => {
+        filesystemReads.push(path);
+        return true;
+      },
+      execSyncImpl: (command) => {
+        powerShellCommands.push(command);
+        return Buffer.from('Active (running)\n');
+      },
+      powershellExe: 'powershell.exe',
+    });
+
+    assert.equal(status.running, true);
+    assert.deepEqual(filesystemReads, [
+      '/mnt/c/Users/alice/.myelin/services/headroom-primary/headroom-primary.exe',
+      '/mnt/c/Users/alice/.myelin/services/headroom-primary/headroom-primary.xml',
+    ]);
+    assert.ok(powerShellCommands[0].includes("'C:\\Users\\alice\\.myelin\\services\\headroom-primary\\headroom-primary.exe'"));
+    assert.ok(powerShellCommands[0].includes("'C:\\Users\\alice\\.myelin\\services\\headroom-primary\\headroom-primary.xml'"));
+  });
+
+  it('forwards WSL path handling through descriptor status and teardown adapters', () => {
+    const filesystemReads = [];
+    const watchdogCalls = [];
+    const uninstallCalls = [];
+    const instance = {
+      engine: 'headroom',
+      role: 'primary',
+      id,
+      port: 8787,
+      stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+      healthUrl: 'http://127.0.0.1:8787/health',
+      env: {},
+    };
+    const winswConfig = [
+      '<service>',
+      `  <id>${id}</id>`,
+      '  <executable>C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe</executable>',
+      '  <arguments>proxy --port 8787</arguments>',
+      '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom-primary</workingdirectory>',
+      '</service>',
+    ].join('\n');
+    const isWslImpl = () => true;
+
+    const status = windowsEngineInstanceStatus(instance, {
+      manager: 'winsw',
+      home,
+      isWslImpl,
+      existsSyncImpl: (path) => {
+        filesystemReads.push(path);
+        return true;
+      },
+      execSyncImpl: () => Buffer.from('Active (running)\n'),
+      powershellExe: 'powershell.exe',
+    });
+    removeWindowsEngineInstance(instance, {
+      manager: 'winsw',
+      home,
+      isWslImpl,
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => winswConfig,
+      uninstallWindowsWatchdogTaskImpl: (options) => watchdogCalls.push(options),
+      uninstallWinswServiceImpl: (options) => {
+        uninstallCalls.push(options);
+        return true;
+      },
+    });
+
+    assert.equal(status.running, true);
+    assert.ok(filesystemReads.every((path) => path.startsWith('/mnt/c/')));
+    assert.ok(watchdogCalls.every(({ isWslImpl: forwarded }) => forwarded === isWslImpl));
+    assert.equal(uninstallCalls[0].isWslImpl, isWslImpl);
+  });
+
+  it('writes and removes watchdog artifacts through mounted paths while registering Windows-valid task paths', () => {
+    const filesystemWrites = [];
+    const filesystemUnlinks = [];
+    const powerShellScripts = [];
+    const task = windowsService.installWindowsWatchdogTask({
+      id,
+      home,
+      healthUrl: 'http://127.0.0.1:8787/health',
+      isWslImpl: () => true,
+      existsSyncImpl: (path) => {
+        filesystemWrites.push(path);
+        return true;
+      },
+      mkdirSyncImpl: (path) => filesystemWrites.push(path),
+      writeFileSyncImpl: (path) => filesystemWrites.push(path),
+      runPsFn: (script) => powerShellScripts.push(script),
+    });
+
+    windowsService.uninstallWindowsWatchdogTask({
+      id,
+      home,
+      isWslImpl: () => true,
+      unlinkSyncImpl: (path) => filesystemUnlinks.push(path),
+      runPsFn: (script) => powerShellScripts.push(script),
+    });
+
+    assert.ok(filesystemWrites.every((path) => path.startsWith('/mnt/c/')));
+    assert.deepEqual(filesystemUnlinks, [
+      `${serviceDirectory}/watchdog.ps1`,
+      `${serviceDirectory}/watchdog.log`,
+    ]);
+    assert.equal(task.scriptPath, 'C:\\Users\\alice\\.myelin\\services\\headroom-primary\\watchdog.ps1');
+    assert.ok(powerShellScripts.some((script) =>
+      script.includes('C:\\Users\\alice\\.myelin\\services\\headroom-primary\\watchdog.ps1')));
   });
 });
 

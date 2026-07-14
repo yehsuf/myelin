@@ -13,6 +13,7 @@ import {
   defaultRestartMitm,
   defaultRestartWatchdog,
   headroomLiteLauncherPath,
+  restartEngineInstance,
   restartHeadroomLite,
   runRestart,
   stopManagedHeadroomLite,
@@ -438,12 +439,108 @@ describe('runRestart descriptor plan', () => {
       warn: () => {},
     });
 
+    it('does not restart a Copilot descriptor when compression is disabled', async () => {
+      const restarted = [];
+      const removedPlans = [];
+
+      await runRestart({
+        config: {
+          proxy: {
+            engine: 'headroom',
+            compression: { enabled: false },
+            headroom: { port: 8787 },
+            copilot_headroom: { enabled: true, port: 8788 },
+            mitm: { enabled: true, port: 8888, egress_port: 8889 },
+            windows_service: { manager: 'registry' },
+          },
+        },
+        detectOSImpl: () => 'linux',
+        stopObsoleteOwnedInstancesImpl: async () => {},
+        removeDisabledCopilotInstanceImpl: async ({ plan }) => removedPlans.push(plan.instances),
+        restartEngineInstanceImpl: async (instance) => restarted.push(instance.id),
+        restartMitmImpl: async () => {},
+        restartWatchdogImpl: async () => {},
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.deepEqual(restarted, ['headroom-primary']);
+      assert.deepEqual(removedPlans[0].map(({ id }) => id), ['headroom-primary']);
+    });
+
     assert.deepEqual(calls, [
       'remove:headroom-primary',
       'install:headroom-primary:/opt/myelin/headroom',
       'health:http://127.0.0.1:9787/health',
       'mitm',
     ]);
+  });
+
+  describe('restartEngineInstance WSL executable resolution', () => {
+    for (const {
+      engine,
+      binaryKey,
+      candidate,
+      resolved,
+    } of [
+      {
+        engine: 'headroom',
+        binaryKey: 'headroomBin',
+        candidate: '/home/alice/.myelin/venv/bin/headroom',
+        resolved: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      },
+      {
+        engine: 'headroom_lite',
+        binaryKey: 'headroomLiteBin',
+        candidate: '/home/alice/.local/bin/headroom-lite',
+        resolved: 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd',
+      },
+    ]) {
+      it(`uses a Windows ${engine} executable instead of a \\\\home path`, async () => {
+        const resolverCalls = [];
+        const installed = [];
+        const instance = {
+          engine,
+          role: 'primary',
+          id: `${engine}-primary`,
+          port: engine === 'headroom' ? 8787 : 8790,
+          stateDir: `C:\\Users\\alice\\.myelin\\state\\${engine}-primary`,
+          logPath: `C:\\Users\\alice\\.myelin\\${engine}-primary.log`,
+          healthUrl: `http://127.0.0.1:${engine === 'headroom' ? 8787 : 8790}/health`,
+          env: {},
+        };
+
+        const restarted = await restartEngineInstance(instance, {
+          os: 'windows',
+          winManager: 'winsw',
+          home: '/home/alice',
+          isWslImpl: () => true,
+          defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+          resolveWindowsServiceExecutableImpl: (options) => {
+            resolverCalls.push(options);
+            return resolved;
+          },
+          headroomBinPathImpl: () => candidate,
+          detectToolImpl: async () => ({ installed: true, path: candidate }),
+          removeEngineInstanceImpl: async () => {},
+          installEngineInstanceImpl: async (_instance, options) => installed.push(options),
+          waitForHealthUrlImpl: async () => true,
+          log: () => {},
+          warn: () => {},
+        });
+
+        assert.equal(restarted, true);
+        assert.deepEqual(resolverCalls, [{
+          engine,
+          candidate,
+          serviceHome: 'C:\\Users\\alice',
+          servicePlatform: 'windows',
+          wsl: true,
+        }]);
+        assert.equal(installed[0][binaryKey], resolved);
+        assert.ok(!installed[0][binaryKey].startsWith('\\home'));
+      });
+    }
   });
 
   it('removes the disabled same-engine Copilot role through the generic owner', async () => {
@@ -678,11 +775,14 @@ describe('Windows descriptor watchdogs', () => {
     });
 
     assert.equal(removed, true);
-    assert.deepEqual(removedServices, [{ id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' }]);
-    assert.deepEqual(removedWatchdogs, [
+    assert.deepEqual(removedServices.map(({ id, home }) => ({ id, home })), [
+      { id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' },
+    ]);
+    assert.deepEqual(removedWatchdogs.map(({ id, home }) => ({ id, home })), [
       { id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' },
       { id: 'myelin-copilot-headroom', home: 'C:\\Users\\alice' },
     ]);
+    assert.ok([...removedServices, ...removedWatchdogs].every(({ isWslImpl }) => typeof isWslImpl === 'function'));
   });
 
   it('removes the owned legacy role registration and watchdog during descriptor migration', () => {
@@ -1088,6 +1188,33 @@ describe('defaultRestartWatchdog', () => {
     assert.equal(installs[0].headroomPort, 8790,
       'launchd watchdog must receive primary port for headroom_lite so it can revive the service');
     assert.equal(installs[0].mitmPort, 8888);
+  });
+
+  it('does not retain a Copilot watchdog or egress port when compression is disabled', async () => {
+    const installs = [];
+
+    await defaultRestartWatchdog({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: false },
+          headroom_lite: { port: 8790 },
+          copilot_headroom: { enabled: true, port: 9788 },
+          mitm: { port: 8888, egress_port: 8889 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true },
+        },
+      },
+      winManager: 'winsw',
+      homedirImpl: () => 'C:\\Users\\alice',
+      installWatchdogImpl: async (options) => installs.push(options),
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.deepEqual(installs[0].instances.map(({ id }) => id), ['headroom_lite-primary']);
+    assert.equal(installs[0].copilotHeadroomPort, undefined);
+    assert.equal(installs[0].egressPort, undefined);
   });
 });
 

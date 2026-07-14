@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkS
 import { homedir } from 'node:os';
 import { dirname, join, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
-import { installWinsw } from '../tools/winsw.mjs';
+import { installWinsw, winswFilesystemPath } from '../tools/winsw.mjs';
 import { powerShellExecutable } from '../detect/os.mjs';
 import { isWsl } from '../detect/wsl.mjs';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
@@ -170,14 +170,21 @@ function windowsPath(value = '') {
   return String(value ?? '').replace(/\//g, '\\');
 }
 
-export function normalizeWindowsFilesystemPath(value = '') {
+export function normalizeWindowsFilesystemPath(value = '', { rejectPosix = isWsl() } = {}) {
   const raw = String(value ?? '');
   if (!raw) return raw;
   if (isWindowsAbsolutePath(raw)) return collapseRedundantBackslashes(windowsPath(raw));
   if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(raw)) {
     return collapseRedundantBackslashes(windowsPath(wslMountToWindowsPath(raw)));
   }
+  if (raw.startsWith('/') && rejectPosix) {
+    throw new Error(`Cannot use POSIX path in a Windows-service definition: ${raw}. Use a mounted /mnt/<drive>/ path or a native Windows path.`);
+  }
   return collapseRedundantBackslashes(windowsPath(raw));
+}
+
+function winswFilesystemPathFor(commandPath, { isWslImpl = isWsl } = {}) {
+  return winswFilesystemPath(commandPath, { wsl: isWslImpl() });
 }
 
 function taskEnvValue(key, value = '') {
@@ -597,11 +604,15 @@ function readWindowsFileText(filePath, {
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
+  isWslImpl = isWsl,
 } = {}) {
   if (!filePath) return '';
+  const filesystemPath = isWindowsAbsolutePath(filePath)
+    ? winswFilesystemPathFor(filePath, { isWslImpl })
+    : filePath;
   try {
-    if (existsSyncImpl(filePath)) {
-      return String(readFileSyncImpl(filePath, 'utf8') ?? '');
+    if (existsSyncImpl(filesystemPath)) {
+      return String(readFileSyncImpl(filesystemPath, 'utf8') ?? '');
     }
   } catch {}
   if (!isWindowsAbsolutePath(filePath)) return '';
@@ -876,11 +887,15 @@ export function uninstallWindowsWatchdogTask({
   home,
   unlinkSyncImpl = unlinkSync,
   runPsFn = runPs,
+  isWslImpl = isWsl,
 } = {}) {
   const scriptPath = winswWatchdogScriptPath({ id, home });
   const logPath = winswWatchdogLogPath({ id, home });
   runPsFn(generateWindowsWatchdogTaskDeleteScript({ taskName }));
-  for (const path of [scriptPath, logPath]) {
+  for (const path of [
+    winswFilesystemPathFor(scriptPath, { isWslImpl }),
+    winswFilesystemPathFor(logPath, { isWslImpl }),
+  ]) {
     try { unlinkSyncImpl(path); } catch {}
   }
   return { taskName, scriptPath, logPath };
@@ -898,6 +913,13 @@ export async function installWinswService({
   home,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
+  isWslImpl = isWsl,
+  installWinswImpl = installWinsw,
+  mkdirSyncImpl = mkdirSync,
+  existsSyncImpl = existsSync,
+  copyFileSyncImpl = copyFileSync,
+  writeFileSyncImpl = writeFileSync,
+  runPsFn = runPs,
 }) {
   const winHome = defaultWindowsHome(home);
   const serviceDir = winswServiceDir({ id, home: winHome });
@@ -905,18 +927,25 @@ export async function installWinswService({
   const configPath = winswConfigPath({ id, home: winHome });
   const logDir = winswLogDir({ id, home: winHome, logPath });
   const legacyRunKey = legacyRunKeyForService(id);
+  const serviceFilesystemDir = winswFilesystemPathFor(serviceDir, { isWslImpl });
+  const serviceFilesystemExePath = winswFilesystemPathFor(serviceExePath, { isWslImpl });
+  const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
+  const logFilesystemDir = winswFilesystemPathFor(logDir, { isWslImpl });
 
-  mkdirSync(serviceDir, { recursive: true });
-  mkdirSync(logDir, { recursive: true });
+  mkdirSyncImpl(serviceFilesystemDir, { recursive: true });
+  mkdirSyncImpl(logFilesystemDir, { recursive: true });
 
-  if (existsSync(serviceExePath)) {
+  if (existsSyncImpl(serviceFilesystemExePath)) {
     try {
-      runPs(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
+      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
     } catch {}
   }
 
-  const winsw = await installWinsw({ home: winHome });
-  copyFileSync(winsw.path, serviceExePath);
+  const winsw = await installWinswImpl({ home: winHome, wsl: isWslImpl() });
+  copyFileSyncImpl(
+    winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl }),
+    serviceFilesystemExePath,
+  );
 
   const xml = generateWinswConfigXml({
     id,
@@ -930,15 +959,24 @@ export async function installWinswService({
     onFailureDelays,
     resetFailure,
   });
-  writeFileSync(configPath, xml, 'utf8');
-  runPs(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }));
+  writeFileSyncImpl(configFilesystemPath, xml, 'utf8');
+  runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }));
   return { id, serviceExePath, configPath, logDir };
 }
 
-export function winswServiceStatus({ id, home, execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
+export function winswServiceStatus({
+  id,
+  home,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  powershellExe = powerShellExecutable(),
+  isWslImpl = isWsl,
+} = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
-  if (!existsSync(serviceExePath) || !existsSync(configPath)) {
+  const serviceFilesystemExePath = winswFilesystemPathFor(serviceExePath, { isWslImpl });
+  const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
+  if (!existsSyncImpl(serviceFilesystemExePath) || !existsSyncImpl(configFilesystemPath)) {
     return { running: false, state: 'Missing', label: id, raw: '' };
   }
 
@@ -954,16 +992,23 @@ export function winswServiceStatus({ id, home, execSyncImpl = execSync, powershe
   return { ...parseWinswServiceStatus(raw), label: id };
 }
 
-export function restartWinswService({ id, home } = {}) {
+export function restartWinswService({
+  id,
+  home,
+  existsSyncImpl = existsSync,
+  runPsFn = runPs,
+  isWslImpl = isWsl,
+} = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
-  if (!existsSync(serviceExePath) || !existsSync(configPath)) return false;
+  if (!existsSyncImpl(winswFilesystemPathFor(serviceExePath, { isWslImpl })) ||
+      !existsSyncImpl(winswFilesystemPathFor(configPath, { isWslImpl }))) return false;
   try {
-    runPs(`& ${psQuote(serviceExePath)} restart ${psQuote(configPath)} | Out-Null`);
+    runPsFn(`& ${psQuote(serviceExePath)} restart ${psQuote(configPath)} | Out-Null`);
     return true;
   } catch {
     try {
-      runPs(`
+      runPsFn(`
 try { & ${psQuote(serviceExePath)} stop ${psQuote(configPath)} --force --no-wait | Out-Null } catch {}
 Start-Sleep -Seconds 1
 & ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null
@@ -975,20 +1020,26 @@ Start-Sleep -Seconds 1
   }
 }
 
-export function uninstallWinswService({ id, home } = {}) {
+export function uninstallWinswService({
+  id,
+  home,
+  existsSyncImpl = existsSync,
+  runPsFn = runPs,
+  isWslImpl = isWsl,
+} = {}) {
   const serviceExePath = winswExecutablePath({ id, home });
   const configPath = winswConfigPath({ id, home });
   const legacyRunKey = legacyRunKeyForService(id);
-  if (!existsSync(serviceExePath)) {
+  if (!existsSyncImpl(winswFilesystemPathFor(serviceExePath, { isWslImpl }))) {
     if (legacyRunKey) {
       try {
-        runPs(`Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`);
+        runPsFn(`Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`);
       } catch {}
     }
     return false;
   }
   try {
-    runPs(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
+    runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }));
     return true;
   } catch {
     return false;
@@ -1222,15 +1273,20 @@ export function engineInstanceStatus(instance, {
   runKeyStatusImpl,
   powershellExe = powerShellExecutable(),
   home,
+  isWslImpl = isWsl,
 } = {}) {
   const paths = engineInstancePaths(instance);
   if (manager === 'winsw') {
-    return { ...winswServiceStatus({ id: paths.id, home, execSyncImpl, powershellExe }), healthUrl: instance.healthUrl };
+    return {
+      ...winswServiceStatus({ id: paths.id, home, execSyncImpl, existsSyncImpl, powershellExe, isWslImpl }),
+      healthUrl: instance.healthUrl,
+    };
   }
   try {
     const runKeyStatus = (runKeyStatusImpl ?? ((deps) => engineInstanceRunKeyStatus(paths.runKey, deps)))({
       execSyncImpl,
       powershellExe,
+      isWslImpl,
     });
     if (!runKeyStatus?.registered) {
       return { running: false, state: 'Stopped', raw: '', label: paths.id, healthUrl: instance.healthUrl };
@@ -1241,6 +1297,7 @@ export function engineInstanceStatus(instance, {
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
+      isWslImpl,
     });
     const legacyCommand = parseLegacyManagedHeadroomRunKeyValue({ runKeyValue: runKeyStatus.raw });
     const launcherCommand = parseLauncherStartProcess(launcherScript);
@@ -1256,6 +1313,7 @@ export function engineInstanceStatus(instance, {
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
+      isWslImpl,
     }));
     const hasManagedPid = /^[0-9]+$/u.test(pidText);
     const pidClause = hasManagedPid
@@ -1327,6 +1385,7 @@ function ownedWinswEngineInstance(instance, paths, {
   readFileSyncImpl = readFileSync,
   execSyncImpl = execSync,
   powershellExe = powerShellExecutable(),
+  isWslImpl = isWsl,
 } = {}) {
   const configPath = winswConfigPath({ id: paths.id, home });
   const config = readWindowsFileText(configPath, {
@@ -1334,6 +1393,7 @@ function ownedWinswEngineInstance(instance, paths, {
     readFileSyncImpl,
     execSyncImpl,
     powershellExe,
+    isWslImpl,
   });
   const executable = config.match(/<executable>([^<]+)<\/executable>/iu)?.[1] ?? '';
   const expectedExecutable = instance.engine === 'headroom_lite'
@@ -1357,6 +1417,46 @@ function ownedWinswEngineInstance(instance, paths, {
 
 export function generateEngineInstanceRemovalScript({ instance, home } = {}) {
   const paths = engineInstancePaths(instance);
+  const liteListenerFallback = instance.engine === 'headroom_lite'
+    ? `
+if ($legacyLauncherMatches -and (Test-Path $launcherPath)) {
+  $liteFallbackContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
+  $liteFallbackPortMatch = [regex]::Match($liteFallbackContent, "(?m)HEADROOM_LITE_PORT\\s*=\\s*'(\\d+)")
+  $liteFallbackPort = $null
+  if ($liteFallbackPortMatch.Success) {
+    $liteFallbackPort = [int]$liteFallbackPortMatch.Groups[1].Value
+    if ($liteFallbackPort -lt 1 -or $liteFallbackPort -gt 65535) { $liteFallbackPort = $null }
+  }
+  $liteFallbackBatchTarget = [regex]::Match($liteFallbackContent, "\\$myelinBatchTarget = '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+  $liteFallbackExecutable = if ($liteFallbackBatchTarget) { $liteFallbackBatchTarget } else { [regex]::Match($liteFallbackContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'") }
+  $liteFallbackBatch = $liteFallbackExecutable -match '\\.(?:cmd|bat)$' -or [bool]$liteFallbackBatchTarget
+  $liteFallbackRoleMatches = $liteFallbackContent -match [regex]::Escape($stateDir)
+  if ($liteFallbackPort -and $liteFallbackExecutable -and $liteFallbackRoleMatches) {
+    foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $liteFallbackPort -ErrorAction SilentlyContinue)) {
+      $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+      $liteFallbackLauncherMatches = $false
+      $liteFallbackCommandMatches = $false
+      $ancestor = $candidate
+      for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+        if ($ancestor.CommandLine -match [regex]::Escape($launcherPath)) { $liteFallbackLauncherMatches = $true }
+        if ($liteFallbackBatch) {
+          if ($ancestor.Name -ieq 'cmd.exe' -and $ancestor.CommandLine -match [regex]::Escape($liteFallbackExecutable)) {
+            $liteFallbackCommandMatches = $true
+          }
+        } elseif ($ancestor.ProcessId -eq $candidate.ProcessId -and $candidate.ExecutablePath -eq $liteFallbackExecutable) {
+          $liteFallbackCommandMatches = $true
+        }
+        if (-not $ancestor.ParentProcessId) { break }
+        $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+      }
+      if ($candidate -and $liteFallbackLauncherMatches -and $liteFallbackCommandMatches) {
+        Stop-Process -Id $candidate.ProcessId -Force -ErrorAction SilentlyContinue
+        break
+      }
+    }
+  }
+}`
+    : '';
   return `
 $pidPath = '${escapePs(paths.pidPath)}'
 $launcherPath = '${escapePs(paths.launcherPath)}'
@@ -1454,6 +1554,7 @@ if ($legacyExecutable -and $legacyArguments -and $legacyPort) {
     }
   }
 }
+${liteListenerFallback}
 if ($legacyDirectMatch.Success -or $legacyLauncherMatches) {
   Remove-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue
 }
@@ -1471,6 +1572,7 @@ export function removeEngineInstance(instance, {
   uninstallWinswServiceImpl = uninstallWinswService,
   uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
   runPsFn = runPs,
+  isWslImpl = isWsl,
 } = {}) {
   const paths = engineInstancePaths(instance);
   const legacyInstance = !includeLegacy || instance.legacy
@@ -1487,7 +1589,7 @@ export function removeEngineInstance(instance, {
     ? [{ instance, paths }]
     : [{ instance, paths }, { instance: legacyInstance, paths: legacyPaths }];
   for (const { paths: ownedPaths } of identities) {
-    uninstallWindowsWatchdogTaskImpl({ id: ownedPaths.id, home });
+    uninstallWindowsWatchdogTaskImpl({ id: ownedPaths.id, home, isWslImpl });
   }
   if (manager === 'winsw') {
     let removed = false;
@@ -1499,7 +1601,7 @@ export function removeEngineInstance(instance, {
         execSyncImpl,
         powershellExe,
       })) {
-        removed = uninstallWinswServiceImpl({ id: ownedPaths.id, home }) || removed;
+        removed = uninstallWinswServiceImpl({ id: ownedPaths.id, home, isWslImpl }) || removed;
       }
     }
     return removed;
@@ -2120,25 +2222,33 @@ export function installWindowsWatchdogTask({
   intervalMinutes = 2,
   winswConfigPath: configPathOverride,
   home,
+  isWslImpl = isWsl,
+  existsSyncImpl = existsSync,
+  mkdirSyncImpl = mkdirSync,
+  writeFileSyncImpl = writeFileSync,
+  runPsFn = runPs,
 } = {}) {
   const winHome = defaultWindowsHome(home);
   const serviceExePath = winswExecutablePath({ id, home: winHome });
   const configPath = configPathOverride ?? winswConfigPath({ id, home: winHome });
-  if (!existsSync(serviceExePath) || !existsSync(configPath)) {
+  const serviceFilesystemExePath = winswFilesystemPathFor(serviceExePath, { isWslImpl });
+  const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
+  if (!existsSyncImpl(serviceFilesystemExePath) || !existsSyncImpl(configFilesystemPath)) {
     throw new Error(`WinSW service assets missing for ${id}`);
   }
 
   const scriptPath = winswWatchdogScriptPath({ id, home: winHome });
   const logPath = winswWatchdogLogPath({ id, home: winHome });
-  mkdirSync(dirname(scriptPath), { recursive: true });
-  writeFileSync(scriptPath, generateWindowsWatchdogHealthcheckScript({
+  const filesystemScriptPath = winswFilesystemPathFor(scriptPath, { isWslImpl });
+  mkdirSyncImpl(dirname(filesystemScriptPath), { recursive: true });
+  writeFileSyncImpl(filesystemScriptPath, generateWindowsWatchdogHealthcheckScript({
     serviceName,
     healthUrl,
     winswExePath: serviceExePath,
     winswConfigPath: configPath,
     logPath,
   }), 'utf8');
-  runPs(generateWindowsWatchdogTaskCreateScript({ taskName, scriptPath, intervalMinutes }));
+  runPsFn(generateWindowsWatchdogTaskCreateScript({ taskName, scriptPath, intervalMinutes }));
   return { taskName, scriptPath, logPath };
 }
 

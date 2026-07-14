@@ -26,6 +26,7 @@ export function buildServiceEnginePlan(config = {}) {
 import { homedir } from 'node:os';
 import { join, win32 as pathWin32 } from 'node:path';
 import { detectOS } from '../detect/os.mjs';
+import { resolveMitmCompression } from './compression-env.mjs';
 import { defaultWindowsHome } from '../service/windows.mjs';
 
 function normalizePort(value, label) {
@@ -87,7 +88,8 @@ export function buildEngineInstancePlan(config = {}, {
   const rawPrimaryPort = selectedEnginePort(config);
   const copilot = config.proxy?.copilot_headroom ?? {};
   const mitmEnabled = config?.proxy?.mitm?.enabled !== false;
-  const copilotEnabled = copilot.enabled === true;
+  const { copilotHeadroomPort } = resolveMitmCompression(config);
+  const copilotEnabled = copilotHeadroomPort != null;
 
   if (copilotEnabled && !mitmEnabled) {
     throw new Error(
@@ -108,8 +110,7 @@ export function buildEngineInstancePlan(config = {}, {
     : null;
 
   if (copilotEnabled) {
-    const rawCopilotPort = copilot.port ?? 8788;
-    const copilotPort = normalizePort(rawCopilotPort, 'copilot');
+    const copilotPort = normalizePort(copilotHeadroomPort, 'copilot');
     assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
 
     const instances = [

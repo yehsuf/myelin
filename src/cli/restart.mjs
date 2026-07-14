@@ -7,7 +7,12 @@ import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 import { headroomBinPath } from '../tools/headroom.mjs';
 import { loadConfig } from '../config/reader.mjs';
 import { buildServiceEnvUnsetLines } from '../service/wrappers.mjs';
-import { defaultWindowsHome, normalizeWindowsFilesystemPath } from '../service/windows.mjs';
+import {
+  defaultWindowsHome,
+  normalizeWindowsFilesystemPath,
+  resolveWindowsServiceExecutable,
+} from '../service/windows.mjs';
+import { isWsl } from '../detect/wsl.mjs';
 import {
   installCopilotHeadroomService,
   installEngineInstance,
@@ -1057,6 +1062,7 @@ export async function waitForHealthUrl(healthUrl, timeoutMs = 20000) {
 }
 
 export async function restartEngineInstance(instance, {
+  os,
   cfg,
   winManager,
   home = homedir(),
@@ -1067,16 +1073,27 @@ export async function restartEngineInstance(instance, {
   headroomBinPathImpl = headroomBinPath,
   detectToolImpl,
   waitForHealthUrlImpl = waitForHealthUrl,
+  isWslImpl = isWsl,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
 } = {}) {
   try {
     const options = { manager: winManager, home };
+    const wsl = os === 'windows' && isWslImpl();
+    const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
     await removeEngineInstanceImpl(instance, {
       manager: winManager,
       home,
       warn,
     });
     if (instance.engine === 'headroom') {
-      options.headroomBin = headroomBinPathImpl();
+      options.headroomBin = resolveWindowsServiceExecutableImpl({
+        engine: instance.engine,
+        candidate: headroomBinPathImpl(),
+        serviceHome,
+        servicePlatform: os,
+        wsl,
+      });
       options.envVars = buildManagedHeadroomEnv(cfg);
     } else if (instance.engine === 'headroom_lite') {
       const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
@@ -1084,7 +1101,13 @@ export async function restartEngineInstance(instance, {
       if (!headroomLite.installed || !headroomLite.path) {
         throw new Error('headroom-lite selected but not installed');
       }
-      options.headroomLiteBin = headroomLite.path;
+      options.headroomLiteBin = resolveWindowsServiceExecutableImpl({
+        engine: instance.engine,
+        candidate: headroomLite.path,
+        serviceHome,
+        servicePlatform: os,
+        wsl,
+      });
     } else {
       throw new Error(`Unsupported engine: ${instance.engine}`);
     }
@@ -1118,11 +1141,13 @@ export async function runRestart({
   waitForHealthUrlImpl = waitForHealthUrl,
   log = console.log,
   warn = console.warn,
+  homedirImpl = homedir,
+  defaultWindowsHomeImpl = defaultWindowsHome,
 } = {}) {
   const os = detectOSImpl();
   const cfg = config ?? await loadConfigImpl();
   const winManager = cfg?.proxy?.windows_service?.manager ?? 'registry';
-  const home = homedir();
+  const home = os === 'windows' ? defaultWindowsHomeImpl(homedirImpl()) : homedirImpl();
   const plan = buildEngineInstancePlanImpl(cfg);
   log('\n🔄 Restarting Myelin services...');
 

@@ -94,6 +94,29 @@ describe('buildEngineInstancePlan', () => {
     ]);
   });
 
+  for (const [label, extraConfig] of [
+    ['compression is disabled', { proxy: { compression: { enabled: false } } }],
+    ['LiteLLM owns compression', { budget_routing: { litellm: true } }],
+  ]) {
+    it(`does not plan Copilot or egress listeners when ${label}`, () => {
+      const plan = buildEngineInstancePlan({
+        ...extraConfig,
+        proxy: {
+          engine: 'headroom',
+          compression: { enabled: true },
+          headroom: { port: 8889 },
+          copilot_headroom: { enabled: true, port: 8889 },
+          mitm: { port: 8888, egress_port: 8889 },
+          ...extraConfig.proxy,
+        },
+      });
+
+      assert.deepEqual(plan.instances.map(({ role, port, env }) => ({ role, port, env })), [
+        { role: 'primary', port: 8889, env: {} },
+      ]);
+    });
+  }
+
   it('gives each role a unique id, stateDir, logPath, and healthUrl', () => {
     const plan = buildEngineInstancePlan({
       proxy: {

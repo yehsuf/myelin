@@ -338,4 +338,38 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(statuses, ['primary']);
     assert.deepEqual(probes, [8790]);
   });
+
+  it('does not probe a Copilot descriptor when compression is disabled despite its persisted opt-in', async () => {
+    const statuses = [];
+    const probes = [];
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          compression: { enabled: false },
+          headroom_lite: { enabled: true, port: 8790 },
+          mitm: { enabled: true, port: 8888, egress_port: 8889 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'winsw', watchdog_enabled: true },
+        },
+      },
+      platform: 'win32',
+      engineInstanceStatusImpl: async (instance) => {
+        statuses.push(instance.id);
+        return { running: true };
+      },
+      probeHeadroomLiteImpl: async (port) => {
+        probes.push(port);
+        return { status: 'ok', mode: 'cache' };
+      },
+      execSyncImpl: () => {},
+      includeToolChecks: false,
+      includeMitmCheck: false,
+      includeWatchdogChecks: true,
+    });
+
+    assert.deepEqual(statuses, ['headroom_lite-primary']);
+    assert.deepEqual(probes, [8790]);
+    assert.equal(results.some(({ name }) => /Copilot/i.test(name)), false);
+  });
 });
