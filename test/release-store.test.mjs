@@ -12,6 +12,7 @@ import {
 } from '../src/runtime/release-store.mjs';
 import { resolveRuntimeEntrypoint, writeManagedLauncher } from '../src/runtime/launcher.mjs';
 import { stageMainRuntime } from '../src/runtime/stage-main.mjs';
+import { resolveMyelinRoot } from '../src/shared/myelin-paths.mjs';
 
 // A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
 // behavioral shell test so full coverage runs on POSIX while staying green on
@@ -20,6 +21,18 @@ function hasPosixSh() {
   if (process.platform === 'win32') return false;
   try {
     const r = spawnSync('sh', ['-c', 'exit 0']);
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
+
+// PowerShell (pwsh) may be absent. Guard the behavioral install.ps1 canonicalizer
+// test so it runs where pwsh exists and is skipped (source assertions still run)
+// otherwise.
+function hasPwsh() {
+  try {
+    const r = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']);
     return !r.error && r.status === 0;
   } catch {
     return false;
@@ -359,6 +372,39 @@ describe('current release pointer', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  // The generated launcher must canonicalize an explicit MYELIN_DIR exactly like
+  // the installer's resolveMyelinRoot: a ~-prefixed or relative root resolves
+  // against $HOME, not verbatim/cwd — so installer and generated launcher never
+  // target different managed roots.
+  for (const label of ['tilde', 'relative', 'absolute']) {
+    it(`generated launcher resolves a ${label} MYELIN_DIR to the resolveMyelinRoot root`, () => {
+      const home = makeTempHome();
+      try {
+        const result = writeManagedLauncher({ home, os: 'darwin' });
+        const releaseId = 'main-abcdef1234567';
+        const myelinDir = label === 'tilde' ? '~/launcher-canon'
+          : label === 'relative' ? 'relative-launcher-canon'
+          : join(home, 'absolute-launcher-canon');
+        const resolvedRoot = resolveMyelinRoot({ home, env: { MYELIN_DIR: myelinDir } });
+        if (label !== 'absolute') assert.notEqual(resolvedRoot, myelinDir);
+
+        const entrypoint = join(resolvedRoot, 'releases', releaseId, 'src', 'cli', 'index.mjs');
+        mkdirSync(dirname(entrypoint), { recursive: true });
+        writeFileSync(entrypoint, "console.log('LAUNCH-CANON');\n", 'utf8');
+        writeCurrentRelease({ home, rootDir: resolvedRoot, releaseId });
+
+        const r = spawnSync(process.execPath, [result.launcherPath], {
+          env: { ...process.env, HOME: home, USERPROFILE: home, MYELIN_DIR: myelinDir },
+          encoding: 'utf8',
+        });
+        assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+        assert.equal(r.stdout, 'LAUNCH-CANON\n');
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+      }
+    });
+  }
 
   it('writes the launcher beneath a supplied root', () => {
     const home = makeTempHome();
@@ -1047,5 +1093,74 @@ describe('bootstrap scripts', () => {
     // Non-activating modes bypass the pointer writer.
     assert.ok(script.includes('$DryRun -or $Check'));
     assert.ok(/\$Activate/.test(script));
+  });
+
+  it('defines Canonicalize-MyelinDir and applies it to $MyelinDir before staging in install.ps1', () => {
+    const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
+
+    // The canonicalizer exists (parity with install.sh canonicalize_myelin_dir).
+    assert.ok(/function\s+Canonicalize-MyelinDir\b/.test(script));
+    // $MyelinDir is normalized through it.
+    assert.ok(/\$MyelinDir\s*=\s*Canonicalize-MyelinDir\s+\$MyelinDir/.test(script));
+
+    // Normalization must happen BEFORE any staging (New-Item / git clone / pointer
+    // write) and before it is exported so installer + generated runtime agree.
+    const canonIdx = script.indexOf('$MyelinDir = Canonicalize-MyelinDir $MyelinDir');
+    assert.ok(canonIdx >= 0);
+    const exportIdx = script.indexOf('$env:MYELIN_DIR = $MyelinDir');
+    assert.ok(exportIdx >= 0);
+    assert.ok(canonIdx < exportIdx, 'canonicalization must precede MYELIN_DIR export');
+    const newItemIdx = script.indexOf('New-Item');
+    if (newItemIdx >= 0) {
+      assert.ok(canonIdx < newItemIdx, 'canonicalization must precede first New-Item');
+    }
+    const cloneIdx = script.search(/git\s+clone/);
+    if (cloneIdx >= 0) {
+      assert.ok(canonIdx < cloneIdx, 'canonicalization must precede git clone');
+    }
+  });
+
+  it('Canonicalize-MyelinDir mirrors resolveMyelinRoot: ~ / ~/ / relative / absolute', { skip: !hasPwsh() }, () => {
+    const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
+    // Extract the function body (closing brace is at column 0).
+    const m = script.match(/^function Canonicalize-MyelinDir \{[\s\S]*?^\}/m);
+    assert.ok(m, 'Canonicalize-MyelinDir function block should be extractable');
+    const fn = m[0];
+
+    // Use a POSIX base so pwsh Join-Path works cross-platform (pwsh on non-Windows
+    // rejects fabricated drive letters like C:). This validates the branching logic;
+    // real Windows drive joins are exercised on Windows hosts.
+    const base = '/home/canon-tester';
+    const harness = [
+      `$env:USERPROFILE = '${base}'`,
+      fn,
+      '$r = [ordered]@{',
+      "  tilde = Canonicalize-MyelinDir '~'",
+      "  tildeSlash = Canonicalize-MyelinDir '~/managed'",
+      "  tildeBack = Canonicalize-MyelinDir '~\\managed'",
+      "  tildeEmpty = Canonicalize-MyelinDir '~/'",
+      "  relative = Canonicalize-MyelinDir 'managed'",
+      "  reldeep = Canonicalize-MyelinDir 'a/b'",
+      "  drive = Canonicalize-MyelinDir 'D:\\managed\\myelin'",
+      "  unc = Canonicalize-MyelinDir '\\\\server\\share\\m'",
+      `  abspass = Canonicalize-MyelinDir '${base}/.myelin'`,
+      '}',
+      '$r | ConvertTo-Json -Compress',
+    ].join('\n');
+
+    const r = spawnSync('pwsh', ['-NoProfile', '-Command', harness], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr || 'pwsh harness failed');
+    const out = JSON.parse(r.stdout);
+
+    assert.equal(out.tilde, base);
+    assert.equal(out.tildeSlash, `${base}/managed`);
+    assert.equal(out.tildeBack, `${base}/managed`);
+    assert.equal(out.tildeEmpty, base);
+    assert.equal(out.relative, `${base}/managed`);
+    assert.equal(out.reldeep, `${base}/a/b`);
+    // Absolute inputs pass through untouched.
+    assert.equal(out.drive, 'D:\\managed\\myelin');
+    assert.equal(out.unc, '\\\\server\\share\\m');
+    assert.equal(out.abspass, `${base}/.myelin`);
   });
 });

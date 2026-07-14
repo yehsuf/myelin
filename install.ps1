@@ -9,7 +9,29 @@ param(
     [switch]$ClaudeOnly
 )
 $ErrorActionPreference = "Stop"
+
+# Canonicalize an explicit MYELIN_DIR the SAME way install.sh's
+# canonicalize_myelin_dir / Node's resolveMyelinRoot do, so this PowerShell
+# installer and the staged Node runtime always target the same managed root:
+#   - a leading ~ (optionally ~/ or ~\) expands to $env:USERPROFILE,
+#   - any still-relative value is rooted at $env:USERPROFILE (never the CWD),
+#   - an already-absolute value (drive-rooted, UNC, or rooted) passes through.
+# Without this, `MYELIN_DIR=~\foo` or `MYELIN_DIR=foo` would be staged under the
+# CWD here while Node canonicalized it against $env:USERPROFILE — a fragmented
+# install pointing the two at different directories.
+function Canonicalize-MyelinDir {
+    param([string]$Root)
+    if ($Root -eq '~') { return $env:USERPROFILE }
+    if ($Root -match '^~[\\/](.*)$') {
+        if ($Matches[1] -eq '') { return $env:USERPROFILE }
+        return (Join-Path $env:USERPROFILE $Matches[1])
+    }
+    if ($Root -match '^[A-Za-z]:[\\/]' -or $Root -match '^[\\/]{2}' -or $Root -match '^[\\/]') { return $Root }
+    return (Join-Path $env:USERPROFILE $Root)
+}
+
 $MyelinDir = if ($env:MYELIN_DIR) { $env:MYELIN_DIR } else { "$env:USERPROFILE\.myelin" }
+$MyelinDir = Canonicalize-MyelinDir $MyelinDir
 $env:MYELIN_DIR = $MyelinDir
 $RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://github.com/yehsuf/myelin" }
 

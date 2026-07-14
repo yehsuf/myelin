@@ -369,6 +369,77 @@ describe('writeManagedLauncher', () => {
       rmSync(artifacts, { recursive: true, force: true });
     }
   });
+
+  // Fix-review #3: under WSL the launcher classifies the OS as 'windows' but
+  // process.execPath (/usr/bin/node) and a $HOME-derived launcherPath are POSIX
+  // paths native cmd.exe cannot run. The generated .cmd must carry NATIVE Windows
+  // paths (/mnt/<drive>/... -> <Drive>:\...) or refuse rather than emit a broken shim.
+  it('WSL: bakes native Windows paths (/mnt/d -> D:\\) into the .cmd shim', () => {
+    const written = {};
+    const result = writeManagedLauncher({
+      home: '/mnt/d/Users/tester',
+      os: 'windows',
+      wsl: true,
+      nodeBin: '/mnt/d/tools/nodejs/node.exe',
+      mkdirSyncFn() {},
+      chmodSyncFn() {},
+      writeFileSyncFn(path, content) { written[path] = content; },
+    });
+    const shim = written[result.commandPath];
+    assert.ok(shim, 'command shim should be rendered');
+    assert.ok(shim.includes('"D:\\tools\\nodejs\\node.exe"'), `node path should be native: ${shim}`);
+    assert.ok(
+      shim.includes('"D:\\Users\\tester\\.myelin\\bin\\myelin-launcher.mjs"'),
+      `launcher path should be native: ${shim}`,
+    );
+    // No unrunnable POSIX/WSL mount fragments leak into the native cmd shim.
+    assert.ok(!shim.includes('/mnt/'), `no /mnt/ path may survive: ${shim}`);
+    assert.ok(!shim.includes('/usr/'), `no /usr/ path may survive: ${shim}`);
+  });
+
+  it('WSL: refuses to emit a .cmd when node/launcher paths have no native equivalent', () => {
+    // A pure POSIX node path (/usr/bin/node) cannot be run by native cmd.exe.
+    assert.throws(
+      () => writeManagedLauncher({
+        home: '/home/tester',
+        os: 'windows',
+        wsl: true,
+        nodeBin: '/usr/bin/node',
+        mkdirSyncFn() {},
+        chmodSyncFn() {},
+        writeFileSyncFn() {},
+      }),
+      /cannot generate a native Windows launcher/,
+    );
+
+    // Even with a convertible node, a POSIX ($HOME-derived) launcher path is rejected.
+    assert.throws(
+      () => writeManagedLauncher({
+        home: '/home/tester',
+        os: 'windows',
+        wsl: true,
+        nodeBin: '/mnt/d/tools/nodejs/node.exe',
+        mkdirSyncFn() {},
+        chmodSyncFn() {},
+        writeFileSyncFn() {},
+      }),
+      /cannot generate a native Windows launcher/,
+    );
+  });
+
+  it('WSL refusal fails fast: no launcher or command file is written', () => {
+    const written = [];
+    assert.throws(() => writeManagedLauncher({
+      home: '/home/tester',
+      os: 'windows',
+      wsl: true,
+      nodeBin: '/usr/bin/node',
+      mkdirSyncFn() {},
+      chmodSyncFn() {},
+      writeFileSyncFn(path) { written.push(path); },
+    }));
+    assert.deepEqual(written, [], 'no partial files should be written on refusal');
+  });
   it('writes a stable launcher into a writable global bin dir', () => {
     const home = makeTempHome('managed-global-link');
     const prefix = join(home, 'global-prefix');

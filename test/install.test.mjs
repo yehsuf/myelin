@@ -14,6 +14,7 @@ import {
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
   stopLegacyManagedProxies,
+  stopManagedUvToolProcess,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
@@ -1181,6 +1182,123 @@ describe('stopLegacyManagedProxies (C1: no name-based process kill)', () => {
     } finally {
       rmSync(oldDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('stopManagedUvToolProcess (C4: no name-based serena/semble kill)', () => {
+  const TOOL_DIR = 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools';
+
+  it('is a no-op on non-windows platforms', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'darwin',
+      toolDirFn: () => { throw new Error('should not resolve tool dir on non-windows'); },
+      processListFn: () => { throw new Error('should not enumerate on non-windows'); },
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(result, { stopped: [], skipped: [] });
+    assert.deepEqual(kills, []);
+  });
+
+  it('does NOTHING (never name-kills) when the uv tool dir cannot be verified', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => null, // `uv tool dir` failed / uv not installed
+      processListFn: () => { throw new Error('must not enumerate when tool dir unknown'); },
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'must never fall back to a name-kill');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.unverified, true);
+  });
+
+  it('does NOT kill an unrelated same-named process (path not under the uv tool dir)', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      // A DIFFERENT semble.exe the user built elsewhere on the machine.
+      processListFn: () => ([{
+        pid: 4242,
+        command: 'C:\\Users\\dev\\code\\semble\\target\\release\\semble.exe --serve',
+        executablePath: 'C:\\Users\\dev\\code\\semble\\target\\release\\semble.exe',
+        startTime: '2024-01-01T00:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'unrelated same-named process must never be killed');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 4242);
+  });
+
+  it('does NOT kill a same-named process with no StartTime (stale/unverifiable)', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([{
+        pid: 9999,
+        command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        startTime: '', // not live / cannot verify
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, []);
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+  });
+
+  it('DOES stop a verified uv-tool-managed process running from the tool dir', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([
+        {
+          pid: 5555,
+          command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe start-mcp-server`,
+          executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        },
+        // A second, unrelated same-named process elsewhere — must be left alone.
+        {
+          pid: 6666,
+          command: 'D:\\other\\serena-agent.exe',
+          executablePath: 'D:\\other\\serena-agent.exe',
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        },
+      ]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [5555], 'only the managed pid is stopped');
+    assert.deepEqual(result.stopped, [5555]);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 6666);
+  });
+
+  it('default stop path targets the pid (Stop-Process -Id) and NEVER a process name', () => {
+    const commands = [];
+    stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      powershellExe: 'powershell.exe',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([{
+        pid: 5555,
+        command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      // capture what the DEFAULT stopPidFn would execute
+      execSyncImpl: (cmd) => { commands.push(String(cmd)); return Buffer.from(''); },
+    });
+
+    assert.equal(commands.length, 1);
+    assert.ok(commands[0].includes('Stop-Process -Id 5555'), `expected Stop-Process -Id: ${commands[0]}`);
+    assert.ok(!/-Name\b/.test(commands[0]), `must never use -Name: ${commands[0]}`);
+    assert.ok(!/Get-Process/.test(commands[0]), `must never enumerate by Get-Process name: ${commands[0]}`);
   });
 });
 

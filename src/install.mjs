@@ -1026,13 +1026,38 @@ function renderManagedCliBridgeSource() {
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 
 const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+const BACKSLASH = String.fromCharCode(92);
+
+// Mirror src/shared/myelin-paths.mjs isWindowsStylePath / resolveMyelinRoot so
+// this generated bridge canonicalizes an explicit MYELIN_DIR exactly like the
+// installer: expand a leading ~ / ~/ / ~BACKSLASH against home, root a relative
+// value at home (never cwd), pass an absolute value through, blank => default.
+function isWindowsStylePath(p) {
+  if (typeof p !== 'string' || p.length === 0) return false;
+  if (p.length >= 3 && /[A-Za-z]/.test(p.charAt(0)) && p.charAt(1) === ':' && (p.charAt(2) === '/' || p.charAt(2) === BACKSLASH)) return true;
+  if (p.startsWith(BACKSLASH + BACKSLASH) || p.startsWith('//')) return true;
+  if (p.startsWith('/')) return false;
+  return p.includes(BACKSLASH);
+}
+
+function resolveManagedRoot(home) {
+  const raw = process.env.MYELIN_DIR;
+  if (typeof raw !== 'string' || !raw.trim()) return join(home, '.myelin');
+  const homeModule = isWindowsStylePath(home) ? win32Path : posixPath;
+  if (raw === '~') return home;
+  if (raw.length >= 2 && raw.charAt(0) === '~' && (raw.charAt(1) === '/' || raw.charAt(1) === BACKSLASH)) {
+    return homeModule.join(home, raw.slice(2));
+  }
+  const rawModule = isWindowsStylePath(raw) ? win32Path : posixPath;
+  if (rawModule.isAbsolute(raw)) return raw;
+  return homeModule.join(home, raw);
+}
 
 function readCurrentRelease(home) {
-  const rawRoot = process.env.MYELIN_DIR;
-  const root = (typeof rawRoot === 'string' && rawRoot.trim()) ? rawRoot : join(home, '.myelin');
+  const root = resolveManagedRoot(home);
   const currentPointerPath = join(root, 'current.json');
   const releasesDir = join(root, 'releases');
 
@@ -1105,8 +1130,10 @@ try {
 function renderManagedPythonBridgeSource(relativeTargetPath, mode) {
   return `#!/usr/bin/env python3
 import json
+import ntpath
 import os
 from pathlib import Path
+import posixpath
 import re
 import runpy
 import sys
@@ -1114,6 +1141,35 @@ import sys
 TARGET_PATH = ${JSON.stringify(relativeTargetPath)}
 MODE = ${JSON.stringify(mode)}
 RELEASE_ID_RE = re.compile(r'^main-[0-9a-f]{7,64}$')
+
+def is_windows_style_path(p):
+    if not isinstance(p, str) or len(p) == 0:
+        return False
+    if len(p) >= 3 and p[0].isascii() and p[0].isalpha() and p[1] == ':' and p[2] in ('/', chr(92)):
+        return True
+    if p.startswith(chr(92) + chr(92)) or p.startswith('//'):
+        return True
+    if p.startswith('/'):
+        return False
+    return chr(92) in p
+
+# Mirror src/shared/myelin-paths.mjs resolveMyelinRoot: expand a leading
+# ~ / ~/ / ~BACKSLASH against home, root a relative MYELIN_DIR at home (never
+# cwd), pass an absolute value through, blank/absent => <home>/.myelin.
+def resolve_managed_root(home):
+    raw = os.environ.get('MYELIN_DIR')
+    if not (raw and raw.strip()):
+        return os.path.join(home, '.myelin')
+    home_module = ntpath if is_windows_style_path(home) else posixpath
+    if raw == '~':
+        return home
+    if len(raw) >= 2 and raw[0] == '~' and raw[1] in ('/', chr(92)):
+        rest = raw[2:]
+        return home if rest == '' else home_module.join(home, rest)
+    raw_module = ntpath if is_windows_style_path(raw) else posixpath
+    if raw_module.isabs(raw):
+        return raw
+    return home_module.join(home, raw)
 
 def normalized_runtime_root(value):
     raw = str(value)
@@ -1129,8 +1185,7 @@ def normalized_runtime_root(value):
     return os.path.normcase(os.path.normpath(raw))
 
 def resolve_target():
-    env_dir = os.environ.get('MYELIN_DIR')
-    root = Path(env_dir if env_dir and env_dir.strip() else (Path.home() / '.myelin'))
+    root = Path(resolve_managed_root(str(Path.home())))
     current_path = root / 'current.json'
     releases_dir = root / 'releases'
     try:
@@ -1642,6 +1697,90 @@ export function stopLegacyManagedProxies({
 }
 
 /**
+ * Ownership-verified shutdown of a uv-tool-managed MCP process (serena-agent /
+ * semble) so a Windows in-place `uv tool install` can replace files the running
+ * server holds open — WITHOUT ever name-killing.
+ *
+ * The previous implementation ran `Get-Process -Name 'serena-agent' |
+ * Stop-Process -Force`, which kills ANY process sharing that name, including a
+ * user's own unrelated build. This replacement instead:
+ *   (a) resolves the uv tool install location (`uv tool dir`); if it cannot be
+ *       resolved, it does NOTHING (best-effort no-op) rather than name-killing;
+ *   (b) enumerates same-named processes and keeps only those that are LIVE
+ *       (StartTime present) AND whose command line / executable path runs FROM
+ *       the uv tool dir — a same-named process installed elsewhere can never
+ *       satisfy this, so it is left untouched;
+ *   (c) stops each verified process strictly by PID (never by name).
+ */
+function defaultUvToolDir({ execSyncImpl = execSync } = {}) {
+  try {
+    const out = execSyncImpl('uv tool dir', { stdio: ['ignore', 'pipe', 'pipe'] });
+    const dir = String(out ?? '').toString().replace(/^\uFEFF/, '').trim();
+    return dir || null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultUvToolProcessList(name, { execSyncImpl = execSync, powershellExe } = {}) {
+  try {
+    const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+    const script = [
+      `$procs = Get-CimInstance Win32_Process -Filter "Name = '${name}.exe' OR Name = '${name}'" -ErrorAction SilentlyContinue`,
+      'if (-not $procs) { return }',
+      '@($procs | ForEach-Object { @{ pid = $_.ProcessId; command = $_.CommandLine; executablePath = $_.ExecutablePath; startTime = if ($_.CreationDate) { $_.CreationDate.ToString("o") } else { "" } } }) | ConvertTo-Json -Compress',
+    ].join('; ');
+    const out = execSyncImpl(`${ps} -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').trim();
+    if (!out) return [];
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+export function stopManagedUvToolProcess(name, {
+  os,
+  execSyncImpl = execSync,
+  powershellExe,
+  toolDirFn = () => defaultUvToolDir({ execSyncImpl }),
+  processListFn = (n) => defaultUvToolProcessList(n, { execSyncImpl, powershellExe }),
+  isOwnedFn = legacyManagedProcessIsOwned,
+  stopPidFn = (pid) => defaultStopManagedPid(pid, { execSyncImpl, powershellExe }),
+} = {}) {
+  const stopped = [];
+  const skipped = [];
+  if (os !== 'windows' || !name) return { stopped, skipped };
+
+  // Cannot verify ownership → refuse to touch anything (never blind name-kill).
+  const toolDir = toolDirFn();
+  if (!toolDir) return { stopped, skipped, unverified: true };
+
+  const seen = new Set();
+  for (const info of processListFn(name)) {
+    const pid = Number(info?.pid);
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+
+    if (!isOwnedFn(info, toolDir)) {
+      skipped.push({ pid, reason: 'not a verified uv-tool-managed process' });
+      continue;
+    }
+
+    try {
+      stopPidFn(pid);
+      stopped.push(pid);
+    } catch (error) {
+      skipped.push({ pid, reason: `failed to stop pid ${pid}: ${error?.message?.split?.('\n')?.[0] ?? error}` });
+    }
+  }
+
+  return { stopped, skipped };
+}
+
+/**
  * Copilot/Claude wrappers are now defined in ./service/wrappers.mjs so they
  * can be unit-tested for env-var isolation. Never set provider env vars
  * globally (shell profile / Windows registry) — always via these wrappers.
@@ -1901,7 +2040,7 @@ async function main() {
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
     if (os === 'windows') {
-      try { execSync('powershell -Command "Get-Process -Name \'serena-agent\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      stopManagedUvToolProcess('serena-agent', { os });
       await new Promise(r => setTimeout(r, 500));
     }
     try {
@@ -1935,7 +2074,7 @@ async function main() {
   if (!tools.semble.installed) {
     console.log('  Installing Semble...');
     if (os === 'windows') {
-      try { execSync('powershell -Command "Get-Process -Name \'semble\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      stopManagedUvToolProcess('semble', { os });
       await new Promise(r => setTimeout(r, 500));
     }
     let sembleInstalled = false;

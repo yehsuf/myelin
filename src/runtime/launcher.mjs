@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readCurrentRelease, runtimePaths } from './release-store.mjs';
 import { joinManaged } from '../shared/myelin-paths.mjs';
+import { normalizeWindowsFilesystemPath } from '../service/windows.mjs';
+import { isWsl } from '../detect/wsl.mjs';
 
 function launcherModulePath() {
   return fileURLToPath(import.meta.url);
@@ -36,8 +38,24 @@ function renderPosixLauncher(launcherPath, nodeBin = process.execPath) {
   return `#!/bin/sh\nexec ${shSingleQuote(nodeBin)} ${shSingleQuote(launcherPath)} "$@"\n`;
 }
 
-function renderWindowsLauncher(launcherPath, nodeBin = process.execPath) {
-  return `@echo off\r\n"${cmdBatchLiteral(nodeBin)}" "${cmdBatchLiteral(launcherPath)}" %*\r\n`;
+function renderWindowsLauncher(launcherPath, nodeBin = process.execPath, { rejectPosix = isWsl() } = {}) {
+  // Under WSL the launcher module classifies the OS as 'windows', but
+  // process.execPath (/usr/bin/node) and a $HOME-derived launcherPath
+  // (/home/... or /mnt/<drive>/...) are POSIX paths that native cmd.exe cannot
+  // run. Resolve BOTH to native Windows paths (converting /mnt/<drive>/... to
+  // <Drive>:\...) so the .cmd is runnable; if a path has no native Windows
+  // equivalent, refuse rather than emit a broken shim.
+  let nativeNode;
+  let nativeLauncher;
+  try {
+    nativeNode = normalizeWindowsFilesystemPath(nodeBin, { rejectPosix });
+    nativeLauncher = normalizeWindowsFilesystemPath(launcherPath, { rejectPosix });
+  } catch (error) {
+    throw new Error(
+      `cannot generate a native Windows launcher (.cmd): ${error.message}`,
+    );
+  }
+  return `@echo off\r\n"${cmdBatchLiteral(nativeNode)}" "${cmdBatchLiteral(nativeLauncher)}" %*\r\n`;
 }
 
 function renderManagedLauncherSource() {
@@ -45,13 +63,42 @@ function renderManagedLauncherSource() {
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 
 const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+const BACKSLASH = String.fromCharCode(92);
+
+// Mirror src/shared/myelin-paths.mjs isWindowsStylePath so an explicit
+// MYELIN_DIR is canonicalized with the same separator semantics the installer
+// used (drive-rooted / UNC / backslash-bearing => Windows-style).
+function isWindowsStylePath(p) {
+  if (typeof p !== 'string' || p.length === 0) return false;
+  if (p.length >= 3 && /[A-Za-z]/.test(p.charAt(0)) && p.charAt(1) === ':' && (p.charAt(2) === '/' || p.charAt(2) === BACKSLASH)) return true;
+  if (p.startsWith(BACKSLASH + BACKSLASH) || p.startsWith('//')) return true;
+  if (p.startsWith('/')) return false;
+  return p.includes(BACKSLASH);
+}
+
+// Mirror resolveMyelinRoot: expand a leading ~ / ~/ / ~BACKSLASH against home,
+// root a relative MYELIN_DIR at home (never cwd), pass an absolute value
+// through, and fall back to <home>/.myelin for a blank/absent value. Kept in
+// lock-step with the installer so generated-runtime and installer state never
+// diverge for a ~-prefixed or relative managed root.
+function resolveManagedRoot(home) {
+  const raw = process.env.MYELIN_DIR;
+  if (typeof raw !== 'string' || !raw.trim()) return join(home, '.myelin');
+  const homeModule = isWindowsStylePath(home) ? win32Path : posixPath;
+  if (raw === '~') return home;
+  if (raw.length >= 2 && raw.charAt(0) === '~' && (raw.charAt(1) === '/' || raw.charAt(1) === BACKSLASH)) {
+    return homeModule.join(home, raw.slice(2));
+  }
+  const rawModule = isWindowsStylePath(raw) ? win32Path : posixPath;
+  if (rawModule.isAbsolute(raw)) return raw;
+  return homeModule.join(home, raw);
+}
 
 function runtimePaths(home) {
-  const rawRoot = process.env.MYELIN_DIR;
-  const root = (typeof rawRoot === 'string' && rawRoot.trim()) ? rawRoot : join(home, '.myelin');
+  const root = resolveManagedRoot(home);
   return {
     releasesDir: join(root, 'releases'),
     currentPointerPath: join(root, 'current.json'),
@@ -148,6 +195,7 @@ export function writeManagedLauncher({
   rootDir,
   os,
   nodeBin = process.execPath,
+  wsl = isWsl(),
   mkdirSyncFn = mkdirSync,
   writeFileSyncFn = writeFileSync,
   chmodSyncFn = chmodSync,
@@ -156,17 +204,17 @@ export function writeManagedLauncher({
   const binDir = joinManaged(root, 'bin');
   const commandPath = joinManaged(binDir, os === 'windows' ? 'myelin.cmd' : 'myelin');
 
+  // Render the command shim BEFORE writing anything so a non-convertible
+  // (WSL/POSIX) Windows launcher fails fast without leaving a partial install.
+  const commandContent = os === 'windows'
+    ? renderWindowsLauncher(launcherPath, nodeBin, { rejectPosix: wsl })
+    : renderPosixLauncher(launcherPath, nodeBin);
+
   mkdirSyncFn(binDir, { recursive: true });
   writeFileSyncFn(launcherPath, renderManagedLauncherSource(), 'utf8');
   makeExecutable(launcherPath, chmodSyncFn);
 
-  writeFileSyncFn(
-    commandPath,
-    os === 'windows'
-      ? renderWindowsLauncher(launcherPath, nodeBin)
-      : renderPosixLauncher(launcherPath, nodeBin),
-    'utf8',
-  );
+  writeFileSyncFn(commandPath, commandContent, 'utf8');
   makeExecutable(commandPath, chmodSyncFn);
 
   return { binDir, launcherPath, commandPath };

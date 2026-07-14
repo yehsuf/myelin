@@ -13,6 +13,7 @@ import {
 } from '../src/cli/update.mjs';
 import { writeCurrentRelease } from '../src/runtime/release-store.mjs';
 import { resolveManagedRuntime, writeManagedRuntimeBridge } from '../src/install.mjs';
+import { resolveMyelinRoot } from '../src/shared/myelin-paths.mjs';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const binPath = fileURLToPath(new URL('../bin/myelin', import.meta.url));
@@ -1085,5 +1086,50 @@ describe('bridge behavioral execution', () => {
         rmSync(home, { recursive: true, force: true });
       }
     });
+  });
+
+  // The generated bridges must canonicalize an explicit MYELIN_DIR exactly like
+  // the installer's resolveMyelinRoot (expand ~ / ~/ against $HOME, root a
+  // relative value at $HOME, pass an absolute value through). Otherwise the
+  // installer stages state under one root while the generated runtime resolves
+  // another — a fragmented install for `~/managed` or relative roots.
+  describe('MYELIN_DIR canonicalization parity with resolveMyelinRoot', () => {
+    const canonReleaseId = 'main-cafebabe012345';
+
+    function stageUnder({ home, rootDir, relativePath, source }) {
+      const target = join(rootDir, 'releases', canonReleaseId, relativePath);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, source, 'utf8');
+      writeCurrentRelease({ home, rootDir, releaseId: canonReleaseId });
+    }
+
+    for (const label of ['tilde', 'relative', 'absolute']) {
+      it(`JS + Python bridges resolve a ${label} MYELIN_DIR to the resolveMyelinRoot root`, () => {
+        const home = makeTempDir();
+        try {
+          const myelinDir = label === 'tilde' ? '~/managed-canon'
+            : label === 'relative' ? 'relative-managed-canon'
+            : join(home, 'absolute-managed-canon');
+          const resolvedRoot = resolveMyelinRoot({ home, env: { MYELIN_DIR: myelinDir } });
+          // tilde/relative must canonicalize against $HOME — never used verbatim.
+          if (label !== 'absolute') assert.notEqual(resolvedRoot, myelinDir);
+
+          const bridge = writeManagedRuntimeBridge({ home });
+          stageUnder({ home, rootDir: resolvedRoot, relativePath: 'src/cli/index.mjs', source: "console.log('CLI-CANON');\n" });
+          stageUnder({ home, rootDir: resolvedRoot, relativePath: 'src/mitm/copilot_addon.py', source: "print('MITM-CANON')\n" });
+
+          const env = { ...bridgeEnv(home), MYELIN_DIR: myelinDir };
+          const cli = spawnSync(process.execPath, [bridge.cliPath], { env, encoding: 'utf8' });
+          assert.equal(cli.status, 0, `cli stderr: ${cli.stderr}`);
+          assert.equal(cli.stdout, 'CLI-CANON\n');
+
+          const py = spawnSync(PYTHON, [bridge.mitmAddonPath], { env, encoding: 'utf8' });
+          assert.equal(py.status, 0, `py stderr: ${py.stderr}`);
+          assert.equal(normalizePythonStdout(py.stdout), 'MITM-CANON\n');
+        } finally {
+          rmSync(home, { recursive: true, force: true });
+        }
+      });
+    }
   });
 });
