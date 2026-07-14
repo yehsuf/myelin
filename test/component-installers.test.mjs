@@ -529,7 +529,7 @@ describe('staging and managed detection', () => {
       name: 'semble',
       component: COMPONENTS.semble,
       root: ROOT,
-      platform: 'linux',
+      platform: { os: 'linux', arch: 'x64' },
       fs,
       exec(file, args, options) {
         calls.push({ file, args, options });
@@ -573,7 +573,7 @@ describe('staging and managed detection', () => {
       name: 'tokenOptimizer',
       component: COMPONENTS.tokenOptimizer,
       root: ROOT,
-      platform: 'linux',
+      platform: { os: 'linux', arch: 'x64' },
       fs,
       exec(file, args, options) {
         trace.push(['exec', file, args, options]);
@@ -639,7 +639,7 @@ describe('staging and managed detection', () => {
       name: 'agentcairn',
       component: COMPONENTS.agentcairn,
       root: ROOT,
-      platform: 'linux',
+      platform: { os: 'linux', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
         return Buffer.from('cairn 0.23.0\n');
@@ -662,7 +662,7 @@ describe('staging and managed detection', () => {
       name: 'semble',
       component: COMPONENTS.semble,
       root: ROOT,
-      platform: 'linux',
+      platform: { os: 'linux', arch: 'x64' },
       exec() {
         return Buffer.from('semble 0.4.20\n');
       },
@@ -678,7 +678,7 @@ describe('staging and managed detection', () => {
       name: 'semble',
       component: COMPONENTS.semble,
       root: ROOT,
-      platform: 'linux',
+      platform: { os: 'linux', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
         return Buffer.from('0.4.2\n');
