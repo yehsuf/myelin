@@ -64,7 +64,7 @@ Immediately after the Standing rules list (before `## Technology`), insert:
 ```markdown
 ## Local development workspace
 - Layout: `~/myelin-agents/.bare/<repo>.git` (bare canonical) + `~/myelin-agents/<agent>/<repo>/` (per-agent worktree) + `~/myelin-agents/<agent>/scratch/`.
-- Create a worktree: `git -C ~/myelin-agents/.bare/<repo>.git worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
+- Create a worktree: `git --git-dir=~/myelin-agents/.bare/<repo>.git worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
 - Agent identity is the `<agent>` path segment (derived, no id file). See CLAUDE.md for full setup + the coordinated legacy-worktree retirement.
 ```
 
@@ -122,16 +122,16 @@ Layout (see `docs/superpowers/specs/2026-07-14-agent-workspace-model-design.md`)
 ```bash
 mkdir -p ~/myelin-agents/.bare
 git clone --bare git@github.com:yehsuf/myelin.git ~/myelin-agents/.bare/myelin.git
-git -C ~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
+git --git-dir=~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
     '+refs/heads/*:refs/remotes/origin/*'
-git -C ~/myelin-agents/.bare/myelin.git fetch origin
+git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
 ```
 
 ### Start a feature (per agent)
 
 ```bash
-git -C ~/myelin-agents/.bare/myelin.git fetch origin
-git -C ~/myelin-agents/.bare/myelin.git worktree add \
+git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
     ~/myelin-agents/<agent>/myelin -b <branch> origin/main
 cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
 ```
@@ -158,8 +158,8 @@ gh pr create --base main --head <branch>   # then ASK the human to approve the m
 ### Remove a worktree when done
 
 ```bash
-git -C ~/myelin-agents/.bare/myelin.git worktree remove ~/myelin-agents/<agent>/myelin
-git -C ~/myelin-agents/.bare/myelin.git worktree prune
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree remove ~/myelin-agents/<agent>/myelin
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree prune
 ```
 
 > Note: `myelin worktree …` is NOT a real command — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.

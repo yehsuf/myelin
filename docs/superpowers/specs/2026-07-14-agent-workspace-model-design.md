@@ -81,12 +81,12 @@ project (the bare repo); every agent's working tree is a view onto it.
 
 1. **Canonical repos are bare and untouched.** Never `cd` into `.bare/*.git` to
    do work. Its only jobs: hold objects/refs and spawn worktrees. Keep it synced
-   with `git -C ~/myelin-agents/.bare/<repo>.git fetch origin`.
+   with `git --git-dir=~/myelin-agents/.bare/<repo>.git fetch origin`.
 2. **Every agent works only inside its own workspace** `~/myelin-agents/<agent>/`.
    Never work in another agent's directory or in the canonical.
 3. **One worktree per branch per repo**, created off latest `origin/main`:
    ```
-   git -C ~/myelin-agents/.bare/myelin.git worktree add \
+   git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
        ~/myelin-agents/<agent>/myelin -b <branch> origin/main
    ```
    Reuse the agent's stable worktree path across branches where practical (keeps
@@ -182,11 +182,11 @@ Bootstrap a bare canonical + first agent worktree:
 ```bash
 mkdir -p ~/myelin-agents/.bare
 git clone --bare git@github.com:yehsuf/myelin.git ~/myelin-agents/.bare/myelin.git
-git -C ~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
+git --git-dir=~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
     '+refs/heads/*:refs/remotes/origin/*'
-git -C ~/myelin-agents/.bare/myelin.git fetch origin
+git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
 # add an agent worktree off origin/main
-git -C ~/myelin-agents/.bare/myelin.git worktree add \
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
     ~/myelin-agents/<agent>/myelin -b <branch> origin/main
 ```
 
