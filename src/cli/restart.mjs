@@ -1210,6 +1210,21 @@ export async function runRestart({
   const plan = buildEngineInstancePlanImpl(cfg);
   log('\n🔄 Restarting Myelin services...');
 
+  if (plan.engine === 'disabled') {
+    // Canonical compression disabled: run no engine service. Tear down any
+    // owned engine registrations (both engines, both roles) and start none.
+    for (const engine of ['headroom', 'headroom_lite']) {
+      const instances = ownedEngineRoleInstances(engine, ['primary', 'copilot'], home, cfg, warn);
+      for (const instance of instances) {
+        await removeEngineInstanceImpl(instance, { manager: winManager, home, warn });
+      }
+    }
+    await restartMitmImpl({ os, cfg, winManager, log, warn });
+    await restartWatchdogImpl({ os, cfg, plan, winManager, home, log, warn });
+    log();
+    return;
+  }
+
   const obsoleteEngine = plan.engine === 'headroom' ? 'headroom_lite' : 'headroom';
   const obsoleteInstances = ownedEngineRoleInstances(
     obsoleteEngine, ['primary', 'copilot'], home, cfg, warn,

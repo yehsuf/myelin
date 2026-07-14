@@ -666,6 +666,39 @@ export async function applyServiceEngineInstallPlan({
     os,
     defaultWindowsHomeImpl,
   });
+
+  // Canonical `compression.backend: disabled` (surfaced as plan engine
+  // 'disabled' by buildEngineInstancePlan) must never register an engine
+  // service. Tear down any owned engine registrations (both engines, both
+  // roles) and install nothing.
+  if (resolvedPlan.engine === 'disabled') {
+    if (!skipObsoleteCleanup) {
+      for (const engine of ['headroom', 'headroom_lite']) {
+        for (const role of ['primary', 'copilot']) {
+          const instance = ownedEngineRoleInstance(engine, role, home, cfg);
+          if (!instance) continue;
+          await removeEngineInstanceImpl(instance, {
+            manager: winManager,
+            home,
+            warn: warnFn,
+            includeLegacy: false,
+          });
+        }
+      }
+    }
+    const servicePlan = buildServiceEnginePlan(cfg);
+    return {
+      enginePlan: {
+        ...servicePlan,
+        engine: 'disabled',
+        instances: [],
+        selectedEngine: 'disabled',
+      },
+      persistHeadroomFallback: false,
+      selectedInstallEngine: 'disabled',
+      selectedProxyPort: servicePlan.selectedPort,
+    };
+  }
   const primary = resolvedPlan.instances?.find(({ role }) => role === 'primary');
   if (!primary) throw new Error('Engine instance plan must include a primary descriptor');
 
@@ -2327,9 +2360,9 @@ async function main() {
   // any stale entry mergeJsonFile previously wrote (mergeDeepPlain otherwise
   // never deletes keys — only overlays what's present in the update object).
   let codegraphReady = codegraphEnabled && tools.codegraph.installed;
-  let port = initialPrimaryInstance.port;
+  let port = initialPrimaryInstance?.port ?? null;
   let selectedInstallEngine = initialEnginePlan.engine;
-  let selectedProxyPort = initialPrimaryInstance.port;
+  let selectedProxyPort = initialPrimaryInstance?.port ?? null;
   if (initialEnginePlan.engine === 'headroom' && !(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {
@@ -2711,7 +2744,7 @@ async function main() {
       platform: resolveInstallComponentStoragePlatform(os),
     });
     const binPath = enginePlan.engine === 'headroom' ? headroomBinPath() : undefined;
-    const envVars = { HEADROOM_PORT: String(primaryInstance.port), ...sslEnv };
+    const envVars = { ...(primaryInstance ? { HEADROOM_PORT: String(primaryInstance.port) } : {}), ...sslEnv };
     const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
     const winManager = windowsServiceCfg.manager ?? 'registry';
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;

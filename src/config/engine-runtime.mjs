@@ -4,6 +4,19 @@ export function selectedEngine(config = {}) {
   return config?.proxy?.engine === 'headroom_lite' ? 'headroom_lite' : 'headroom';
 }
 
+/**
+ * Canonical `compression.backend: disabled` (the single source of truth, always
+ * populated by config/reader.mjs on load) means: run NO engine service. This is
+ * distinct from the softer legacy `proxy.compression.enabled: false`, which only
+ * disables MITM compression + the dedicated Copilot proxy while the primary
+ * engine keeps running. Keyed on the canonical field so raw proxy-only configs
+ * (which never carry a `compression` block) preserve the legacy primary-only
+ * behavior.
+ */
+export function isCompressionDisabled(config = {}) {
+  return config?.compression?.backend === 'disabled';
+}
+
 export function selectedEnginePort(config = {}) {
   return selectedEngine(config) === 'headroom_lite'
     ? (config?.proxy?.headroom_lite?.port ?? 8790)
@@ -14,6 +27,20 @@ export function buildServiceEnginePlan(config = {}) {
   const engine = selectedEngine(config);
   const headroomPort = config?.proxy?.headroom?.port ?? 8787;
   const headroomLitePort = config?.proxy?.headroom_lite?.port ?? 8790;
+
+  if (isCompressionDisabled(config)) {
+    return {
+      selectedEngine: 'disabled',
+      // Nominal port of the engine that WOULD run; kept valid so downstream
+      // MITM env stays a real number even though no engine service runs
+      // (compression is off, so the addon never calls this port).
+      selectedPort: engine === 'headroom_lite' ? headroomLitePort : headroomPort,
+      headroomPort,
+      headroomLitePort,
+      shouldRunManagedHeadroom: false,
+      shouldRemoveManagedHeadroom: true,
+    };
+  }
 
   return {
     selectedEngine: engine,
@@ -82,6 +109,9 @@ export function buildEngineInstancePlan(config = {}, {
   os = detectOS(),
   defaultWindowsHomeImpl = defaultWindowsHome,
 } = {}) {
+  if (isCompressionDisabled(config)) {
+    return { engine: 'disabled', instances: [] };
+  }
   const engine = selectedEngine(config);
   const descriptorHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
   const root = managedPaths({

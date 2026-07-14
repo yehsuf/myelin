@@ -16,29 +16,72 @@ function isPlainObject(value) {
 
 /**
  * Reconstructs the legacy `proxy.*` alias from a canonical `compression.*`
- * selection so downstream consumers that still read `proxy.engine` /
- * `proxy.headroom*` observe the same backend the user chose canonically.
+ * selection so the install/restart service lifecycle — which still reads
+ * `proxy.engine` / `proxy.headroom*` / `proxy.copilot_headroom` via
+ * `buildEngineInstancePlan` / `buildServiceEnginePlan` — observes exactly the
+ * backend, port, Copilot proxy, and `original.*` settings the user chose
+ * canonically.
  *
- * Only backend-selection flags are reconciled (engine + per-service `enabled`
- * + compression on/off). Ports and detailed `headroom.*` settings are left
- * untouched so they keep flowing proxy → compression via forward-derivation;
- * this preserves `myelin config set proxy.headroom.port <n>` and keeps the
- * whole derivation idempotent across write/read round-trips.
+ * This branch only fires when the user explicitly set `compression.backend`
+ * (canonical wins). The canonical block is projected onto the alias for the
+ * SELECTED engine: the single shared `compression.port` becomes that engine's
+ * port, `compression.copilot_proxy` becomes `proxy.copilot_headroom`, and
+ * `compression.original.*` becomes the classic `proxy.headroom.*` settings.
+ *
+ * A canonical value is only projected onto a legacy field when the user did
+ * NOT ALSO set that legacy field explicitly (`userProxy`): an explicit legacy
+ * value is treated as a deliberate per-key override and wins. This preserves
+ * `myelin config set proxy.headroom.port <n>` (and the analogous
+ * `headroom_lite.port` / `copilot_headroom.*`) round-trips, whose write path
+ * bakes the whole derived config — including a `compression.backend` — back to
+ * disk. When the user did NOT set `compression.backend` at all, the reader
+ * forward-derives `compression.*` from `proxy.*` instead (see
+ * `deriveCanonicalCompression`).
  */
-function proxyAliasFor(backend, compression) {
-  const copilotEnabled = compression.copilot_proxy?.enabled === true;
+function proxyAliasFor(backend, compression, userProxy = {}) {
+  const userHeadroom = isPlainObject(userProxy.headroom) ? userProxy.headroom : {};
+  const userLite = isPlainObject(userProxy.headroom_lite) ? userProxy.headroom_lite : {};
+  const userCopilot = isPlainObject(userProxy.copilot_headroom) ? userProxy.copilot_headroom : {};
+  const original = compression.original ?? {};
+
+  // Emit `field: value` from `canonicalValue` only when the user did not set
+  // the corresponding legacy key explicitly (then the legacy value wins).
+  const ifUnset = (userScope, key, canonicalValue) =>
+    (canonicalValue != null && !Object.hasOwn(userScope, key)) ? { [key]: canonicalValue } : {};
+
+  const copilotAlias = {
+    enabled: compression.copilot_proxy?.enabled === true,
+    ...ifUnset(userCopilot, 'port', compression.copilot_proxy?.port),
+    ...ifUnset(userCopilot, 'mode', original.mode),
+  };
   if (backend === 'disabled') {
     return {
       compression: { enabled: false },
-      copilot_headroom: { enabled: copilotEnabled },
+      copilot_headroom: copilotAlias,
+    };
+  }
+  if (backend === 'headroom-lite') {
+    return {
+      engine: 'headroom_lite',
+      compression: { enabled: true },
+      headroom: { enabled: false },
+      headroom_lite: { enabled: true, ...ifUnset(userLite, 'port', compression.port) },
+      copilot_headroom: copilotAlias,
     };
   }
   return {
-    engine: backend === 'headroom-lite' ? 'headroom_lite' : 'headroom',
+    engine: 'headroom',
     compression: { enabled: true },
-    headroom: { enabled: backend === 'headroom-original' },
-    headroom_lite: { enabled: backend === 'headroom-lite' },
-    copilot_headroom: { enabled: copilotEnabled },
+    headroom: {
+      enabled: true,
+      ...ifUnset(userHeadroom, 'port', compression.port),
+      ...ifUnset(userHeadroom, 'mode', original.mode),
+      ...ifUnset(userHeadroom, 'intercept_tool_results', original.intercept_tool_results),
+      ...ifUnset(userHeadroom, 'corporate_proxy', original.corporate_proxy),
+      ...ifUnset(userHeadroom, 'openai_target_url', original.openai_target_url),
+    },
+    headroom_lite: { enabled: false },
+    copilot_headroom: copilotAlias,
   };
 }
 
@@ -59,7 +102,8 @@ function deriveCanonicalCompression(merged, userConfig) {
       );
     }
     const compression = mergeDeep(DEFAULT_CONFIG.compression, userCompression);
-    return { compression, proxyOverride: proxyAliasFor(backend, compression) };
+    const userProxy = isPlainObject(userConfig.proxy) ? userConfig.proxy : {};
+    return { compression, proxyOverride: proxyAliasFor(backend, compression, userProxy) };
   }
 
   const proxy = merged.proxy ?? {};
