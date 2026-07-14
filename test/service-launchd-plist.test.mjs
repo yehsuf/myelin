@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { generateGenericPlist, writeValidatedPlist } from '../src/service/launchd.mjs';
+import { generateGenericPlist, writeValidatedPlist, generateLaunchdWatchdogScript } from '../src/service/launchd.mjs';
+import { posixSingleQuote } from '../src/shared/shell-quote.mjs';
+import { managedPaths, joinManaged } from '../src/shared/myelin-paths.mjs';
 
 describe('I8 launchd plist XML-escaping', () => {
   it('XML-escapes & < > and double-quotes in the log path (StandardOut/ErrorPath)', () => {
@@ -85,5 +87,41 @@ describe('I8 writeValidatedPlist (candidate -> lint -> atomic replace)', () => {
     }), /Refusing to install invalid plist/);
     assert.ok(!calls.some(([op]) => op === 'rename'), 'never renames a broken candidate over the healthy plist');
     assert.deepEqual(calls.at(-1), ['unlink', `${path}.candidate`], 'broken candidate is cleaned up');
+  });
+});
+
+describe('generateLaunchdWatchdogScript — managed-root injection safety', () => {
+  const EVIL_ROOT = "/srv/ev'il/$(touch pwned)/`whoami`/root";
+
+  function watchdogScript() {
+    return generateLaunchdWatchdogScript({
+      home: '/home/alice',
+      env: { MYELIN_DIR: EVIL_ROOT },
+      headroomPort: 8787,
+      mitmPort: 8888,
+    });
+  }
+
+  it('single-quote-escapes the MYELIN_DIR-derived watchdog.log path in the generated bash', () => {
+    const script = watchdogScript();
+    const root = managedPaths({ home: '/home/alice', env: { MYELIN_DIR: EVIL_ROOT } }).root;
+    const watchdogLog = joinManaged(root, 'watchdog.log');
+    // The redirect target is the exact POSIX single-quoted literal — verbatim, never expanded.
+    assert.ok(
+      script.includes(`>> ${posixSingleQuote(watchdogLog)}`),
+      `generated script should single-quote the watchdog log path:\n${script}`,
+    );
+  });
+
+  it('renders $()/backtick/quote in the root inert (no double-quoted, unexpanded redirect)', () => {
+    const script = watchdogScript();
+    const redirect = script.split('\n').find((l) => l.includes('watchdog.log'));
+    // Not the old double-quoted form that would command-substitute $(...) / backticks.
+    assert.ok(!script.includes('>> "/srv'), redirect);
+    assert.ok(!redirect.includes('>> "'), redirect);
+    // The payload is wrapped in single quotes, so bash treats it as opaque data.
+    assert.ok(redirect.includes(">> '/srv/ev'"), redirect);
+    // An embedded single quote is closed/escaped/reopened, never left able to break out.
+    assert.ok(redirect.includes(`'\\''`), redirect);
   });
 });

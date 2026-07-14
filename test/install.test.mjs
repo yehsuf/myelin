@@ -9,6 +9,7 @@ import {
   buildDownstreamProxyServiceInstallOptions,
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
+  buildHeadroomStopExec,
   ensureManagedHeadroomService,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
@@ -1180,5 +1181,33 @@ describe('stopLegacyManagedProxies (C1: no name-based process kill)', () => {
     } finally {
       rmSync(oldDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('buildHeadroomStopExec — MYELIN_DIR-derived headroomBin injection safety', () => {
+  const EVIL_BIN = "/evil/$(touch pwned)/`whoami`/'q'/root/venv/bin/headroom";
+
+  it('passes the managed headroom binary path as a literal argv element (never interpolated into the script)', () => {
+    const { file, args } = buildHeadroomStopExec({ port: 8787, headroomBin: EVIL_BIN });
+    assert.equal(file, '/bin/bash');
+    assert.equal(args[0], '-c');
+    // The bin path is a positional parameter ($1), passed as its own opaque argv slot.
+    assert.equal(args[3], EVIL_BIN, 'headroomBin is a literal, unmodified argv element');
+    assert.equal(args[4], '8787');
+    // The script itself references $1/$2 — it NEVER embeds the payload, so bash cannot expand it.
+    const script = args[1];
+    assert.ok(!script.includes('evil'), `script must not interpolate the bin path:\n${script}`);
+    assert.ok(!script.includes('$(touch'), script);
+    assert.ok(script.includes('bin="$1"') && script.includes('port="$2"'), script);
+  });
+
+  it('is inert against command substitution when actually executed (no side effect)', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const marker = join(process.cwd(), `_headroom_stop_pwn_${randomBytes(4).toString('hex')}`);
+    const bin = `/nope/$(touch ${marker})/headroom`;
+    const { file, args } = buildHeadroomStopExec({ port: 65531, headroomBin: bin });
+    try { execFileSync(file, args, { stdio: 'pipe' }); } catch { /* lsof/no match is fine */ }
+    const { existsSync } = await import('node:fs');
+    assert.ok(!existsSync(marker), 'command substitution in the bin path must NOT execute');
   });
 });

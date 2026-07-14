@@ -443,6 +443,40 @@ describe('runUpdate', () => {
 
     assert.match(consoleCapture.logs.join('\n'), /--python "\/home\/alice\/\.myelin\/venv"/);
   });
+
+  it('EXECUTES the headroom upgrade via an argument array — the MYELIN_DIR-derived venv is a literal argv element, never shell-parsed', async () => {
+    const consoleCapture = captureConsole();
+    const execFileCalls = [];
+    const execCalls = [];
+    const evilRoot = "/evil/$(touch pwned)/`whoami`/'q'/root";
+
+    await runUpdate(
+      {}, // not --check → actually run the upgrade
+      {
+        os: 'darwin',
+        home: '/home/alice',
+        env: { MYELIN_DIR: evilRoot },
+        detectAllFn: async () => ({ headroom: { installed: true, version: '1.0.0' } }),
+        execFileSyncFn: (file, args) => execFileCalls.push({ file, args }),
+        // A managed path must NEVER be handed to a shell string exec.
+        execSyncFn: (command) => execCalls.push(command),
+        log: consoleCapture.log,
+        warn: consoleCapture.warn,
+      },
+    );
+
+    assert.equal(execFileCalls.length, 1, 'headroom upgrade runs exactly one arg-array exec');
+    assert.equal(execFileCalls[0].file, 'uv');
+    assert.deepEqual(execFileCalls[0].args, [
+      'pip', 'install', '--python', `${evilRoot}/venv`, '--upgrade', 'headroom-ai[all]',
+    ]);
+    // The relocated venv is one opaque argv element — the $()/backtick/quote is inert data.
+    assert.equal(execFileCalls[0].args[3], `${evilRoot}/venv`);
+    assert.ok(
+      !execCalls.some((c) => typeof c === 'string' && /uv pip install/.test(c)),
+      'headroom upgrade must not be executed as a shell command string',
+    );
+  });
 });
 
 describe('installer runtime path safety', () => {

@@ -147,7 +147,7 @@ describe('runPs WSL script path', () => {
       nowImpl: () => 456,
       mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
       writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
-      execSyncImpl: (command) => operations.push({ type: 'exec', command }),
+      execFileSyncImpl: (file, args) => operations.push({ type: 'exec', file, args }),
       unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
     });
 
@@ -156,7 +156,7 @@ describe('runPs WSL script path', () => {
     assert.deepEqual(operations, [
       { type: 'mkdir', path: '/mnt/c/Users/alice/.myelin/state' },
       { type: 'write', path: mountedScript, content: 'Write-Host ready' },
-      { type: 'exec', command: `powershell.exe -ExecutionPolicy Bypass -File "${nativeScript}"` },
+      { type: 'exec', file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', nativeScript] },
       { type: 'unlink', path: mountedScript },
     ]);
   });
@@ -175,7 +175,7 @@ describe('runPs WSL script path', () => {
       nowImpl: () => 456,
       mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
       writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
-      execSyncImpl: (command) => operations.push({ type: 'exec', command }),
+      execFileSyncImpl: (file, args) => operations.push({ type: 'exec', file, args }),
       unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
     });
 
@@ -185,9 +185,43 @@ describe('runPs WSL script path', () => {
     assert.deepEqual(operations, [
       { type: 'mkdir', path: '/mnt/c/Myelin/state' },
       { type: 'write', path: '/mnt/c/Myelin/state/myelin-123-456.ps1', content: 'Write-Host ready' },
-      { type: 'exec', command: 'powershell.exe -ExecutionPolicy Bypass -File "C:\\Myelin\\state\\myelin-123-456.ps1"' },
+      { type: 'exec', file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Myelin\\state\\myelin-123-456.ps1'] },
       { type: 'unlink', path: '/mnt/c/Myelin/state/myelin-123-456.ps1' },
     ]);
+  });
+});
+
+describe('runPs managed-path injection safety (arg-array exec, no shell string)', () => {
+  it('passes a $()/quote/%VAR%-laden MYELIN_DIR script path as a literal -File argument, never a shell string', () => {
+    const ops = [];
+    const evilRoot = String.raw`C:\ev'il$(touch pwned)%TEMP%\m`;
+
+    runPs('Write-Host hi', {
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: evilRoot },
+      isWslImpl: () => false,
+      defaultWindowsHomeImpl: (h) => h,
+      powershellExe: 'powershell.exe',
+      processId: 7,
+      nowImpl: () => 9,
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      execFileSyncImpl: (file, args) => ops.push({ file, args }),
+      // A command STRING must NEVER be built for a managed path — fail loudly if runPs falls back to execSync.
+      execSyncImpl: (command) => assert.fail(`runPs must not build a shell command string: ${command}`),
+      unlinkSyncImpl: () => {},
+    });
+
+    assert.equal(ops.length, 1);
+    const { file, args } = ops[0];
+    assert.equal(file, 'powershell.exe');
+    const fileFlag = args.indexOf('-File');
+    assert.ok(fileFlag >= 0, 'invokes PowerShell via -File');
+    const scriptArg = args[fileFlag + 1];
+    // The whole injection payload survives as ONE opaque literal argv element.
+    assert.ok(scriptArg.includes("ev'il$(touch pwned)%TEMP%"), scriptArg);
+    // No argv element is a concatenated "powershell ... -File ..." command string.
+    assert.ok(!args.some((a) => /powershell/i.test(a)), 'no argv element is a shell command line');
   });
 });
 

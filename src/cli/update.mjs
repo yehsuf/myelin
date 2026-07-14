@@ -1,5 +1,5 @@
 import { detectAll } from '../detect/tools.mjs';
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { detectOS, powerShellExecutable } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -21,8 +21,18 @@ function upgradeCommands(os, { home = homedir(), env = process.env } = {}) {
   const venv = managedPaths({ home, env, platform: os }).venvPath;
   return {
     uv:       { upgrade: 'uv self update' },
-    // headroom installed via uv pip in venv, not uv tool
-    headroom: { upgrade: `uv pip install --python "${venv}" --upgrade "headroom-ai[all]"` },
+    // headroom installed via uv pip in venv, not uv tool. The managed venv path
+    // is MYELIN_DIR-derived (arbitrary user-supplied), so it is executed as an
+    // argument-array (never a shell string) — an arg element is not shell-parsed,
+    // so a `$(...)`/quote/space in the relocated root can never inject. `display`
+    // is a human-readable dry-run rendering only; it is never handed to a shell.
+    headroom: {
+      upgrade: {
+        file: 'uv',
+        args: ['pip', 'install', '--python', venv, '--upgrade', 'headroom-ai[all]'],
+        display: `uv pip install --python "${venv}" --upgrade "headroom-ai[all]"`,
+      },
+    },
     // serena installed via uv tool as 'serena-agent'
     // No --python flag on upgrade: reuse whatever Python is in the existing env.
     // --python 3.12 is only used on fresh install (install.mjs) to avoid the
@@ -184,6 +194,7 @@ export async function runUpdate(options = {}, deps = {}) {
   const os = deps.os ?? (deps.detectOSFn ?? detectOS)();
   const tools = await (deps.detectAllFn ?? detectAll)();
   const exec = deps.execSyncFn ?? execSync;
+  const execFile = deps.execFileSyncFn ?? execFileSync;
   const log = deps.log ?? console.log;
   const warn = deps.warn ?? console.warn;
   const cmds = upgradeCommands(os, { home, env });
@@ -200,7 +211,7 @@ export async function runUpdate(options = {}, deps = {}) {
     if (!check) {
       if (!cmd.upgrade) { log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
       if (os === 'windows') _stopForUpgrade(name, { home, env });
-      try { exec(cmd.upgrade, { stdio: 'inherit' }); log('    ✓ done'); }
+      try { runUpgrade(cmd.upgrade, { exec, execFile }); log('    ✓ done'); }
       catch (e) {
         const msg = e?.message ?? String(e);
         const isLocked = /os error (32|5)|Access is denied|cannot access the file/i.test(msg);
@@ -211,7 +222,7 @@ export async function runUpdate(options = {}, deps = {}) {
         }
       }
     } else {
-      log(`    → ${cmd.upgrade ?? '(manual)'}`);
+      log(`    → ${formatUpgradeForDisplay(cmd.upgrade)}`);
     }
   }
   log('─'.repeat(55));
@@ -219,6 +230,26 @@ export async function runUpdate(options = {}, deps = {}) {
     log('  Run without --check to apply updates.\n');
     log('  Run: myelin verify to confirm.\n');
   }
+}
+
+/**
+ * Run one tool's upgrade action. A plain STRING is a shell command (execSync);
+ * an `{ file, args }` object is an argument-array exec (execFileSync) — used when
+ * the command must embed a MYELIN_DIR-derived managed path (e.g. the venv), so
+ * the path is passed as a literal argument that is never shell-parsed.
+ */
+function runUpgrade(upgrade, { exec, execFile }) {
+  if (upgrade && typeof upgrade === 'object') {
+    return execFile(upgrade.file, upgrade.args, { stdio: 'inherit' });
+  }
+  return exec(upgrade, { stdio: 'inherit' });
+}
+
+/** Human-readable dry-run rendering of an upgrade action (never executed). */
+function formatUpgradeForDisplay(upgrade) {
+  if (!upgrade) return '(manual)';
+  if (typeof upgrade === 'object') return upgrade.display ?? [upgrade.file, ...upgrade.args].join(' ');
+  return upgrade;
 }
 
 export function runManagedInstaller({

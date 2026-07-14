@@ -1,7 +1,7 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, platform as osPlatform, arch as osArch } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
 import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
@@ -326,32 +326,86 @@ export function runRtkInit(args, { cwd, env } = {}) {
   return { ok: child.status === 0, status: child.status ?? 0, output, error: null };
 }
 
-async function tryGithubRelease() {
-  try {
-    const { platform, arch } = await import('node:os').then(m => ({ platform: m.platform(), arch: m.arch() }));
-    const res = await fetch('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
-    const data = await res.json();
-    const binDir = managedPaths({ home: homedir() }).binDir;
-    mkdirSync(binDir, { recursive: true });
+/**
+ * Build the argument-array exec plan for installing the RTK release binary. The
+ * MYELIN_DIR-derived `binDir` (and the release `url`) NEVER reach a shell string:
+ *   - POSIX: passed to `/bin/bash -c <script>` as POSITIONAL parameters ($1/$2),
+ *     so a `$(...)`/backtick/quote/space in the relocated bin dir is literal data.
+ *   - Windows: passed to PowerShell via the child ENV (`$env:*` reads a value as
+ *     a literal string, never code); execFileSync bypasses cmd.exe so no `%VAR%`
+ *     expansion applies either.
+ * Nothing is spliced into a shell/command string, so injection is impossible.
+ */
+export function buildRtkReleaseInstallPlan({ platform, binDir, url, powershellExe = 'powershell', baseEnv = process.env }) {
+  if (platform === 'win32') {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      '$zip = Join-Path $env:TEMP "rtk.zip"',
+      'Invoke-WebRequest $env:MYELIN_RTK_URL -OutFile $zip',
+      'Expand-Archive $zip -DestinationPath $env:MYELIN_RTK_BINDIR -Force',
+    ].join('; ');
+    return {
+      download: {
+        file: powershellExe,
+        args: ['-NoProfile', '-Command', script],
+        env: { ...baseEnv, MYELIN_RTK_URL: String(url), MYELIN_RTK_BINDIR: String(binDir) },
+      },
+      verify: null,
+    };
+  }
+  const script =
+    'set -e; url="$1"; dir="$2"; ' +
+    'curl -fsSL "$url" | tar -xz -C "$dir" && chmod +x "$dir/rtk"';
+  return {
+    download: {
+      file: '/bin/bash',
+      args: ['-c', script, 'myelin-rtk-install', String(url), String(binDir)],
+      env: baseEnv,
+    },
+    verify: {
+      file: 'rtk',
+      args: ['--version'],
+      env: { ...baseEnv, PATH: `${binDir}:${baseEnv.PATH ?? ''}` },
+    },
+  };
+}
 
+export async function tryGithubRelease({
+  fetchImpl = fetch,
+  home = homedir(),
+  platform = osPlatform(),
+  arch = osArch(),
+  mkdirSyncImpl = mkdirSync,
+  execFileSyncImpl = execFileSync,
+  env = process.env,
+  powershellExe = 'powershell',
+} = {}) {
+  try {
+    const res = await fetchImpl('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
+    const data = await res.json();
+    const binDir = managedPaths({ home }).binDir;
+    mkdirSyncImpl(binDir, { recursive: true });
+
+    let url;
     if (platform === 'win32') {
       const asset = data.assets?.find(a => a.name.includes('windows') && a.name.endsWith('.zip'));
       if (!asset) return false;
-      execSync(`powershell -Command "Invoke-WebRequest '${asset.browser_download_url}' -OutFile $env:TEMP\\rtk.zip; Expand-Archive $env:TEMP\\rtk.zip -DestinationPath '${binDir}' -Force"`, { stdio: 'inherit' });
-      return true;
-    }
-
-    if (platform === 'linux') {
+      url = asset.browser_download_url;
+    } else if (platform === 'linux') {
       const archStr = arch === 'arm64' ? 'aarch64' : 'x86_64';
       const asset = data.assets?.find(a => a.name.includes(archStr) && a.name.includes('linux') && a.name.endsWith('.tar.gz'));
       if (!asset) return false;
-      execSync(`curl -fsSL '${asset.browser_download_url}' | tar -xz -C '${binDir}' && chmod +x '${join(binDir, 'rtk')}'`, { shell: true, stdio: 'inherit' });
-      // Add to PATH if not already there
-      try { execSync(`export PATH="${binDir}:$PATH" && rtk --version`, { shell: true, stdio: 'pipe' }); } catch {}
-      return true;
+      url = asset.browser_download_url;
+    } else {
+      return false;
     }
 
-    return false;
+    const plan = buildRtkReleaseInstallPlan({ platform, binDir, url, powershellExe, baseEnv: env });
+    execFileSyncImpl(plan.download.file, plan.download.args, { stdio: 'inherit', env: plan.download.env });
+    if (plan.verify) {
+      try { execFileSyncImpl(plan.verify.file, plan.verify.args, { stdio: 'pipe', env: plan.verify.env }); } catch {}
+    }
+    return true;
   } catch {
     return false;
   }

@@ -1,10 +1,11 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
+import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
@@ -411,7 +412,7 @@ check_and_revive() {
   launchctl bootout "gui/$UID_N/$label" 2>/dev/null
   sleep 1
   launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null
-  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> "${watchdogLog}"
+  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> ${posixSingleQuote(watchdogLog)}
 }
 
 ${checks.join('\n')}
@@ -440,7 +441,7 @@ export function installWatchdog({ home, env = process.env, headroomPort, mitmPor
 
   const script = generateLaunchdWatchdogScript({ home, env, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
   writeFileSync(scriptPath, script, 'utf8');
-  execSync(`chmod +x "${scriptPath}"`);
+  chmodSync(scriptPath, 0o755);
 
   const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

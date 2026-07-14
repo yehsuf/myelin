@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -50,7 +50,7 @@ import {
 } from './service/windows.mjs';
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
 import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
 import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
@@ -575,7 +575,26 @@ export async function applyServiceEngineInstallPlan({
   };
 }
 
-async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
+/**
+ * Build the argument-array exec that stops ONLY a managed-root Headroom process
+ * listening on `port`. The MYELIN_DIR-derived `headroomBin` and the `port` are
+ * passed to `bash` as POSITIONAL PARAMETERS ($1/$2), never string-interpolated
+ * into the script, so a `$(...)`/backtick/quote/space in the relocated binary
+ * path is treated as literal data and can never be shell-executed. The `case`
+ * quotes `"$bin"` so glob metacharacters in the path match literally too.
+ */
+export function buildHeadroomStopExec({ port, headroomBin }) {
+  const script =
+    'bin="$1"; port="$2"; ' +
+    'pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null); ' +
+    'for pid in $pids; do ' +
+    'cmd=$(ps -p "$pid" -o command=); ' +
+    'case "$cmd" in *"$bin"*"proxy --port $port"*) kill -9 "$pid" ;; esac; ' +
+    'done';
+  return { file: '/bin/bash', args: ['-c', script, 'myelin-headroom-stop', String(headroomBin), String(port)] };
+}
+
+async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin, execFileSyncImpl = execFileSync }) {
   if (os === 'windows') {
     try {
       const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
@@ -585,8 +604,8 @@ async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin
   }
 
   try {
-    const command = `pids=$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null); for pid in $pids; do cmd=$(ps -p "$pid" -o command=); case "$cmd" in *"${headroomBin}"*"proxy --port ${port}"*) kill -9 "$pid" ;; esac; done`;
-    execSync(command, { stdio: 'pipe', shell: '/bin/bash' });
+    const { file, args } = buildHeadroomStopExec({ port, headroomBin });
+    execFileSyncImpl(file, args, { stdio: 'pipe' });
   } catch {}
 }
 
@@ -1206,7 +1225,7 @@ while [ "$dir" != "/" ]; do
 done
 exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
 `, 'utf8');
-  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  try { chmodSync(sh, 0o755); } catch {}
   return sh;
 }
 
@@ -1247,7 +1266,7 @@ done
 cd "$dir" || exit 1
 exec "${codegraphBin}" mcp "$@"
 `, 'utf8');
-  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  try { chmodSync(sh, 0o755); } catch {}
   return sh;
 }
 

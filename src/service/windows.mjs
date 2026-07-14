@@ -161,6 +161,7 @@ export function runPs(script, {
   mkdirSyncImpl = mkdirSync,
   writeFileSyncImpl = writeFileSync,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   unlinkSyncImpl = unlinkSync,
 } = {}) {
   const wsl = isWslImpl();
@@ -178,7 +179,14 @@ export function runPs(script, {
   mkdirSyncImpl(stateDir, { recursive: true });
   writeFileSyncImpl(tmp, script, 'utf8');
   try {
-    execSyncImpl(withPowerShell(`-ExecutionPolicy Bypass -File "${powershellScriptPath}"`, powershellExe), { stdio });
+    // Arg-array exec (never a command STRING): the MYELIN_DIR-derived managed
+    // script path is a literal `-File` argument, so neither PowerShell/shell
+    // parsing nor cmd.exe %VAR% expansion is ever applied to it.
+    execFileSyncImpl(
+      powershellExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', powershellScriptPath],
+      { stdio },
+    );
   } finally {
     try { unlinkSyncImpl(tmp); } catch {}
   }

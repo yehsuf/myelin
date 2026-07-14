@@ -243,9 +243,39 @@ export function generateCopilotHeadroomUnit(opts = {}) {
   });
 }
 
+/**
+ * Reject a value destined for a raw (unquoted) systemd directive body when it
+ * carries a control character. A newline/CR in a MYELIN_DIR-derived
+ * WorkingDirectory/StandardOutput/StandardError/ExecStart path would start a NEW
+ * unit line — injecting arbitrary directives that sail past
+ * {@link validateSystemdUnit} (its quote-balance check treats a newline as a
+ * plain line break). The whole C0 range + DEL have no legitimate place in a
+ * service path, so throw before the unit is ever rendered.
+ * @param {unknown} value
+ * @param {string} label
+ */
+function assertNoSystemdControlChars(value, label) {
+  const str = String(value ?? '');
+  const match = /[\u0000-\u001F\u007F]/u.exec(str);
+  if (match) {
+    const code = match[0].charCodeAt(0).toString(16).padStart(2, '0');
+    throw new Error(
+      `Refusing to render systemd unit: ${label} contains control character U+00${code.toUpperCase()} `
+      + `(newline/CR/etc.) that could inject unit directives: ${JSON.stringify(str)}`,
+    );
+  }
+}
+
 export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
+  // Guard every value spliced into a raw directive body (WorkingDirectory,
+  // StandardOutput/Error, ExecStart tokens). A newline in the managed root would
+  // otherwise inject directives that pass validateSystemdUnit's quote-balance.
+  assertNoSystemdControlChars(instance.stateDir, 'WorkingDirectory');
+  assertNoSystemdControlChars(instance.logPath, 'StandardOutput/StandardError path');
+  assertNoSystemdControlChars(command.executable, 'ExecStart executable');
+  command.args.forEach((arg, i) => assertNoSystemdControlChars(arg, `ExecStart argument[${i}]`));
   const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
   const envLines = systemdEnvironmentLines(mergedEnv);
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });

@@ -136,3 +136,48 @@ describe('I7 validateSystemdUnit', () => {
     assert.equal(validateSystemdUnit(ok), ok);
   });
 });
+
+describe('I7 systemd control-char guard (newline directive-injection defense)', () => {
+  it('throws when the managed root injects a newline into WorkingDirectory (before rendering)', () => {
+    const instance = headroomInstance({
+      stateDir: '/srv/managed/state\nExecStart=/bin/evil',
+    });
+    assert.throws(
+      () => generateEngineInstanceUnit({ instance, ...ENGINE_BINS }),
+      /control character U\+000A[\s\S]*WorkingDirectory|WorkingDirectory[\s\S]*control character U\+000A/,
+    );
+  });
+
+  it('throws on a carriage-return in the log path (Standard{Out,Error})', () => {
+    const instance = headroomInstance({ logPath: '/srv/managed/h.log\rRestart=no' });
+    assert.throws(
+      () => generateEngineInstanceUnit({ instance, ...ENGINE_BINS }),
+      /control character U\+000D/,
+    );
+  });
+
+  it('throws on a newline in the ExecStart executable (headroomBin)', () => {
+    const instance = headroomInstance();
+    assert.throws(
+      () => generateEngineInstanceUnit({ instance, headroomBin: '/opt/bin/headroom\nExecStartPre=/bin/evil' }),
+      /control character/,
+    );
+  });
+
+  it('a newline-injected root would otherwise SNEAK PAST validateSystemdUnit — proving the guard is load-bearing', () => {
+    // Demonstrate the bypass the guard closes: a newline passes the quote-balance check.
+    const bypass = [
+      '[Service]',
+      'WorkingDirectory=/srv/managed/state',
+      'ExecStart=/bin/evil --owned',
+      'Restart=always',
+    ].join('\n');
+    assert.equal(validateSystemdUnit(bypass), bypass); // quote-balance alone does NOT catch it
+  });
+
+  it('still renders a normal (control-char-free) managed root unchanged', () => {
+    const unit = generateEngineInstanceUnit({ instance: headroomInstance(), ...ENGINE_BINS });
+    assert.ok(unit.includes('WorkingDirectory=/srv/managed/state/headroom-primary'));
+    assert.ok(unit.includes('ExecStart=/opt/myelin/bin/headroom proxy --port 8787'));
+  });
+});
