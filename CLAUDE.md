@@ -108,6 +108,26 @@ git --git-dir=~/myelin-agents/.bare/myelin.git worktree remove ~/myelin-agents/<
 git --git-dir=~/myelin-agents/.bare/myelin.git worktree prune
 ```
 
+### Retiring the legacy `~/tokenstack-wt-*` worktrees (coordinated — NOT unilateral)
+
+The old scattered worktrees are being actively used by other agents. Retire them safely:
+
+1. **Never** remove a worktree with uncommitted work or a live agent. Check first:
+   ```bash
+   for w in ~/tokenstack-wt-*; do
+     printf '%s  dirty=%s  last=%s\n' "$w" \
+       "$(git -C "$w" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" \
+       "$(git -C "$w" log -1 --format=%cr 2>/dev/null)"
+   done
+   ```
+2. For each worktree whose agent has finished AND `dirty=0` AND its PR is landed/abandoned:
+   ```bash
+   git -C /Users/ysufrin/tokenstack worktree remove <path>
+   git -C /Users/ysufrin/tokenstack worktree prune
+   ```
+3. New work uses `~/myelin-agents/` immediately; the human's `~/tokenstack` + `~/Work/headroom-lite` stay as-is.
+4. Safe-anytime cleanups (with the human's OK): delete `~/tokenstack-scratch-backup-*` once confirmed unneeded, and remove the empty legacy `~/tokenstack-worktrees/` dir.
+
 > Note: the old helper command is NOT real — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.
 
 ---
