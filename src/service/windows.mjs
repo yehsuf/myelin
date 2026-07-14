@@ -7,6 +7,7 @@ import { installWinsw, winswFilesystemPath } from '../tools/winsw.mjs';
 import { powerShellExecutable } from '../detect/os.mjs';
 import { isWsl } from '../detect/wsl.mjs';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
+import { managedPaths, joinManaged, resolveMyelinRoot } from '../shared/myelin-paths.mjs';
 
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const HEADROOM_KEY = 'MyelinHeadroom';
@@ -113,13 +114,15 @@ function legacyEngineInstance({
   envVars = {},
   logPath,
   home,
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const winHome = defaultWindowsHome(home);
+  const root = managedPaths({ home: winHome, env, platform: 'windows' }).root;
   const id = `${engine}-${role}`;
   const stateDir = role === 'primary'
-    ? winswServiceDir({ id: HEADROOM_SERVICE_ID, home: winHome })
-    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+    ? winswServiceDir({ id: HEADROOM_SERVICE_ID, home: winHome, env })
+    : joinManaged(root, 'copilot-headroom');
   return {
     engine,
     role,
@@ -127,7 +130,7 @@ function legacyEngineInstance({
     id,
     legacy: true,
     stateDir,
-    logPath: logPath ?? pathWin32.join(winHome, '.myelin', `${id}.log`),
+    logPath: logPath ?? joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -150,6 +153,7 @@ export function runPs(script, {
   stdio = 'pipe',
   powershellExe = powerShellExecutable(),
   home = homedir(),
+  env = process.env,
   isWslImpl = isWsl,
   defaultWindowsHomeImpl = defaultWindowsHome,
   processId = process.pid,
@@ -161,9 +165,12 @@ export function runPs(script, {
 } = {}) {
   const wsl = isWslImpl();
   const windowsHome = defaultWindowsHomeImpl(home);
-  const nativeStateDir = isWindowsAbsolutePath(windowsHome)
-    ? pathWin32.join(windowsHome, '.myelin', 'state')
-    : join(home, '.myelin', 'state');
+  const managedStateDir = managedPaths({
+    home: windowsHome,
+    env,
+    platform: 'windows',
+  }).serviceStatePath;
+  const nativeStateDir = normalizeWindowsFilesystemPath(managedStateDir, { rejectPosix: true });
   const stateDir = wsl ? winswFilesystemPathFor(nativeStateDir, { isWslImpl }) : nativeStateDir;
   const filename = `myelin-${processId}-${nowImpl()}.ps1`;
   const tmp = wsl ? pathPosix.join(stateDir, filename) : join(stateDir, filename);
@@ -286,9 +293,10 @@ exit 1`;
   );
 }
 
-function findWindowsHeadroom(serviceHome, execFileSyncImpl) {
-  const expectedPath = isNativeWindowsPath(serviceHome)
-    ? pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')
+function findWindowsHeadroom(serviceHome, execFileSyncImpl, env = process.env) {
+  const root = managedPaths({ home: serviceHome, env, platform: 'windows' }).root;
+  const expectedPath = isNativeWindowsPath(root)
+    ? joinManaged(root, 'venv', 'Scripts', 'headroom.exe')
     : null;
   const script = expectedPath
     ? `$path = ${psQuote(expectedPath)}
@@ -298,7 +306,9 @@ if (Test-Path -LiteralPath $path -PathType Leaf) {
 }
 exit 1`
     : `$home = [Environment]::GetFolderPath('UserProfile')
-$path = Join-Path $home '.myelin\\venv\\Scripts\\headroom.exe'
+$root = [Environment]::GetEnvironmentVariable('MYELIN_DIR', 'User')
+if (-not $root -or -not $root.Trim()) { $root = Join-Path $home '.myelin' }
+$path = Join-Path $root 'venv\\Scripts\\headroom.exe'
 if (Test-Path -LiteralPath $path -PathType Leaf) {
   [Console]::Out.Write($path)
   exit 0
@@ -317,6 +327,7 @@ export function resolveWindowsServiceExecutable({
   serviceHome,
   servicePlatform,
   wsl,
+  env = process.env,
 } = {}, {
   execFileSyncImpl = nodeExecFileSync,
 } = {}) {
@@ -351,7 +362,7 @@ export function resolveWindowsServiceExecutable({
   try {
     const resolved = engine === 'headroom_lite'
       ? findWindowsHeadroomLite(execFileSyncImpl)
-      : findWindowsHeadroom(serviceHome, execFileSyncImpl);
+      : findWindowsHeadroom(serviceHome, execFileSyncImpl, env);
     if (isNativeWindowsPath(resolved) && isRunnableWindowsExecutable(engine, resolved)) {
       return normalizeWindowsFilesystemPath(resolved);
     }
@@ -361,7 +372,7 @@ export function resolveWindowsServiceExecutable({
     ? 'Install headroom-lite.cmd or headroom-lite.exe in the Windows user PATH.'
     : `Install headroom-ai in the Windows Myelin venv${
       isNativeWindowsPath(serviceHome)
-        ? ` at ${pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')}`
+        ? ` at ${joinManaged(managedPaths({ home: serviceHome, env, platform: 'windows' }).root, 'venv', 'Scripts', 'headroom.exe')}`
         : ''
     }.`;
   throw new Error(`Unable to resolve a Windows-service executable for ${engine} from WSL. ${detail}`);
@@ -427,15 +438,22 @@ export function defaultWindowsHome(
   return windowsPath(wsl ? wslMountToWindowsPath(resolvedHome) : resolvedHome);
 }
 
-function defaultServiceEnv({ home, envVars = {} } = {}) {
+export function withForwardedMyelinDir(envVars = {}, env = process.env) {
+  const myelinDir = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim()
+    ? normalizeWindowsFilesystemPath(env.MYELIN_DIR, { rejectPosix: true })
+    : undefined;
+  return myelinDir ? { MYELIN_DIR: myelinDir, ...envVars } : { ...envVars };
+}
+
+function defaultServiceEnv({ home, env = process.env, envVars = {} } = {}) {
   const winHome = defaultWindowsHome(home);
-  return {
+  return withForwardedMyelinDir({
     HOME: winHome,
     USERPROFILE: winHome,
     APPDATA: pathWin32.join(winHome, 'AppData', 'Roaming'),
     LOCALAPPDATA: pathWin32.join(winHome, 'AppData', 'Local'),
     ...envVars,
-  };
+  }, env);
 }
 
 function quoteWindowsArgument(value = '') {
@@ -487,8 +505,8 @@ function legacyRunKeyForService(id) {
   return null;
 }
 
-function winswLogDir({ id, home, logPath } = {}) {
-  if (!logPath) return pathWin32.join(winswServiceDir({ id, home }), 'logs');
+function winswLogDir({ id, home, logPath, env = process.env } = {}) {
+  if (!logPath) return joinManaged(winswServiceDir({ id, home, env }), 'logs');
   const normalized = windowsPath(logPath);
   return pathWin32.extname(normalized) ? pathWin32.dirname(normalized) : normalized;
 }
@@ -547,19 +565,19 @@ function portFromArgString(argStr = '') {
 }
 
 export function managedHeadroomLauncherPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
+  return joinManaged(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
 }
 
 export function managedHeadroomPidPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
+  return joinManaged(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
 }
 
 export function managedMitmLauncherPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'start-mitmproxy.ps1');
+  return joinManaged(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'start-mitmproxy.ps1');
 }
 
 export function managedMitmPidPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
+  return joinManaged(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
 }
 
 export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath, launcherPath } = {}) {
@@ -763,16 +781,20 @@ export function stopHeadroomProcessByExecutablePath({
   execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
 }
 
-export function winswServiceDir({ id, home } = {}) {
-  return pathWin32.join(defaultWindowsHome(home), '.myelin', 'services', id);
+export function winswServiceDir({ id, home, env = process.env } = {}) {
+  return joinManaged(resolveMyelinRoot({
+    home: defaultWindowsHome(home),
+    env,
+    platform: 'windows',
+  }), 'services', id);
 }
 
-export function winswExecutablePath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), `${id}.exe`);
+export function winswExecutablePath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), `${id}.exe`);
 }
 
-export function winswConfigPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), `${id}.xml`);
+export function winswConfigPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), `${id}.xml`);
 }
 
 export function windowsWatchdogTaskName({ id }) {
@@ -786,12 +808,12 @@ export function windowsWatchdogTaskName({ id }) {
   return `Myelin ${title} Watchdog`;
 }
 
-function winswWatchdogScriptPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.ps1');
+function winswWatchdogScriptPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), 'watchdog.ps1');
 }
 
-function winswWatchdogLogPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.log');
+function winswWatchdogLogPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), 'watchdog.log');
 }
 
 export function generateWinswConfigXml({
@@ -929,6 +951,7 @@ export async function installWinswService({
   logPath,
   workingDirectory,
   home,
+  env = process.env,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
   isWslImpl = isWsl,
@@ -940,10 +963,10 @@ export async function installWinswService({
   runPsFn = runPs,
 }) {
   const winHome = defaultWindowsHome(home);
-  const serviceDir = winswServiceDir({ id, home: winHome });
-  const serviceExePath = winswExecutablePath({ id, home: winHome });
-  const configPath = winswConfigPath({ id, home: winHome });
-  const logDir = winswLogDir({ id, home: winHome, logPath });
+  const serviceDir = winswServiceDir({ id, home: winHome, env });
+  const serviceExePath = winswExecutablePath({ id, home: winHome, env });
+  const configPath = winswConfigPath({ id, home: winHome, env });
+  const logDir = winswLogDir({ id, home: winHome, logPath, env });
   const legacyRunKey = legacyRunKeyForService(id);
   const serviceFilesystemDir = winswFilesystemPathFor(serviceDir, { isWslImpl });
   const serviceFilesystemExePath = winswFilesystemPathFor(serviceExePath, { isWslImpl });
@@ -959,7 +982,7 @@ export async function installWinswService({
     } catch {}
   }
 
-  const winsw = await installWinswImpl({ home: winHome, wsl: isWslImpl() });
+  const winsw = await installWinswImpl({ home: winHome, env, wsl: isWslImpl() });
   copyFileSyncImpl(
     winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl }),
     serviceFilesystemExePath,
@@ -971,9 +994,9 @@ export async function installWinswService({
     description,
     executable: windowsPath(executable),
     arguments: serviceArguments,
-    logPath: windowsPath(logDir),
+    logPath: logDir,
     workingDirectory: workingDirectory ? windowsPath(workingDirectory) : undefined,
-    envVars: defaultServiceEnv({ home: winHome, envVars }),
+    envVars: defaultServiceEnv({ home: winHome, env, envVars }),
     onFailureDelays,
     resetFailure,
   });
@@ -1236,7 +1259,7 @@ Write-Host "[myelin] ${paths.name} started (hidden)"
 `;
 }
 
-export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, ...options }) {
+export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, env = process.env, ...options }) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
   const launch = commandForWindowsExecutable(
@@ -1253,6 +1276,7 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
     workingDirectory: normalizeWindowsFilesystemPath(instance.stateDir),
     envVars: defaultServiceEnv({
       home,
+      env,
       envVars: { ...command.env, ...envVars, ...instance.env },
     }),
   });
@@ -1262,6 +1286,7 @@ export async function installEngineInstance(instance, {
   manager = 'registry',
   envVars = {},
   home,
+  env = process.env,
   runPsFn = runPs,
   ...options
 } = {}) {
@@ -1271,9 +1296,9 @@ export async function installEngineInstance(instance, {
     normalizeWindowsFilesystemPath(command.executable),
     command.arguments,
   );
-  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
+  const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
   if (manager !== 'winsw') {
-    runPsFn(generateEngineInstanceRunScript({ instance, envVars, ...options }), { home });
+    runPsFn(generateEngineInstanceRunScript({ instance, envVars: mergedEnv, ...options }), { home, env });
     return { ok: true, manager: 'registry', id: identity.id };
   }
   return installWinswService({
@@ -1286,6 +1311,7 @@ export async function installEngineInstance(instance, {
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
     home,
+    env,
   });
 }
 
@@ -1979,7 +2005,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, t
   // We write a .bat launcher that sets the vars before starting the exe,
   // then use that .bat as the scheduled task action — simple and debuggable.
   const hasTaskEnv = Object.keys(taskEnv).length > 0;
-  const stateDir = join(homedir(), '.myelin', 'state');
+  const stateDir = managedPaths({ home: homedir() }).serviceStatePath;
   const launcherBat = join(stateDir, `${safeName}-launcher.bat`);
   const safeLauncher = escapePs(launcherBat);
 
@@ -2226,9 +2252,10 @@ export function removeMitmService({
   return removed || manager === 'registry';
 }
 
-export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort, manager = 'registry' }) {
+export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry' }) {
+  const persistedEnv = withForwardedMyelinDir(envVars, env);
   if (manager !== 'winsw') {
-    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort, home }), { home });
+    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, home }), { home, env });
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
@@ -2236,10 +2263,11 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
     name: 'Myelin Mitmproxy',
     description: 'Myelin mitmproxy LLM compression proxy',
     executable: mitmdumpBin,
-    arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars, egressPort, upstreamProxy }),
-    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
+    arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, upstreamProxy }),
+    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
     logPath,
     home,
+    env,
   });
 }
 

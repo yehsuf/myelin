@@ -1,5 +1,5 @@
 import { detectAll } from '../detect/tools.mjs';
-import { execFileSync, execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { detectOS } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -7,9 +7,17 @@ import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
 import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
 import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
+import { stageMainRuntime } from '../runtime/stage-main.mjs';
+import { writeManagedLauncher } from '../runtime/launcher.mjs';
+import { managedPaths } from '../shared/myelin-paths.mjs';
 
-function upgradeCommands(os) {
-  const venv = join(homedir(), '.myelin', 'venv');
+const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
+
+function upgradeCommands(os, { home = homedir(), env = process.env } = {}) {
+  // Resolve the managed venv through managedPaths so a relocated MYELIN_DIR is
+  // honored — headroom lives in the managed root's venv, not a hardcoded
+  // ~/.myelin/venv.
+  const venv = managedPaths({ home, env, platform: os }).venvPath;
   return {
     uv:       { upgrade: 'uv self update' },
     // headroom installed via uv pip in venv, not uv tool
@@ -53,35 +61,8 @@ export function _stopForUpgrade(name, execSyncFn = execSync) {
   } catch {}
 }
 
-export function isRepoDirty(repoDir) {
-  const status = execFileSync('git', ['status', '--porcelain'], { cwd: repoDir, stdio: 'pipe' }).toString();
-  return status
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .filter(line => {
-      const path = line.slice(3).replace(/^"|"$/g, '').replace(/\\/g, '/');
-      return path !== '.serena' && !path.startsWith('.serena/');
-    })
-    .join('\n')
-    .trim();
-}
-
 function repoDirFromMetaUrl(metaUrl = import.meta.url) {
   return join(dirname(fileURLToPath(metaUrl)), '..', '..');
-}
-
-export function checkSelfUpdateWorkingTree({ repoDir, force = false, warn = console.warn, isRepoDirtyFn = isRepoDirty } = {}) {
-  const dirty = isRepoDirtyFn(repoDir);
-  if (!dirty) return { dirty: false, bypassed: false, aborted: false };
-  if (!force) {
-    warn('  ✗ Uncommitted changes present — aborting self-update to avoid data loss.');
-    warn('    Commit or stash your changes, then re-run: myelin update --self');
-    warn('    Or bypass this check: myelin update --self --force\n');
-    return { dirty: true, bypassed: false, aborted: true };
-  }
-  warn('  ⚠ Uncommitted changes present but --force specified — proceeding anyway.');
-  warn('    Your local changes will NOT be touched by the update itself if git can fast-forward safely; review git status afterward.\n');
-  return { dirty: true, bypassed: true, aborted: false };
 }
 
 export async function checkStaleConfigKeys({
@@ -102,95 +83,79 @@ export async function checkStaleConfigKeys({
   return { exists: true, staleKeys };
 }
 
-export async function runUpdate(options = {}) {
+export async function runUpdate(options = {}, deps = {}) {
   const { check = false } = options;
-  const os = detectOS();
-  const tools = await detectAll();
-  const cmds = upgradeCommands(os);
+  const home = deps.home ?? homedir();
+  const env = deps.env ?? process.env;
+  const os = deps.os ?? (deps.detectOSFn ?? detectOS)();
+  const tools = await (deps.detectAllFn ?? detectAll)();
+  const exec = deps.execSyncFn ?? execSync;
+  const log = deps.log ?? console.log;
+  const warn = deps.warn ?? console.warn;
+  const cmds = upgradeCommands(os, { home, env });
   const repoDir = repoDirFromMetaUrl();
   const installerCmd = `node "${join(repoDir, 'src', 'install.mjs')}" --yes`;
-  console.log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
+  log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);
   for (const [name, r] of Object.entries(tools)) {
     const cmd = cmds[name];
     if (!cmd) continue;
     const icon = r.installed ? '↑' : '+';
     const label = name === 'headroom' ? 'headroom proxy' : name;
     const status = r.installed ? `${r.version ?? 'installed'}` : 'not installed';
-    console.log(`  ${icon} ${label.padEnd(14)} ${status}`);
+    log(`  ${icon} ${label.padEnd(14)} ${status}`);
     if (!check) {
-      if (!cmd.upgrade) { console.log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
+      if (!cmd.upgrade) { log(`    · no auto-update — reinstall: ${installerCmd}`); continue; }
       if (os === 'windows') _stopForUpgrade(name);
-      try { execSync(cmd.upgrade, { stdio: 'inherit' }); console.log('    ✓ done'); }
+      try { exec(cmd.upgrade, { stdio: 'inherit' }); log('    ✓ done'); }
       catch (e) {
         const msg = e?.message ?? String(e);
         const isLocked = /os error (32|5)|Access is denied|cannot access the file/i.test(msg);
         if (os === 'windows' && isLocked) {
-          console.warn('    ✗ failed: file locked — close Claude Code / Copilot sessions and re-run: myelin update');
+          warn('    ✗ failed: file locked — close Claude Code / Copilot sessions and re-run: myelin update');
         } else {
-          console.warn(`    ✗ failed: ${msg.split('\n')[0]}`);
+          warn(`    ✗ failed: ${msg.split('\n')[0]}`);
         }
       }
     } else {
-      console.log(`    → ${cmd.upgrade ?? '(manual)'}`);
+      log(`    → ${cmd.upgrade ?? '(manual)'}`);
     }
   }
-  console.log('─'.repeat(55));
-  if (check) console.log('  Run without --check to apply updates.\n');
+  log('─'.repeat(55));
+  if (check) log('  Run without --check to apply updates.\n');
   if (!check) {
-    const { runRestart } = await import('./restart.mjs');
-    await runRestart();
+    const runRestartFn = deps.runRestartFn ?? (async () => {
+      const { runRestart } = await import('./restart.mjs');
+      return runRestart();
+    });
+    await runRestartFn();
   }
-  else console.log('  Run: myelin verify to confirm.\n');
+  else log('  Run: myelin verify to confirm.\n');
 }
 
 export async function runSelfUpdate(options = {}, deps = {}) {
-  const { force = false } = options;
-  const exec = deps.execSync ?? execSync;
   const log = deps.log ?? console.log;
   const warn = deps.warn ?? console.warn;
-  const repoDir = deps.repoDir ?? repoDirFromMetaUrl();
-  const staleConfigChecker = deps.checkStaleConfigKeysFn ?? checkStaleConfigKeys;
+  const home = deps.home ?? homedir();
+  const os = deps.os ?? detectOS();
+  const repoUrl = deps.repoUrl ?? MANAGED_MAIN_REPO_URL;
+  const stageMainRuntimeFn = deps.stageMainRuntimeFn ?? stageMainRuntime;
+  const writeManagedLauncherFn = deps.writeManagedLauncherFn ?? writeManagedLauncher;
 
   log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
   try {
-    const workingTree = checkSelfUpdateWorkingTree({ repoDir, force, warn });
-    if (workingTree.aborted) return { status: 'aborted-dirty', ...workingTree };
-
-    const current = exec('git rev-parse --short HEAD', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
-    exec('git fetch origin', { cwd: repoDir, stdio: 'pipe' });
-    const latest = exec('git rev-parse --short origin/main', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
-    if (current === latest) {
-      log(`  ✓ Already up to date (${current})\n`);
-      return { status: 'up-to-date', current, latest, ...workingTree };
-    }
-
-    // Safety gate 2: refuse to discard unpushed local commits.
-    const unpushed = exec('git log origin/main..HEAD --oneline', { cwd: repoDir, stdio: 'pipe' }).toString().trim();
-    if (unpushed) {
-      warn('  ✗ Local commits not on origin/main would be lost — aborting self-update:');
-      unpushed.split('\n').forEach(l => warn(`      ${l}`));
-      warn('    Push these commits first, then re-run: myelin update --self\n');
-      return { status: 'aborted-unpushed', current, latest, ...workingTree };
-    }
-
-    log(`  Updating ${current} → ${latest}...`);
-    // Fast-forward only — never force-discard history. Fails safely if diverged.
-    exec('git merge --ff-only origin/main', { cwd: repoDir, stdio: 'pipe' });
-    exec('npm install --registry https://registry.npmjs.org', { cwd: repoDir, stdio: 'pipe' });
-    log(`  ✓ Updated to ${latest}`);
-    // Re-run installer to apply config changes (service files, shell profile, MCP config)
-    log(`  ↳ Applying config changes...`);
-    try {
-      exec(`node "${join(repoDir, 'src', 'install.mjs')}" --yes`, { stdio: 'inherit', cwd: repoDir });
-    } catch (e) {
-      warn(`  ⚠ Installer failed: ${e.message.split('\n')[0]}`);
-      warn(`  ↳ Run manually: node "${join(repoDir, 'src', 'install.mjs')}" --yes`);
-    }
-    const staleConfig = await staleConfigChecker({ warn });
-    log();
-    return { status: 'updated', current, latest, staleKeys: staleConfig.staleKeys, ...workingTree };
+    const staged = stageMainRuntimeFn({ home, repoUrl });
+    const launcher = writeManagedLauncherFn({ home, os });
+    log(`  ✓ Selected release: ${staged.releaseId}`);
+    log(`  ↳ Managed command: ${launcher.commandPath}\n`);
+    return { status: 'updated', ...staged, ...launcher };
   } catch (e) {
     warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
     return { status: 'failed', error: e };
   }
+}
+
+export function runDeprecatedSelfUpdate({ error = console.error } = {}) {
+  const message = '`myelin update --self` is deprecated; run `myelin self update`.';
+  error(message);
+  return { status: 'deprecated', exitCode: 1, message };
 }

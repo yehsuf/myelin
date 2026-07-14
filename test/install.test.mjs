@@ -1,8 +1,5 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { existsSync } from 'node:fs';
-import { win32 as pathWin32 } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   applyServiceEngineInstallPlan,
   applyMitmServiceInstallPlan,
@@ -10,7 +7,6 @@ import {
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
   ensureManagedHeadroomService,
-  mitmAddonPath,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
 } from '../src/install.mjs';
@@ -712,18 +708,9 @@ describe('buildMitmServiceInstallOptions', () => {
 
     assert.equal(opts.home, 'C:\\Users\\alice');
     assert.equal(opts.mitmdumpBin, 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe');
-    const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
-    const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
-    const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
-      || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
     assert.equal(
       opts.addonPath,
-      pathWin32.join(
-        useCanonicalRepo ? canonicalRepo : currentRepo,
-        'src',
-        'mitm',
-        'copilot_addon.py',
-      ),
+      'C:\\Users\\alice\\.myelin\\runtime-bridge\\src\\mitm\\copilot_addon.py',
     );
     assert.equal(opts.logPath, 'C:\\Users\\alice\\.myelin\\mitmproxy.log');
     assert.equal(opts.envVars.REQUESTS_CA_BUNDLE, 'C:\\ProgramData\\Corp\\ca.pem');
@@ -844,12 +831,6 @@ describe('buildMitmServiceInstallOptions', () => {
     );
   });
 
-  it('rejects a native WSL repo root before addon service paths can become \\home paths', () => {
-    assert.throws(
-      () => mitmAddonPath('/home/alice', 'windows'),
-      /Windows-service.*home|home.*Windows-service/i,
-    );
-  });
 });
 
 describe('buildDownstreamProxyServiceInstallOptions', () => {

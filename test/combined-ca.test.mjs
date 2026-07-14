@@ -244,6 +244,87 @@ describe('buildCombinedCaCert — POSIX', () => {
   });
 });
 
+describe('buildCombinedCaCert — honors MYELIN_DIR', () => {
+  it('writes the combined bundle beneath MYELIN_DIR when set', async () => {
+    const prev = process.env.MYELIN_DIR;
+    process.env.MYELIN_DIR = '/custom/managed-root';
+    try {
+      const { calls, mocks } = makeMocks({
+        detectOSImpl: () => 'linux',
+        execSyncImpl: () => POSIX_PEM_OUTPUT,
+        readFileSyncImpl: () => 'ROOT',
+      });
+      const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+      const expected = join('/custom/managed-root', 'ca-bundle.pem');
+      assert.equal(calls.writeFileSync[0].p, expected);
+      assert.equal(result, expected);
+    } finally {
+      if (prev === undefined) delete process.env.MYELIN_DIR;
+      else process.env.MYELIN_DIR = prev;
+    }
+  });
+
+  it('treats a blank/whitespace MYELIN_DIR as absent and falls back to home/.myelin', async () => {
+    const prev = process.env.MYELIN_DIR;
+    process.env.MYELIN_DIR = '   \t ';
+    try {
+      const { calls, mocks } = makeMocks({
+        detectOSImpl: () => 'linux',
+        execSyncImpl: () => POSIX_PEM_OUTPUT,
+        readFileSyncImpl: () => 'ROOT',
+      });
+      const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+      assert.equal(calls.writeFileSync[0].p, COMBINED_PATH);
+      assert.equal(result, COMBINED_PATH);
+    } finally {
+      if (prev === undefined) delete process.env.MYELIN_DIR;
+      else process.env.MYELIN_DIR = prev;
+    }
+  });
+
+  it('honors an injected env.MYELIN_DIR without touching process.env', async () => {
+    const prev = process.env.MYELIN_DIR;
+    delete process.env.MYELIN_DIR;
+    try {
+      const { calls, mocks } = makeMocks({
+        env: { MYELIN_DIR: '/injected/managed-root' },
+        detectOSImpl: () => 'linux',
+        execSyncImpl: () => POSIX_PEM_OUTPUT,
+        readFileSyncImpl: () => 'ROOT',
+      });
+      const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+      const expected = join('/injected/managed-root', 'ca-bundle.pem');
+      assert.equal(calls.writeFileSync[0].p, expected);
+      assert.equal(result, expected);
+      // Injected env must not leak into the ambient process env.
+      assert.equal(process.env.MYELIN_DIR, undefined);
+    } finally {
+      if (prev === undefined) delete process.env.MYELIN_DIR;
+      else process.env.MYELIN_DIR = prev;
+    }
+  });
+
+  it('injected env overrides the ambient process.env.MYELIN_DIR', async () => {
+    const prev = process.env.MYELIN_DIR;
+    process.env.MYELIN_DIR = '/ambient/managed-root';
+    try {
+      const { calls, mocks } = makeMocks({
+        env: { MYELIN_DIR: '/injected/wins' },
+        detectOSImpl: () => 'linux',
+        execSyncImpl: () => POSIX_PEM_OUTPUT,
+        readFileSyncImpl: () => 'ROOT',
+      });
+      const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+      const expected = join('/injected/wins', 'ca-bundle.pem');
+      assert.equal(calls.writeFileSync[0].p, expected);
+      assert.equal(result, expected);
+    } finally {
+      if (prev === undefined) delete process.env.MYELIN_DIR;
+      else process.env.MYELIN_DIR = prev;
+    }
+  });
+});
+
 describe('buildCombinedCaCert — combined path invariant', () => {
   it('combined path is always join(home, ".myelin", "ca-bundle.pem") for both OSes', async () => {
     // windows

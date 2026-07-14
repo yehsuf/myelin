@@ -1438,14 +1438,10 @@ describe('defaultRestartMitm', () => {
       assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
       if (os === 'windows') {
         assert.equal(installs[0].home, 'C:\\Users\\alice');
-        const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
-        const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
-        const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
-          || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
         assert.equal(
           installs[0].addonPath,
           pathWin32.join(
-            useCanonicalRepo ? canonicalRepo : currentRepo,
+            'C:\\Users\\alice\\.myelin\\runtime-bridge',
             'src',
             'mitm',
             'copilot_addon.py',

@@ -24,12 +24,24 @@ program.command('diagnose')
 program.command('update')
   .description('Update all Myelin tools')
   .option('--check', 'Show what would be updated without making changes')
-  .option('--self', 'Update Myelin itself (git pull + npm install)')
-  .option('-f, --force', 'Skip the uncommitted-changes safety check and force self-update anyway')
+  .option('--self', 'Deprecated: use `myelin self update`')
   .action(async (opts) => {
-    const { runUpdate, runSelfUpdate } = await import('./update.mjs');
-    if (opts.self) { await runSelfUpdate({ force: opts.force }); return; }
+    const { runDeprecatedSelfUpdate, runUpdate } = await import('./update.mjs');
+    if (opts.self) {
+      const result = runDeprecatedSelfUpdate();
+      process.exit(result.exitCode);
+    }
     await runUpdate({ check: opts.check });
+  });
+
+program.command('self')
+  .description('Manage the Myelin runtime')
+  .command('update')
+  .description('Stage and activate the managed main-channel runtime')
+  .action(async () => {
+    const { runSelfUpdate } = await import('./update.mjs');
+    const result = await runSelfUpdate();
+    process.exit(result.status === 'updated' ? 0 : 1);
   });
 
 program.command('stats')

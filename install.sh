@@ -1,7 +1,6 @@
 #!/usr/bin/env sh
 set -e
 MYELIN_DIR="${MYELIN_DIR:-$HOME/.myelin}"
-REPO_DIR="$MYELIN_DIR/repo"
 REPO_URL="${MYELIN_REPO_URL:-https://github.com/yehsuf/myelin}"
 
 check_node() {
@@ -20,17 +19,63 @@ check_git() {
   fi
 }
 
-fetch_repo() {
-  if [ -d "$REPO_DIR/.git" ]; then
-    echo "[myelin] Updating..."; git -C "$REPO_DIR" pull --ff-only
-  else
-    echo "[myelin] Cloning..."; mkdir -p "$(dirname "$REPO_DIR")"; git clone "$REPO_URL" "$REPO_DIR"
-  fi
+write_current_release_pointer() {
+  RELEASE_ID="$1"
+  RUNTIME_ROOT="$2"
+  CURRENT_POINTER="$MYELIN_DIR/current.json"
+  TEMP_POINTER="$CURRENT_POINTER.$$".tmp
+
+  mkdir -p "$MYELIN_DIR"
+  cat > "$TEMP_POINTER" <<EOF
+{
+  "version": 1,
+  "releaseId": "$RELEASE_ID",
+  "runtimeRoot": "$RUNTIME_ROOT"
+}
+EOF
+  mv "$TEMP_POINTER" "$CURRENT_POINTER"
 }
 
-check_node; check_git; fetch_repo
-cd "$REPO_DIR" && npm install --silent
-echo "[myelin] Installing npm dependencies..."
-npm install --registry https://registry.npmjs.org
-echo "[myelin] Running installer..."
-node src/install.mjs "$@"
+stage_main_runtime() {
+  RELEASES_DIR="$MYELIN_DIR/releases"
+  STAGE_DIR="$MYELIN_DIR/releases-stage-main-$$-$(date +%s)"
+
+  mkdir -p "$MYELIN_DIR" "$RELEASES_DIR"
+  trap 'if [ -n "${STAGE_DIR:-}" ] && [ -d "$STAGE_DIR" ]; then rm -rf "$STAGE_DIR"; fi' EXIT INT TERM HUP
+
+  echo "[myelin] Staging main runtime..."
+  git clone --depth 1 --branch main "$REPO_URL" "$STAGE_DIR"
+  COMMIT="$(git -C "$STAGE_DIR" rev-parse --short=12 HEAD)"
+  RELEASE_ID="main-$COMMIT"
+  RUNTIME_ROOT="$RELEASES_DIR/$RELEASE_ID"
+
+  if [ -d "$RUNTIME_ROOT" ]; then
+    if [ -f "$RUNTIME_ROOT/src/cli/index.mjs" ] && [ -d "$RUNTIME_ROOT/node_modules" ]; then
+      echo "[myelin] Reusing managed runtime $RELEASE_ID"
+      rm -rf "$STAGE_DIR"
+      STAGE_DIR=""
+      write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+      trap - EXIT INT TERM HUP
+      return 0
+    fi
+
+    rm -rf "$RUNTIME_ROOT"
+  fi
+
+  (
+    cd "$STAGE_DIR"
+    npm ci --ignore-scripts
+    node --check src/cli/index.mjs
+  )
+
+  mv "$STAGE_DIR" "$RUNTIME_ROOT"
+  STAGE_DIR=""
+  write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+  trap - EXIT INT TERM HUP
+}
+
+check_node
+check_git
+stage_main_runtime
+echo "[myelin] Running staged installer..."
+node "$RUNTIME_ROOT/src/install.mjs" "$@"

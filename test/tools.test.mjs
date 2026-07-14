@@ -1,12 +1,22 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
 import * as winswTools from '../src/tools/winsw.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
+import { writeManagedLauncher } from '../src/runtime/launcher.mjs';
+import { linkGlobalBin } from '../src/service/npmlink.mjs';
+
+function makeTempHome(name) {
+  const home = join(process.cwd(), '.test-artifacts', `${name}-${process.pid}-${randomBytes(4).toString('hex')}`);
+  rmSync(home, { recursive: true, force: true });
+  mkdirSync(home, { recursive: true });
+  return home;
+}
 
 describe('RTK version parsing', () => {
   it('parses version from rtk --version output', () => {
@@ -155,6 +165,93 @@ describe('headroomHealthUrl', () => {
   });
   it('uses default 8787', () => {
     assert.equal(headroomHealthUrl(), 'http://127.0.0.1:8787/health');
+  });
+});
+
+describe('writeManagedLauncher', () => {
+  it('writes a POSIX launcher that invokes node with the managed launcher', () => {
+    const home = makeTempHome('managed-launcher-posix');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+      const launcherSource = readFileSync(result.launcherPath, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin'));
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcher.includes('node'));
+      assert.ok(launcher.includes('myelin-launcher.mjs'));
+      assert.ok(launcherSource.includes("current.json"));
+      assert.ok(launcherSource.includes('spawnSync(process.execPath'));
+      assert.ok(!launcher.includes(repoEntrypoint));
+      assert.ok(!launcher.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a Windows launcher that invokes node with the managed launcher', () => {
+    const home = makeTempHome('managed-launcher-windows');
+    try {
+      const result = writeManagedLauncher({ home, os: 'windows' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+      const launcherSource = readFileSync(result.launcherPath, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin.cmd'));
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcher.includes('node'));
+      assert.ok(launcher.includes('myelin-launcher.mjs'));
+      assert.ok(launcherSource.includes("current.json"));
+      assert.ok(launcherSource.includes('spawnSync(process.execPath'));
+      assert.ok(!launcher.includes(repoEntrypoint));
+      assert.ok(!launcher.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('linkGlobalBin managed launcher', () => {
+  it('writes a stable launcher into a writable global bin dir', () => {
+    const home = makeTempHome('managed-global-link');
+    const prefix = join(home, 'global-prefix');
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+      const linkedLauncher = join(prefix, 'bin', 'myelin');
+      const launcherText = readFileSync(linkedLauncher, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.linked, true);
+      assert.equal(result.binDir, join(prefix, 'bin'));
+      assert.equal(result.commandPath, linkedLauncher);
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcherText.includes('myelin-launcher.mjs'));
+      assert.ok(!launcherText.includes(repoEntrypoint));
+      assert.ok(!launcherText.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to ~/.myelin/bin when the global prefix is not writable', { skip: process.platform === 'win32' }, () => {
+    const home = makeTempHome('managed-global-fallback');
+    const prefix = join(home, 'readonly-prefix');
+    const binDir = join(prefix, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    chmodSync(binDir, 0o555);
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('no write access'));
+      assert.equal(result.binDir, join(home, '.myelin', 'bin'));
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin'));
+      assert.ok(existsSync(result.commandPath));
+    } finally {
+      chmodSync(binDir, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

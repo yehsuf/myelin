@@ -1,5 +1,5 @@
-import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
 
 export const LITELLM_SERVICE_NAME = 'myelin-litellm';
 
@@ -58,13 +58,16 @@ litellm_settings:
  * Uses the myelin venv Python (where litellm is installed).
  */
 export function generateLiteLLMStartCommand({ venvPath, configPath, port = 4000 } = {}) {
-  const isWin = process.platform === 'win32';
-  const python = isWin
-    ? join(venvPath, 'Scripts', 'python.exe')
-    : join(venvPath, 'bin', 'python');
+  // Derive the venv layout from the managed root's own path style rather than
+  // the host process.platform, and extend it with joinManaged so a relocated
+  // cross-style root keeps one consistent separator (never `D:\managed/venv/...`
+  // or `/srv/managed\venv\...`).
+  const python = isWindowsStylePath(venvPath)
+    ? joinManaged(venvPath, 'Scripts', 'python.exe')
+    : joinManaged(venvPath, 'bin', 'python');
   return `"${python}" -m litellm --config "${configPath}" --port ${port}`;
 }
 
-export function liteLLMConfigPath(home = homedir()) {
-  return join(home, '.myelin', 'litellm-config.yaml');
+export function liteLLMConfigPath(home = homedir(), env = process.env) {
+  return joinManaged(managedPaths({ home, env }).root, 'litellm-config.yaml');
 }

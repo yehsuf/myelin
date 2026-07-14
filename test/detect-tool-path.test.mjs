@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { join } from 'node:path';
+import { join, win32 } from 'node:path';
 import { ensureToolPath } from '../src/detect/tool-path.mjs';
 
 describe('ensureToolPath', () => {
@@ -25,7 +25,7 @@ describe('ensureToolPath', () => {
     const env = { PATH: 'C:\\Windows' };
     ensureToolPath({ home: 'C:\\Users\\u', platform: 'win32', env });
     const parts = env.PATH.split(';');
-    assert.ok(parts.includes(join('C:\\Users\\u', '.myelin', 'bin')), env.PATH);
+    assert.ok(parts.includes(win32.join('C:\\Users\\u', '.myelin', 'bin')), env.PATH);
     assert.ok(parts.some((p) => p.includes('uv')), 'includes uv bin on Windows');
     assert.ok(parts.includes('C:\\Windows'));
   });
@@ -47,6 +47,24 @@ describe('ensureToolPath', () => {
   it('picks up nvm4w node dir from env on Windows', () => {
     const env = { PATH: 'C:\\Windows', NVM4W_HOME: 'C:\\nvm4w' };
     ensureToolPath({ home: 'C:\\Users\\u', platform: 'win32', env });
-    assert.ok(env.PATH.split(';').includes(join('C:\\nvm4w', 'nodejs')), env.PATH);
+    assert.ok(env.PATH.split(';').includes(win32.join('C:\\nvm4w', 'nodejs')), env.PATH);
+  });
+});
+
+describe('ensureToolPath — managed root relocation (MYELIN_DIR)', () => {
+  it('adds the MYELIN_DIR-derived bin dir and not the default managed bin', () => {
+    const env = { PATH: '/usr/bin', MYELIN_DIR: '/custom/mroot' };
+    ensureToolPath({ home: '/home/u', platform: 'linux', env });
+    const parts = env.PATH.split(':');
+    assert.ok(parts.includes('/custom/mroot/bin'), env.PATH);
+    assert.ok(!parts.includes('/home/u/.myelin/bin'), 'default managed bin must not be added when MYELIN_DIR is set');
+    // Non-managed user dirs are preserved untouched.
+    assert.ok(parts.includes('/home/u/.local/bin'), env.PATH);
+  });
+
+  it('falls back to <home>/.myelin/bin when MYELIN_DIR is blank', () => {
+    const env = { PATH: '/usr/bin', MYELIN_DIR: '   ' };
+    ensureToolPath({ home: '/home/u', platform: 'linux', env });
+    assert.ok(env.PATH.split(':').includes('/home/u/.myelin/bin'), env.PATH);
   });
 });

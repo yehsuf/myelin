@@ -10,7 +10,6 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $MyelinDir = if ($env:MYELIN_DIR) { $env:MYELIN_DIR } else { "$env:USERPROFILE\.myelin" }
-$RepoDir = Join-Path $MyelinDir "repo"
 $RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://github.com/yehsuf/myelin" }
 
 function Check-Node {
@@ -24,11 +23,75 @@ function Check-Node {
 function Check-Git {
     if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Error "git not found." }
 }
-function Fetch-Repo {
-    if (Test-Path (Join-Path $RepoDir ".git")) {
-        Write-Host "[myelin] Updating..."; git -C $RepoDir pull --ff-only
-    } else {
-        Write-Host "[myelin] Cloning..."; New-Item -ItemType Directory -Force -Path (Split-Path $RepoDir) | Out-Null; git clone $RepoUrl $RepoDir
+function Write-CurrentReleasePointer {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleaseId,
+        [Parameter(Mandatory = $true)][string]$RuntimeRoot
+    )
+
+    $currentPointer = Join-Path $MyelinDir "current.json"
+    $tempPointer = "$currentPointer.$PID.tmp"
+    $pointer = @{
+        version = 1
+        releaseId = $ReleaseId
+        runtimeRoot = $RuntimeRoot
+    } | ConvertTo-Json
+
+    New-Item -ItemType Directory -Force -Path $MyelinDir | Out-Null
+    [System.IO.File]::WriteAllText($tempPointer, $pointer + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $tempPointer -Destination $currentPointer -Force
+}
+
+function Stage-MainRuntime {
+    $releasesDir = Join-Path $MyelinDir "releases"
+    $stageDir = Join-Path $MyelinDir ("releases-stage-main-{0}-{1}" -f $PID, [DateTimeOffset]::UtcNow.ToUnixTimeSeconds())
+
+    New-Item -ItemType Directory -Force -Path $MyelinDir, $releasesDir | Out-Null
+
+    try {
+        Write-Host "[myelin] Staging main runtime..."
+        git clone --depth 1 --branch main $RepoUrl $stageDir
+        if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+
+        $commit = (git -C $stageDir rev-parse --short=12 HEAD).Trim()
+        if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
+
+        $releaseId = "main-$commit"
+        $runtimeRoot = Join-Path $releasesDir $releaseId
+        $entrypoint = Join-Path $runtimeRoot "src\cli\index.mjs"
+        $nodeModules = Join-Path $runtimeRoot "node_modules"
+
+        if (Test-Path $runtimeRoot) {
+            if ((Test-Path $entrypoint -PathType Leaf) -and (Test-Path $nodeModules -PathType Container)) {
+                Write-Host "[myelin] Reusing managed runtime $releaseId"
+                Remove-Item -LiteralPath $stageDir -Recurse -Force
+                Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot
+                return $runtimeRoot
+            }
+
+            Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
+        }
+
+        Push-Location $stageDir
+        try {
+            npm ci --ignore-scripts
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+
+            node --check src/cli/index.mjs
+            if ($LASTEXITCODE -ne 0) { throw "node --check failed" }
+        } finally {
+            Pop-Location
+        }
+
+        Move-Item -LiteralPath $stageDir -Destination $runtimeRoot
+        $stageDir = $null
+        Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot
+        return $runtimeRoot
+    } catch {
+        if ($stageDir -and (Test-Path $stageDir)) {
+            Remove-Item -LiteralPath $stageDir -Recurse -Force
+        }
+        throw
     }
 }
 
@@ -39,17 +102,13 @@ try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRo
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRoot\System32\robocopy.exe" -ErrorAction SilentlyContinue } catch {}
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}
 
-Check-Node; Check-Git; Fetch-Repo
-Set-Location $RepoDir
-Write-Host "[myelin] Installing npm dependencies..."
-npm install --registry https://registry.npmjs.org
-if ($LASTEXITCODE -ne 0) { Write-Error "npm install failed"; exit 1 }
-Write-Host "[myelin] npm install complete."
+$RuntimeRoot = $null
+Check-Node; Check-Git; $RuntimeRoot = Stage-MainRuntime
 
-$a = @("src/install.mjs")
+$a = @((Join-Path $RuntimeRoot "src\install.mjs"))
 if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($Yes) { $a += "--yes" }
 if ($NoHeadroom) { $a += "--no-headroom" }
 if ($CopilotOnly) { $a += "--copilot-only" }; if ($ClaudeOnly) { $a += "--claude-only" }
 $a += "--profile", $Preset, "--index-tier", $IndexTier
-Write-Host "[myelin] Running installer..."
+Write-Host "[myelin] Running staged installer..."
 node @a

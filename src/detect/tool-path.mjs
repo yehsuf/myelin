@@ -1,5 +1,5 @@
-import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { managedPaths, pathModuleForPlatform } from '../shared/myelin-paths.mjs';
 
 /**
  * Prepend Myelin's tool directories to process.env.PATH so tool DETECTION
@@ -16,9 +16,10 @@ import { homedir } from 'node:os';
  * idempotent — safe to call repeatedly.
  */
 export function ensureToolPath({ home = homedir(), platform = process.platform, env = process.env } = {}) {
+  const { join } = pathModuleForPlatform(platform);
   const dirs = [
     join(home, '.local', 'bin'),
-    join(home, '.myelin', 'bin'),
+    managedPaths({ home, env, platform }).binDir,
   ];
   if (platform === 'win32') {
     dirs.push(

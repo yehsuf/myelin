@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { managedPaths, pathModuleForPlatform } from '../shared/myelin-paths.mjs';
 
 /**
  * Fail-open bridge for RTK's shell-compression preToolUse hook on Copilot CLI.
@@ -23,11 +23,15 @@ import { spawnSync } from 'node:child_process';
  *  frequently omits the dirs rtk actually installs to. */
 export function rtkBinaryCandidates({ home = homedir(), plat = platform(), env = process.env } = {}) {
   const exe = plat === 'win32' ? 'rtk.exe' : 'rtk';
+  const { join: joinPlat } = pathModuleForPlatform(plat);
   const list = [];
   if (env.RTK_BIN) list.push(env.RTK_BIN);
+  // Derive the managed bin dir from managedPaths so a relocated MYELIN_DIR is
+  // honored — rtk installs into the managed root's bin/, not a hardcoded
+  // ~/.myelin/bin, once the runtime root is relocated.
   list.push(
-    join(home, '.myelin', 'bin', exe),
-    join(home, '.cargo', 'bin', exe),
+    joinPlat(managedPaths({ home, env, platform: plat }).binDir, exe),
+    joinPlat(home, '.cargo', 'bin', exe),
     '/opt/homebrew/bin/rtk',
     '/usr/local/bin/rtk',
     '/home/linuxbrew/.linuxbrew/bin/rtk',

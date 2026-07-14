@@ -1,10 +1,14 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { join } from 'node:path';
 import {
   installTokenOptimizerForCopilot,
   tokenOptimizerClaudeCodeInstructions,
   tokenOptimizerCopilotInstallSteps,
   tokenOptimizerLicenseNotice,
+  tokenOptimizerWindowsManualInstructions,
+  defaultWslCloneDir,
+  defaultCloneDir,
 } from '../src/service/token-optimizer.mjs';
 
 function captureConsole() {
@@ -46,6 +50,22 @@ describe('tokenOptimizerClaudeCodeInstructions', () => {
     assert.match(text, /\/plugin marketplace add alexgreensh\/token-optimizer/);
     assert.match(text, /\/plugin install token-optimizer@alexgreensh-token-optimizer/);
     assert.match(text, /\/token-optimizer/);
+  });
+});
+
+describe('defaultCloneDir — threads os/platform into the managed root', () => {
+  it('keeps a Windows default root backslashed when os is windows, on any host', () => {
+    assert.equal(
+      defaultCloneDir({ os: 'windows', env: {}, home: 'C:\\Users\\alice' }),
+      'C:\\Users\\alice\\.myelin\\token-optimizer',
+    );
+  });
+
+  it('keeps a POSIX default root forward-slashed when os is darwin/linux, on any host', () => {
+    assert.equal(
+      defaultCloneDir({ os: 'darwin', env: {}, home: '/Users/alice' }),
+      '/Users/alice/.myelin/token-optimizer',
+    );
   });
 });
 
@@ -223,5 +243,70 @@ describe('installTokenOptimizerForCopilot', () => {
     assert.equal(result.manual, false);
     assert.equal(result.cloneDir, cloneDir);
     assert.match(result.error, /bash install\.sh --copilot failed hard/);
+  });
+});
+
+describe('tokenOptimizerCopilotInstallSteps — managed root relocation (MYELIN_DIR)', () => {
+  it('roots the default clone dir under MYELIN_DIR when set', () => {
+    const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', env: { MYELIN_DIR: '/custom/mroot' } });
+    assert.ok(plan.commands[0].includes('/custom/mroot/token-optimizer'), plan.commands[0]);
+    assert.ok(plan.commands.includes('cd "/custom/mroot/token-optimizer"'), JSON.stringify(plan.commands));
+  });
+
+  it('defaults the clone dir under <home>/.myelin when MYELIN_DIR absent', () => {
+    const plan = tokenOptimizerCopilotInstallSteps({ os: 'linux', env: {} });
+    assert.ok(
+      plan.commands.some((c) => c.includes(join('.myelin', 'token-optimizer'))),
+      JSON.stringify(plan.commands),
+    );
+  });
+});
+
+describe('tokenOptimizerWindowsManualInstructions — WSL flow must not hardcode ~/.myelin', () => {
+  it('defaults to a shell-portable ~/.myelin clone dir when MYELIN_DIR is absent', () => {
+    assert.equal(defaultWslCloneDir({ env: {} }), '~/.myelin/token-optimizer');
+  });
+
+  it('follows MYELIN_DIR when the managed root is relocated', () => {
+    assert.equal(
+      defaultWslCloneDir({ env: { MYELIN_DIR: '/custom/mroot' } }),
+      '/custom/mroot/token-optimizer',
+    );
+  });
+
+  it('emits WSL git clone/cd instructions rooted at the relocated MYELIN_DIR', () => {
+    const lines = tokenOptimizerWindowsManualInstructions({ env: { MYELIN_DIR: '/custom/mroot' } });
+    const text = lines.join('\n');
+    assert.match(text, /legacy WSL flow/i);
+    assert.ok(lines.includes('git clone --depth 1 https://github.com/alexgreensh/token-optimizer.git "/custom/mroot/token-optimizer"'), text);
+    assert.ok(lines.includes('cd "/custom/mroot/token-optimizer"'), text);
+    assert.ok(!text.includes('~/.myelin'), text);
+  });
+
+  it('keeps the ~/.myelin default in the printed WSL instructions when MYELIN_DIR is absent', () => {
+    const lines = tokenOptimizerWindowsManualInstructions({ env: {} });
+    assert.ok(lines.includes('cd "~/.myelin/token-optimizer"'), lines.join('\n'));
+  });
+});
+
+describe('installTokenOptimizerForCopilot — WSL fallback honors MYELIN_DIR', () => {
+  it('prints relocated WSL clone dir when py -3 is unavailable and MYELIN_DIR is set', () => {
+    const events = [];
+    const exec = (command) => {
+      if (command.includes('py -3 --version')) throw new Error('missing');
+      return Buffer.from('');
+    };
+    installTokenOptimizerForCopilot({
+      os: 'win32',
+      env: { MYELIN_DIR: '/custom/mroot' },
+      cloneDir: 'C:\\Users\\alice\\managed\\token-optimizer',
+      exec,
+      existsSync: () => false,
+      log: (m = '') => events.push(m),
+      warn: () => {},
+    });
+    const output = events.join('\n');
+    assert.match(output, /\/custom\/mroot\/token-optimizer/);
+    assert.ok(!output.includes('~/.myelin'), output);
   });
 });

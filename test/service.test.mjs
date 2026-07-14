@@ -160,6 +160,35 @@ describe('runPs WSL script path', () => {
       { type: 'unlink', path: mountedScript },
     ]);
   });
+
+  it('canonicalizes a mounted MYELIN_DIR for Windows service scripts and environments', () => {
+    const operations = [];
+    const env = { MYELIN_DIR: '/mnt/c/Myelin' };
+
+    runPs('Write-Host ready', {
+      home: '/home/alice',
+      env,
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      powershellExe: 'powershell.exe',
+      processId: 123,
+      nowImpl: () => 456,
+      mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
+      writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
+      execSyncImpl: (command) => operations.push({ type: 'exec', command }),
+      unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
+    });
+
+    assert.deepEqual(windowsService.withForwardedMyelinDir({}, env), {
+      MYELIN_DIR: 'C:\\Myelin',
+    });
+    assert.deepEqual(operations, [
+      { type: 'mkdir', path: '/mnt/c/Myelin/state' },
+      { type: 'write', path: '/mnt/c/Myelin/state/myelin-123-456.ps1', content: 'Write-Host ready' },
+      { type: 'exec', command: 'powershell.exe -ExecutionPolicy Bypass -File "C:\\Myelin\\state\\myelin-123-456.ps1"' },
+      { type: 'unlink', path: '/mnt/c/Myelin/state/myelin-123-456.ps1' },
+    ]);
+  });
 });
 
 describe('WSL PowerShell registration paths', () => {

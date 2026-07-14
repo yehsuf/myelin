@@ -46,6 +46,24 @@ describe('generateLiteLLMStartCommand', () => {
     assert.ok(cmd.includes('--port 4000'));
     assert.ok(cmd.includes('-m litellm'));
   });
+
+  it('derives the venv python layout + separators from the venv style, not the host', () => {
+    // POSIX venv -> bin/python, forward slashes only.
+    const posix = generateLiteLLMStartCommand({
+      venvPath: '/srv/managed/venv',
+      configPath: '/srv/managed/litellm-config.yaml',
+    });
+    assert.ok(posix.includes('/srv/managed/venv/bin/python'), posix);
+    assert.ok(!posix.includes('\\'), posix);
+    // Windows venv (even resolved on a POSIX host) -> Scripts\python.exe,
+    // backslashes only. A host-native join would splice a forward slash.
+    const win = generateLiteLLMStartCommand({
+      venvPath: 'D:\\managed\\venv',
+      configPath: 'D:\\managed\\litellm-config.yaml',
+    });
+    assert.ok(win.includes('D:\\managed\\venv\\Scripts\\python.exe'), win);
+    assert.ok(!win.includes('/venv'), win);
+  });
 });
 
 describe('liteLLMConfigPath', () => {

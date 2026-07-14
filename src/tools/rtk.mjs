@@ -2,7 +2,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
 
 export const RTK_PINNED_VERSION = '0.43.0';
 
@@ -145,14 +145,20 @@ export function toPosixPath(p = '') {
   return String(p).replace(/\\/g, '/');
 }
 
-/** Absolute path (trailing slash) to the installed Myelin repo, preferring the
- *  canonical ~/.myelin/repo over the dev checkout, so the hook command keeps
- *  working regardless of which worktree init was run from. */
-export function resolveMyelinRepoRoot({ home = homedir(), plat = process.platform, exists = existsSync } = {}) {
-  const sep = plat === 'win32' ? '\\' : '/';
-  const canonical = join(home, '.myelin', 'repo');
-  try { if (exists(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep; } catch { /* fall through */ }
-  return fileURLToPath(new URL('../../', import.meta.url));
+/** Absolute path (trailing slash) to the managed runtime bridge, so the RTK
+ *  hook always re-enters Myelin through a current.json-validating bridge
+ *  instead of a checkout path. */
+export function resolveMyelinRepoRoot({ home = homedir(), rootDir, env = process.env, plat = process.platform, exists = existsSync } = {}) {
+  const bridgeRoot = managedPaths({ home, env, rootDir, platform: plat }).runtimeBridgeRoot;
+  // The bridge root can be a relocated MYELIN_DIR/rootDir whose separator style
+  // disagrees with `plat` (a Windows rootDir resolved on a POSIX host, or a
+  // POSIX MYELIN_DIR on a Windows host). Probe and terminate it in the root's
+  // OWN style so we never splice a mismatched separator (e.g.
+  // `D:\managed\runtime-bridge/src/...` or a trailing `/` on a backslash path).
+  const sep = isWindowsStylePath(bridgeRoot) ? '\\' : '/';
+  const probe = joinManaged(bridgeRoot, 'src', 'cli', 'index.mjs');
+  try { if (exists(probe)) return bridgeRoot + sep; } catch { /* fall through */ }
+  return bridgeRoot + sep;
 }
 
 export function copilotRtkHookPath(home = homedir()) {
@@ -319,7 +325,7 @@ async function tryGithubRelease() {
     const { platform, arch } = await import('node:os').then(m => ({ platform: m.platform(), arch: m.arch() }));
     const res = await fetch('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
     const data = await res.json();
-    const binDir = join(homedir(), '.myelin', 'bin');
+    const binDir = managedPaths({ home: homedir() }).binDir;
     mkdirSync(binDir, { recursive: true });
 
     if (platform === 'win32') {

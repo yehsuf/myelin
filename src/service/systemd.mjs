@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
 
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
@@ -60,16 +61,18 @@ function legacyEngineInstance({
   port,
   envVars = {},
   home = homedir(),
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const id = `${engine}-${role}`;
+  const root = managedPaths({ home, env }).root;
   return {
     engine,
     role,
     port,
     id,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -96,7 +99,8 @@ export function generateSystemdUnit(opts = {}) {
  */
 export function generateCopilotHeadroomUnit(opts = {}) {
   const selectedEngine = opts.engine ?? 'headroom';
-  const stateDir = opts.workingDirectory ?? join(homedir(), '.myelin', 'state', `${selectedEngine}-copilot`);
+  const root = managedPaths({ home: opts.home ?? homedir(), env: opts.env }).root;
+  const stateDir = opts.workingDirectory ?? joinManaged(root, 'state', `${selectedEngine}-copilot`);
   return generateEngineInstanceUnit({
     ...opts,
     instance: opts.instance ?? {
@@ -105,7 +109,7 @@ export function generateCopilotHeadroomUnit(opts = {}) {
       port: opts.port,
       id: `${selectedEngine}-copilot`,
       stateDir,
-      logPath: join(homedir(), '.myelin', `${selectedEngine}-copilot.log`),
+      logPath: joinManaged(root, `${selectedEngine}-copilot.log`),
       healthUrl: `http://127.0.0.1:${opts.port}/health`,
       env: opts.envVars ?? {},
     },

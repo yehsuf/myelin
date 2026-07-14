@@ -2,9 +2,9 @@ import { readFileSync, existsSync } from 'node:fs';
 import { load as parse } from 'js-yaml';
 import { DEFAULT_CONFIG, mergeDeep, normalizeCompressionEngine } from './schema.mjs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { managedPaths } from '../shared/myelin-paths.mjs';
 
-export const DEFAULT_CONFIG_PATH = join(homedir(), '.myelin', 'config.yaml');
+export const DEFAULT_CONFIG_PATH = managedPaths({ home: homedir() }).configPath;
 
 export function readUserConfig(configPath = DEFAULT_CONFIG_PATH, warn = console.warn) {
   let userConfig = {};

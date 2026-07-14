@@ -3,10 +3,10 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { hardenCopilotHookFile } from '../tools/hook-safety.mjs';
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
 
 const TOKEN_OPTIMIZER_REPO_URL = 'https://github.com/alexgreensh/token-optimizer';
 const TOKEN_OPTIMIZER_GIT_URL = `${TOKEN_OPTIMIZER_REPO_URL}.git`;
-const DEFAULT_WSL_CLONE_DIR = '~/.myelin/token-optimizer';
 const nodeExecSync = execSync;
 const nodeExistsSync = existsSync;
 const WINDOWS_PYTHON_LAUNCHER = 'py -3';
@@ -15,8 +15,22 @@ function isWindowsOs(os) {
   return os === 'windows' || os === 'win32';
 }
 
-function defaultCloneDir(os = process.platform) {
-  return join(homedir(), '.myelin', 'token-optimizer');
+export function defaultCloneDir({ os = process.platform, env = process.env, home = homedir() } = {}) {
+  return joinManaged(managedPaths({ home, env, platform: os }).root, 'token-optimizer');
+}
+
+/**
+ * WSL clone dir for the legacy manual flow. The instructions run inside a WSL
+ * shell (a different home than the Windows host), so this keeps a shell-portable
+ * `~/.myelin` default rather than an absolute Windows path — but it must NOT
+ * hardcode `~/.myelin`: when MYELIN_DIR relocates the managed root, the printed
+ * instructions follow it.
+ */
+export function defaultWslCloneDir({ env = process.env } = {}) {
+  const root = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim()
+    ? env.MYELIN_DIR
+    : '~/.myelin';
+  return `${root}/token-optimizer`;
 }
 
 function checkoutCommands({ cloneDir, existsSync: existsSyncImpl = nodeExistsSync } = {}) {
@@ -37,13 +51,14 @@ function tokenOptimizerCopilotInstallCommand(os) {
     : 'bash install.sh --copilot';
 }
 
-function tokenOptimizerWindowsManualInstructions() {
+export function tokenOptimizerWindowsManualInstructions({ env = process.env } = {}) {
+  const wslCloneDir = defaultWslCloneDir({ env });
   return [
     'Windows native install requires the Windows Python Launcher (`py -3`).',
     'Install Python 3 from https://python.org/downloads then re-run `myelin install`.',
     'If you prefer the legacy WSL flow, run this from inside a WSL shell:',
-    `git clone --depth 1 ${TOKEN_OPTIMIZER_GIT_URL} "${DEFAULT_WSL_CLONE_DIR}"`,
-    `cd "${DEFAULT_WSL_CLONE_DIR}"`,
+    `git clone --depth 1 ${TOKEN_OPTIMIZER_GIT_URL} "${wslCloneDir}"`,
+    `cd "${wslCloneDir}"`,
     'bash install.sh --copilot',
     'TOKEN_OPTIMIZER_RUNTIME=copilot python3 skills/token-optimizer/scripts/measure.py copilot-doctor',
   ];
@@ -91,7 +106,8 @@ export function hardenCopilotTokenOptimizerHook({ home = homedir(), fs } = {}) {
 
 export function tokenOptimizerCopilotInstallSteps({
   os = process.platform,
-  cloneDir = defaultCloneDir(os),
+  env = process.env,
+  cloneDir = defaultCloneDir({ os, env }),
   existsSync: existsSyncImpl = nodeExistsSync,
 } = {}) {
   const commands = [
@@ -105,7 +121,8 @@ export function tokenOptimizerCopilotInstallSteps({
 
 export function installTokenOptimizerForCopilot({
   os = process.platform,
-  cloneDir = defaultCloneDir(os),
+  env = process.env,
+  cloneDir = defaultCloneDir({ os, env }),
   exec = nodeExecSync,
   existsSync: existsSyncImpl = nodeExistsSync,
   log = console.log,
@@ -117,7 +134,7 @@ export function installTokenOptimizerForCopilot({
     try {
       exec(`${WINDOWS_PYTHON_LAUNCHER} --version`, { stdio: 'pipe' });
     } catch {
-      tokenOptimizerWindowsManualInstructions().forEach(line => log(line));
+      tokenOptimizerWindowsManualInstructions({ env }).forEach(line => log(line));
       return {
         attempted: false,
         succeeded: false,
@@ -128,7 +145,7 @@ export function installTokenOptimizerForCopilot({
     }
   }
 
-  const plan = tokenOptimizerCopilotInstallSteps({ os, cloneDir, existsSync: existsSyncImpl });
+  const plan = tokenOptimizerCopilotInstallSteps({ os, env, cloneDir, existsSync: existsSyncImpl });
   if (!plan.automatable) {
     plan.manualInstructions.forEach(line => log(line));
     return { attempted: false, succeeded: false, manual: true, cloneDir };

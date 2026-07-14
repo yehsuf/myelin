@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
@@ -60,16 +61,18 @@ function legacyEngineInstance({
   envVars = {},
   logPath,
   home = homedir(),
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const id = `${engine}-${role}`;
+  const root = managedPaths({ home, env }).root;
   return {
     engine,
     role,
     port,
     id,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: logPath ?? join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: logPath ?? joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -232,7 +235,7 @@ export function removeEngineInstance(instance) {
  *  redirects (arrival-port gating in the addon itself), it only owns real
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort }) {
   const p = mitmPlistPath();
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
@@ -278,7 +281,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
     },
-    logPath: logPath ?? join(home ?? homedir(), '.myelin', 'mitmproxy.log'),
+    logPath: logPath ?? joinManaged(managedPaths({ home: home ?? homedir(), env }).root, 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
   writeFileSync(p, content, 'utf8');
@@ -346,10 +349,10 @@ export function copilotHeadroomServiceStatus(opts = {}) {
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
+export function generateLaunchdWatchdogScript({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
   const la = join(home, 'Library', 'LaunchAgents');
-  const watchdogLog = join(home, '.myelin', 'watchdog.log');
+  const watchdogLog = joinManaged(managedPaths({ home, env }).root, 'watchdog.log');
   const checks = [
     ...(mitmPort != null ? [`check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`] : []),
     ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
@@ -392,15 +395,16 @@ ${checks.join('\n')}
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
+export function installWatchdog({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
-  const binDir = join(home, '.myelin', 'bin');
+  const root = managedPaths({ home, env }).root;
+  const binDir = joinManaged(root, 'bin');
   mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(binDir, 'watchdog.sh');
+  const scriptPath = joinManaged(binDir, 'watchdog.sh');
   const la = join(home, 'Library', 'LaunchAgents');
-  const watchdogLog = join(home, '.myelin', 'watchdog.log');
+  const watchdogLog = joinManaged(root, 'watchdog.log');
 
-  const script = generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
+  const script = generateLaunchdWatchdogScript({ home, env, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
   writeFileSync(scriptPath, script, 'utf8');
   execSync(`chmod +x "${scriptPath}"`);
 

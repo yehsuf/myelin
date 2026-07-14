@@ -51,6 +51,9 @@ import {
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
+import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
+import { stageMainRuntime } from './runtime/stage-main.mjs';
+import { managedPaths, joinManaged } from './shared/myelin-paths.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -240,7 +243,7 @@ export async function ensureManagedHeadroomService({
       envVars,
       home,
       interceptToolResults,
-      logPath: join(home, '.myelin', 'headroom.log'),
+      logPath: joinManaged(managedPaths({ home, platform: os }).root, 'headroom.log'),
       manager: winManager,
     });
     okFn(`service registered (port ${port})`);
@@ -270,13 +273,14 @@ function ownedEngineRoleInstance(engine, role, home = homedir(), cfg = {}) {
   const id = `${engine}-${role}`;
   const port = cleanupPort(engine, role, cfg);
   if (port == null) return null;
+  const root = managedPaths({ home }).root;
   return {
     engine,
     role,
     id,
     port,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }
@@ -285,10 +289,11 @@ function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defau
   const port = cleanupPort('headroom', role, cfg);
   if (port == null) return null;
   const winHome = defaultWindowsHomeImpl(home);
+  const root = managedPaths({ home: winHome, platform: 'windows' }).root;
   const id = `headroom-${role}`;
   const stateDir = role === 'primary'
-    ? pathWin32.join(winHome, '.myelin', 'services', 'myelin-headroom')
-    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+    ? joinManaged(root, 'services', 'myelin-headroom')
+    : joinManaged(root, 'copilot-headroom');
   return {
     engine: 'headroom',
     role,
@@ -296,7 +301,7 @@ function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defau
     legacy: true,
     port,
     stateDir,
-    logPath: pathWin32.join(winHome, '.myelin', `${id}.log`),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }
@@ -652,8 +657,8 @@ async function installMitmproxyCA(home, interactive = true) {
   }
 
   // --- 2. Always rebuild our own bundle (fresh system content + mitmproxy CA) ---
-  const ourBundle = join(home, '.myelin', 'ca-bundle.pem');
-  mkdirSync(join(home, '.myelin'), { recursive: true });
+  const { root: myelinRoot, caBundlePath: ourBundle } = managedPaths({ home });
+  mkdirSync(myelinRoot, { recursive: true });
 
   // Seed from: read-only discovered files + well-known system paths
   let sysCerts = '';
@@ -763,45 +768,271 @@ async function promptYN(question) {
 
 function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
+const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
+
+function resolveManagedMainRepoUrl({
+  env = process.env,
+  execSyncFn = execSync,
+  metaUrl = import.meta.url,
+} = {}) {
+  if (env.MYELIN_REPO_URL) return env.MYELIN_REPO_URL;
+
+  try {
+    return String(execSyncFn('git config --get remote.origin.url', {
+      cwd: fileURLToPath(new URL('..', metaUrl)),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })).trim() || MANAGED_MAIN_REPO_URL;
+  } catch {
+    return MANAGED_MAIN_REPO_URL;
+  }
+}
+
 /**
- * Resolve the canonical repo root to use for generated paths (shell alias,
- * service configs, etc.). Prefers ~/.myelin/repo once it actually contains
- * a working checkout — this is where the shell alias will point future
- * `myelin` invocations — falling back to wherever *this* script instance
- * currently lives (e.g. still ~/.tokenstack/repo mid-migration). Always
- * consulting the canonical path first, rather than blindly using
- * import.meta.url, means generated configs stay valid even after a legacy
- * ~/.tokenstack checkout is deleted on a later run.
+ * Build the shell-profile PATH additions, rooting the managed bin dir in the
+ * managed root so a relocated MYELIN_DIR is honored. The default (MYELIN_DIR
+ * unset) keeps the shell-portable `$HOME`/`$env:USERPROFILE` form; when the
+ * managed root is relocated the entries point at the resolved managed bin dir.
  */
-function resolveRepoRoot(home, os) {
-  const sep = os === 'windows' ? '\\' : '/';
-  const serviceHome = os === 'windows' ? defaultWindowsHome(home) : home;
-  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(serviceHome)) {
-    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
-  }
-  const canonical = os === 'windows'
-    ? pathWin32.join(serviceHome, '.myelin', 'repo')
-    : join(home, '.myelin', 'repo');
-  if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
-  const currentRoot = fileURLToPath(new URL('..', import.meta.url));
+export function managedProfilePathBlock({ os, home = homedir(), env = process.env } = {}) {
+  const relocated = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim();
+  const managedBinDir = managedPaths({ home, env }).binDir;
   if (os === 'windows') {
-    if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(currentRoot) || /^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(currentRoot)) {
-      return normalizeWindowsFilesystemPath(currentRoot);
-    }
-    // A native WSL checkout (for example /home/alice/repo) is not a path a
-    // Windows service can execute or import from. Keep service assets bound to
-    // the canonical Windows checkout rather than emitting an invalid \home path.
-    return canonical + sep;
+    const myelinBin = relocated
+      ? normalizeWindowsFilesystemPath(managedBinDir, { rejectPosix: true })
+      : '$env:USERPROFILE\\.myelin\\bin';
+    return {
+      posixExport: '',
+      windowsPathDirs: [
+        '$env:USERPROFILE\\.local\\bin',
+        myelinBin,
+        '$env:APPDATA\\uv\\bin',
+        '$env:LOCALAPPDATA\\uv\\bin',
+        '$env:APPDATA\\npm',
+      ],
+    };
   }
-  return currentRoot;
+  const myelinBin = relocated ? managedBinDir : '$HOME/.myelin/bin';
+  return {
+    posixExport: `\nexport PATH="$HOME/.local/bin:${myelinBin}:$PATH"`,
+    windowsPathDirs: [],
+  };
+}
+
+export function resolveManagedRuntime({
+  home = homedir(),
+  rootDir,
+  os,
+  readCurrentReleaseFn = readCurrentRelease,
+  runtimePathsFn = runtimePaths,
+  stageMainRuntimeFn = null,
+  repoUrl = MANAGED_MAIN_REPO_URL,
+} = {}) {
+  let currentRelease = readCurrentReleaseFn({ home, rootDir });
+  if (!currentRelease?.runtimeRoot) {
+    if (!stageMainRuntimeFn) {
+      throw new Error('no current managed runtime configured');
+    }
+
+    stageMainRuntimeFn({ home, rootDir, repoUrl });
+    currentRelease = readCurrentReleaseFn({ home, rootDir });
+    if (!currentRelease?.runtimeRoot) {
+      throw new Error('managed runtime bootstrap did not select a current release');
+    }
+  }
+
+  const paths = runtimePathsFn({ home, rootDir });
+  const binDir = joinManaged(paths.root, 'bin');
+  return {
+    runtimeRoot: currentRelease.runtimeRoot,
+    launcherPath: paths.launcherPath,
+    commandPath: joinManaged(binDir, os === 'windows' ? 'myelin.cmd' : 'myelin'),
+  };
+}
+
+function runtimeBridgePaths(home, rootDir) {
+  const { runtimeBridgeRoot: root } = managedPaths({ home, rootDir });
+  // Extend the (possibly relocated, possibly cross-style) managed bridge root
+  // in its OWN separator style via joinManaged — a host-native join would
+  // splice mismatched separators onto a relocated root of the opposite style
+  // (e.g. `D:\managed\runtime-bridge/src/cli/index.mjs`).
+  return {
+    root,
+    cliPath: joinManaged(root, 'src', 'cli', 'index.mjs'),
+    mitmAddonPath: joinManaged(root, 'src', 'mitm', 'copilot_addon.py'),
+    gitExtraPath: joinManaged(root, 'src', 'mcp', 'git-extra.py'),
+  };
+}
+
+function renderManagedCliBridgeSource() {
+  return `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+
+function readCurrentRelease(home) {
+  const rawRoot = process.env.MYELIN_DIR;
+  const root = (typeof rawRoot === 'string' && rawRoot.trim()) ? rawRoot : join(home, '.myelin');
+  const currentPointerPath = join(root, 'current.json');
+  const releasesDir = join(root, 'releases');
+
+  try {
+    const parsed = JSON.parse(readFileSync(currentPointerPath, 'utf8'));
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || parsed.version !== 1
+      || typeof parsed.releaseId !== 'string'
+      || !RELEASE_ID_RE.test(parsed.releaseId)
+    ) {
+      return null;
+    }
+
+    const runtimeRoot = join(releasesDir, parsed.releaseId);
+    if (normalizedRuntimeRoot(parsed.runtimeRoot) !== normalizedRuntimeRoot(runtimeRoot)) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      releaseId: parsed.releaseId,
+      runtimeRoot,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizedRuntimeRoot(value) {
+  const raw = String(value ?? '');
+  const isWindowsDriveRoot = raw.length >= 3
+    && raw.charAt(1) === ':'
+    && (raw.charAt(2) === '/' || raw.charAt(2) === String.fromCharCode(92))
+    && /[a-z]/i.test(raw.charAt(0));
+  const normalized = raw.split(String.fromCharCode(92)).join('/');
+  const segments = normalized.split('/');
+  const drive = segments[2] ?? '';
+  if (segments[0] === '' && segments[1] === 'mnt' && drive.length === 1 && /[a-z]/i.test(drive)) {
+    const rest = segments.slice(3).join('/').split('/').join(String.fromCharCode(92));
+    return (drive.toUpperCase() + ':' + String.fromCharCode(92) + rest).toLowerCase();
+  }
+  return isWindowsDriveRoot || process.platform === 'win32'
+    ? raw.split('/').join(String.fromCharCode(92)).toLowerCase()
+    : raw;
+}
+
+try {
+  const currentRelease = readCurrentRelease(homedir());
+  if (!currentRelease?.runtimeRoot) {
+    throw new Error('no current managed runtime configured');
+  }
+
+  const entrypoint = join(currentRelease.runtimeRoot, 'src', 'cli', 'index.mjs');
+  if (!existsSync(entrypoint)) {
+    throw new Error(\`managed runtime entrypoint missing: \${entrypoint}\`);
+  }
+
+  const child = spawnSync(process.execPath, [entrypoint, ...process.argv.slice(2)], { stdio: 'inherit' });
+  if (child.error) throw child.error;
+  process.exit(child.status ?? 1);
+} catch (error) {
+  console.error(\`[myelin] \${error.message}\`);
+  process.exit(1);
+}
+`;
+}
+
+function renderManagedPythonBridgeSource(relativeTargetPath, mode) {
+  return `#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import re
+import runpy
+import sys
+
+TARGET_PATH = ${JSON.stringify(relativeTargetPath)}
+MODE = ${JSON.stringify(mode)}
+RELEASE_ID_RE = re.compile(r'^main-[0-9a-f]{7,64}$')
+
+def normalized_runtime_root(value):
+    raw = str(value)
+    is_windows_drive_root = len(raw) >= 3 and raw[1] == ':' and raw[2] in ('/', chr(92)) and raw[0].isalpha()
+    if is_windows_drive_root:
+        return raw.replace('/', chr(92)).casefold()
+    normalized = raw.replace(chr(92), '/')
+    parts = normalized.split('/')
+    drive = parts[2] if len(parts) > 2 else ''
+    if len(parts) >= 3 and parts[0] == '' and parts[1] == 'mnt' and len(drive) == 1 and drive.isalpha():
+        rest = '/'.join(parts[3:]).replace('/', chr(92))
+        return (drive.upper() + ':' + chr(92) + rest).casefold()
+    return os.path.normcase(os.path.normpath(raw))
+
+def resolve_target():
+    env_dir = os.environ.get('MYELIN_DIR')
+    root = Path(env_dir if env_dir and env_dir.strip() else (Path.home() / '.myelin'))
+    current_path = root / 'current.json'
+    releases_dir = root / 'releases'
+    try:
+        current = json.loads(current_path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise RuntimeError(f'could not read {current_path}: {exc}') from exc
+
+    release_id = current.get('releaseId')
+    version = current.get('version')
+    if (
+        version != 1
+        or not isinstance(release_id, str)
+        or RELEASE_ID_RE.fullmatch(release_id) is None
+    ):
+        raise RuntimeError(f'invalid managed runtime pointer: {current_path}')
+
+    runtime_root = releases_dir / release_id
+    if normalized_runtime_root(current.get('runtimeRoot')) != normalized_runtime_root(runtime_root):
+        raise RuntimeError(f'invalid managed runtime pointer: {current_path}')
+
+    target = runtime_root / Path(TARGET_PATH)
+    if not target.is_file():
+        raise RuntimeError(f'managed runtime target missing: {target}')
+    return target
+
+try:
+    target = resolve_target()
+    if MODE == 'module':
+        globals().update(runpy.run_path(str(target)))
+    else:
+        runpy.run_path(str(target), run_name='__main__')
+except Exception as exc:
+    print(f'[myelin] {exc}', file=sys.stderr)
+    raise SystemExit(1)
+`;
+}
+
+export function writeManagedRuntimeBridge({
+  home = homedir(),
+  rootDir,
+  mkdirSyncFn = mkdirSync,
+  writeFileSyncFn = writeFileSync,
+} = {}) {
+  const paths = runtimeBridgePaths(home, rootDir);
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'cli'), { recursive: true });
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'mitm'), { recursive: true });
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'mcp'), { recursive: true });
+  writeFileSyncFn(paths.cliPath, renderManagedCliBridgeSource(), 'utf8');
+  writeFileSyncFn(paths.mitmAddonPath, renderManagedPythonBridgeSource('src/mitm/copilot_addon.py', 'module'), 'utf8');
+  writeFileSyncFn(paths.gitExtraPath, renderManagedPythonBridgeSource('src/mcp/git-extra.py', 'script'), 'utf8');
+  return paths;
 }
 
 /**
  * Return the path to the Myelin mitmproxy addon script.
- * Resolves relative to the myelin repo root so it works on all platforms.
+ * Resolves through the stable runtime bridge so updates follow current.json.
  */
-export function mitmAddonPath(home, os) {
-  return join(resolveRepoRoot(home, os), 'src', 'mitm', 'copilot_addon.py');
+export function mitmAddonPath(home) {
+  return runtimeBridgePaths(home).mitmAddonPath;
 }
 
 /**
@@ -809,7 +1040,7 @@ export function mitmAddonPath(home, os) {
  * Solves Copilot launching MCP servers from a generic CWD instead of the project dir.
  */
 function writeSerenaWrapper(home, serenaBin) {
-  const binDir = join(home, '.myelin', 'bin');
+  const binDir = managedPaths({ home }).binDir;
   mkdirSync(binDir, { recursive: true });
   if (process.platform === 'win32') {
     const ps1 = join(binDir, 'serena-mcp.ps1');
@@ -847,7 +1078,7 @@ exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
  * even when the client spawns MCP servers from a generic working directory.
  */
 function writeCodegraphWrapper(home, codegraphBin) {
-  const binDir = join(home, '.myelin', 'bin');
+  const binDir = managedPaths({ home }).binDir;
   mkdirSync(binDir, { recursive: true });
   if (process.platform === 'win32') {
     const ps1 = join(binDir, 'codegraph-mcp.ps1');
@@ -981,7 +1212,10 @@ export function buildMitmServiceInstallOptions({
       : mitmAddonPathImpl(effectiveHome, os),
     envVars,
     upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
-    logPath: os === 'windows' ? normalizeWindowsFilesystemPath(join(effectiveHome, '.myelin', 'mitmproxy.log')) : join(effectiveHome, '.myelin', 'mitmproxy.log'),
+    logPath: joinManaged(managedPaths({
+      home: effectiveHome,
+      platform: os === 'windows' ? 'windows' : os,
+    }).root, 'mitmproxy.log'),
     home: effectiveHome,
     egressPort,
     manager: winManager,
@@ -1168,6 +1402,7 @@ async function main() {
   const os       = detectOS();
   const shell    = detectShell();
   const home     = homedir();
+  const managed = managedPaths({ home, env: process.env });
   const claudeCC = !flags['copilot-only'];
   const copilot  = !flags['claude-only'];
 
@@ -1175,7 +1410,7 @@ async function main() {
 
   // Migrate ~/.tokenstack → ~/.myelin (one-time)
   const oldDir = join(home, '.tokenstack');
-  const newDir = join(home, '.myelin');
+  const newDir = managed.root;
   // Also handle the case where Move-Item put .tokenstack *inside* .myelin
   const nestedOld = join(newDir, '.tokenstack');
   const runningFromOld = process.argv[1]?.startsWith(oldDir);
@@ -1315,7 +1550,7 @@ async function main() {
 
   if (flags.check) { printStateTable(tools, caBundles, corpProxy); process.exit(0); }
 
-  mkdirSync(join(home, '.myelin'), { recursive: true });
+  mkdirSync(managed.root, { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   const initialEnginePlan = buildEngineInstancePlan(existingCfg);
   const initialPrimaryInstance = initialEnginePlan.instances.find(({ role }) => role === 'primary');
@@ -1323,7 +1558,7 @@ async function main() {
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
-  const venv = join(home, '.myelin', 'venv');
+  const venv = managed.venvPath;
   // Gated on BOTH the config flag AND actual presence — a leftover global
   // install from a prior "enabled: true" run (or an unrelated `npm install -g
   // @optave/codegraph` on the machine) must never cause MCP registration
@@ -1360,6 +1595,14 @@ async function main() {
     console.log('\n[dry-run] No changes made.\n');
     return;
   }
+
+  const managedRuntime = resolveManagedRuntime({
+    home,
+    os,
+    stageMainRuntimeFn: stageMainRuntime,
+    repoUrl: resolveManagedMainRepoUrl(),
+  });
+  const runtimeBridge = writeManagedRuntimeBridge({ home });
 
 
   step('[1/7] Package manager...');
@@ -1762,15 +2005,12 @@ async function main() {
     toolPaths.codegraphWrapper = writeCodegraphWrapper(home, toolPaths.codegraph);
   }
 
-  const memoryFile = os === 'windows'
-    ? join(home, '.myelin', 'memory.jsonl').replace(/\//g, '\\')
-    : join(home, '.myelin', 'memory.jsonl');
-  const repoRoot = resolveRepoRoot(home, os);
+  const memoryFile = joinManaged(managed.root, 'memory.jsonl');
   const gitExtraEnabled = existingCfg.code_discovery?.mcp_git_extra !== false;
   const gitExtraServer = gitExtraEnabled
     ? {
         command: os === 'windows' ? 'python' : 'python3',
-        args: [join(repoRoot, 'src', 'mcp', 'git-extra.py')],
+        args: [runtimeBridge.gitExtraPath],
       }
     : undefined;
 
@@ -1884,7 +2124,7 @@ async function main() {
       const res = ensureSafeRtkCopilotHook({
         home,
         nodePath: process.execPath,
-        repoRoot: resolveRepoRoot(home, os),
+        repoRoot: runtimeBridge.root,
         mode: rtkActive ? 'active' : 'inactive',
       });
       if (res.action === 'wrote-guarded') ok('~/.copilot/hooks/rtk-rewrite.json (fail-open guard)');
@@ -1910,7 +2150,7 @@ stack (Serena + Semble registration/indexing for the current git repo).
 
 1. Run \`myelin init $ARGUMENTS\` via the terminal/Bash tool. If the \`myelin\`
    alias isn't on PATH yet in this session, fall back to
-   \`node "${resolveRepoRoot(home, os)}src/cli/index.mjs" init $ARGUMENTS\`.
+   \`"${managedRuntime.commandPath}" init $ARGUMENTS\`.
 2. Stream the command's output back to the user.
 3. If it reports warnings or failures, summarize them clearly and suggest
    \`myelin verify\` as a follow-up health check.
@@ -1954,17 +2194,17 @@ ${initSkillBody}`);
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
     const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
-    const repoRoot = resolveRepoRoot(home, os);
     const myelinCmd = os === 'windows'
-      ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
-      : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
-    const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"';
+      ? `function global:myelin { & "${managedRuntime.commandPath}" @args }`
+      : `alias myelin='"${managedRuntime.commandPath}"'`;
+    const profilePathBlock = managedProfilePathBlock({ os, home });
+    const extraPath = profilePathBlock.posixExport;
 
     // On Windows, add key bin dirs to process.env.PATH now so tool invocations work
     if (os === 'windows') {
       const winPaths = [
         join(home, '.local', 'bin'),
-        join(home, '.myelin', 'bin'),
+        managed.binDir,
         join(home, 'AppData', 'Roaming', 'uv', 'bin'),
         join(home, 'AppData', 'Local', 'uv', 'bin'),
         join(home, 'AppData', 'Roaming', 'npm'),
@@ -1986,13 +2226,8 @@ ${initSkillBody}`);
       // and _claude wrappers so they can't cross-contaminate each other.
       const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
-      const psPaths = [
-        `$env:USERPROFILE\\.local\\bin`,
-        `$env:USERPROFILE\\.myelin\\bin`,
-        `$env:APPDATA\\uv\\bin`,
-        `$env:LOCALAPPDATA\\uv\\bin`,
-        `$env:APPDATA\\npm`,
-      ].map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
+      const psPaths = profilePathBlock.windowsPathDirs
+        .map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
@@ -2036,7 +2271,7 @@ ${initSkillBody}`);
   // isn't writable (some corp machines) — the shell alias/PS module above
   // remains the reliable baseline either way.
   {
-    const linkResult = linkGlobalBin({ repoRoot: resolveRepoRoot(home, os).replace(/[\\/]$/, ''), os });
+    const linkResult = linkGlobalBin({ home, os });
     if (linkResult.linked) {
       ok(`myelin linked globally via npm (${linkResult.binDir})`);
     } else {
@@ -2067,6 +2302,9 @@ ${initSkillBody}`);
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
+      ...(typeof process.env.MYELIN_DIR === 'string' && process.env.MYELIN_DIR.trim()
+        ? { MYELIN_DIR: process.env.MYELIN_DIR }
+        : {}),
       ...sslEnv,
     };
     if (setUserEnvVars(registryVars)) {
