@@ -116,6 +116,13 @@ def _int_env(name: str, default: int, lo: int = 1, hi: int = 64) -> int:
         v = default
     return max(lo, min(hi, v))
 
+def _float_env(name: str, default: float, lo: float, hi: float) -> float:
+    try:
+        v = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(hi, v))
+
 SOCKS_WORKERS    = _int_env('MYELIN_SOCKS_WORKERS', 16, 1, 64)
 COMPRESS_WORKERS = _int_env('MYELIN_COMPRESS_WORKERS', 4, 1, 32)
 
@@ -148,6 +155,23 @@ BLOCK_BYPASS = os.environ.get('MYELIN_BLOCK_BYPASS', '0') == '1'
 # network block can't be recovered — short enough that a transient block clears
 # fast, long enough not to invite a retry hammer.
 BLOCK_RETRY_AFTER = _int_env('MYELIN_BLOCK_RETRY_AFTER', 15, 1, 300)
+
+# SOCKS5 override-proxy relay budgets.
+#
+# The block-bypass relay re-sends the request through the override proxy and
+# BUFFERS the whole response. A long streaming (SSE) generation can take far
+# longer than the old hardcoded 15s total, so the total budget must be large by
+# default (a short generation still returns fast). The CONNECT budget stays
+# short so a dead proxy fails fast instead of eating the whole total budget.
+SOCKS_CONNECT_TIMEOUT = _float_env('MYELIN_SOCKS_CONNECT_TIMEOUT', 6.0, 0.5, 60.0)
+SOCKS_RELAY_TIMEOUT   = _float_env('MYELIN_SOCKS_RELAY_TIMEOUT', 110.0, 1.0, 600.0)
+
+# Sticky per-host block cache TTL (seconds). After a host is CONFIRMED blocked
+# (418) once, future requests to it are pre-emptively relayed through the
+# override proxy for this window instead of paying another direct 418 round-trip
+# (which is what surfaces as the CLI's "transient API error, retrying"). 0
+# disables the sticky fast-path.
+BLOCK_STICKY_TTL = _float_env('MYELIN_BLOCK_STICKY_TTL', 8.0, 0.0, 300.0)
 
 _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', 'netfree')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MARKER_RAW else None
@@ -665,6 +689,51 @@ def _compress_responses(input_items: list, fmt: str, model: str = '') -> tuple:
 # from that file should establish the route within ~30s).
 # ---------------------------------------------------------------------------
 
+class _StickyBlockCache:
+    """Bounded LRU of hosts CONFIRMED blocked (418) recently.
+
+    After a host is marked, ``is_blocked`` returns True until ``ttl`` seconds
+    have elapsed, at which point the entry auto-expires back to the fast direct
+    path. A ``ttl`` of 0 disables the cache entirely. ``clock`` is injectable
+    for deterministic tests. Not thread-safe by design: it is only touched from
+    the mitmproxy event-loop thread (request/response hooks), never a worker.
+    """
+
+    def __init__(self, ttl: float, max_entries: int = 256,
+                 clock=time.monotonic):
+        self._ttl = float(ttl)
+        self._max = max(1, int(max_entries))
+        self._clock = clock
+        self._d: 'collections.OrderedDict[str, float]' = collections.OrderedDict()
+
+    def mark(self, host: str) -> None:
+        if self._ttl <= 0 or not host:
+            return
+        self._d[host] = self._clock() + self._ttl
+        self._d.move_to_end(host)
+        while len(self._d) > self._max:
+            self._d.popitem(last=False)
+
+    def is_blocked(self, host: str) -> bool:
+        exp = self._d.get(host)
+        if exp is None:
+            return False
+        if self._clock() >= exp:
+            self._d.pop(host, None)
+            return False
+        self._d.move_to_end(host)
+        return True
+
+    def clear(self, host: str) -> None:
+        self._d.pop(host, None)
+
+    def clear_all(self) -> None:
+        self._d.clear()
+
+
+_STICKY = _StickyBlockCache(BLOCK_STICKY_TTL)
+
+
 def _is_network_block(status: int, body: bytes) -> bool:
     if status != 418:
         return False
@@ -851,6 +920,33 @@ def _socks_success(exc, res) -> bool:
     return exc is None and res is not None and res.status != 418
 
 
+async def _relay_via_socks5(flow, host: str) -> Optional[ReplayResult]:
+    """Snapshot ``flow``'s request and relay it through the SOCKS5 override proxy
+    on the guarded pool. Returns a ReplayResult on a real bypass, or None on
+    rejection / failure / another 418. Does NOT mutate the flow — the caller
+    applies the result on the loop thread. Shared by the response-hook 418 path
+    and the request-hook pre-emptive (sticky) path."""
+    parsed = urlparse(OVERRIDE_PROXY)
+    if parsed.scheme != 'socks5':
+        return None
+    port = flow.request.port or 443
+    method = flow.request.method
+    path = flow.request.path
+    req_headers = {k: v for k, v in flow.request.headers.items(multi=True)}
+    try:
+        result = await submit_guarded(
+            _SOCKS_POOL, _socks_success,
+            _socks5_relay, host, port, method, path,
+            req_headers, flow.request.content or b'',
+            parsed.hostname, parsed.port or 1080,
+            SOCKS_CONNECT_TIMEOUT, SOCKS_RELAY_TIMEOUT)
+    except Rejected:
+        return None
+    if result is not None and result.status != 418:
+        return result
+    return None
+
+
 def _serve_graceful_block_error(flow, host: str, reason: str) -> None:
     """Replace an unrecoverable 418 network-block response with a clean,
     parseable JSON error + 503/Retry-After.
@@ -918,6 +1014,23 @@ class MyelinAddon:
                     {'content-type': 'text/plain'},
                 )
             return
+
+        # Pre-emptive block bypass: a host CONFIRMED blocked (418) very recently
+        # is relayed through the override proxy immediately, skipping another
+        # direct 418 round-trip (the round-trip is what the CLI surfaces as a
+        # "transient API error, retrying"). Applies to ANY method — the blocked
+        # stream is a GET /responses. Fail-open: a miss leaves the request on the
+        # normal path so the response-hook bypass still gets its chance.
+        if (BLOCK_BYPASS and OVERRIDE_PROXY
+                and not flow.metadata.get('myelin_via_override')
+                and _STICKY.is_blocked(host)):
+            result = await _relay_via_socks5(flow, host)
+            if result is not None:
+                flow.metadata['myelin_via_override'] = True
+                flow.response = http.Response.make(
+                    result.status, result.body, result.headers)
+                ctx.log.info(f'[myelin] {host} pre-emptively served via SOCKS5 (sticky block)')
+                return
 
         if flow.request.method != 'POST':
             return
@@ -1138,6 +1251,10 @@ class MyelinAddon:
         if BLOCK_BYPASS and (OVERRIDE_PROXY or VPN_DOMAINS_FILE):
             body = flow.response.content or b''
             if _is_network_block(flow.response.status_code, body):
+                # Confirmed network block: remember it so subsequent requests to
+                # this host are pre-emptively relayed (see the request hook)
+                # instead of paying another direct 418 round-trip.
+                _STICKY.mark(host)
                 # Don't retry a flow that already went through the override proxy
                 if flow.metadata.get('myelin_via_override'):
                     ctx.log.error(scrub_log_str(f'[myelin] {host} still blocked via override proxy — giving up'))
@@ -1155,23 +1272,9 @@ class MyelinAddon:
                         # mitmproxy's server_conn.via has no SOCKS5 upstream
                         # support (http/https/tls/tcp schemes only) — relay
                         # manually via a stdlib-only SOCKS5 client instead.
-                        # Snapshot request data ON the loop; the worker is pure.
-                        port = flow.request.port or 443
-                        method = flow.request.method
-                        path = flow.request.path
-                        req_headers = {k: v for k, v in flow.request.headers.items(multi=True)}
-                        try:
-                            result = await submit_guarded(
-                                _SOCKS_POOL, _socks_success,
-                                _socks5_relay, host, port, method, path,
-                                req_headers, flow.request.content or b'',
-                                parsed.hostname, parsed.port or 1080)
-                        except Rejected:
-                            result = None
-                            ctx.log.error(scrub_log_str(
-                                f'[myelin] {host} bypass skipped — SOCKS relay breaker open/saturated'))
+                        result = await _relay_via_socks5(flow, host)
                         # Apply the result ON the loop thread.
-                        if result is not None and result.status != 418:
+                        if result is not None:
                             flow.response = http.Response.make(
                                 result.status, result.body, result.headers)
                             ctx.log.info(f'[myelin] {host} served via SOCKS5 override proxy')
