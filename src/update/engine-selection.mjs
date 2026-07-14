@@ -1,29 +1,51 @@
 /**
  * Compression-backend selection adapter for the update subsystem.
  *
- * The canonical compression configuration is main's `proxy.engine` model
- * (`headroom` | `headroom_lite`) plus `proxy.compression.enabled` and
- * `proxy.copilot_headroom.enabled`. The atomic-update orchestrator, however,
- * is written against a small "compression selection" shape
- * (`backend` in `headroom-lite` | `headroom-original` | `disabled`, plus a
- * `copilotProxy` flag) and against runtime descriptors with a `healthUrl`.
+ * The canonical compression configuration is PR #23's `compression.backend`
+ * model (`headroom-lite` | `headroom-original` | `disabled`) plus a shared
+ * `compression.port` and a `compression.copilot_proxy` toggle. The legacy
+ * `proxy.engine` / `proxy.headroom*` keys are honoured as a derived alias so
+ * raw configs that predate the canonical block (e.g. the orchestrator's parsed
+ * YAML snapshots) keep resolving to the correct backend.
  *
- * This module maps the canonical `proxy.engine` config onto that shape so the
- * update subsystem stays backend-agnostic without reintroducing the retired
- * top-level `compression.backend` schema.
+ * The atomic-update orchestrator is written against a small "compression
+ * selection" shape (`backend`, plus a `copilotProxy` flag) and against runtime
+ * descriptors with a `healthUrl`. This module maps whichever config model is
+ * present onto that shape so the update subsystem stays backend-agnostic.
  */
 import { normalizeCompressionEngine } from '../config/schema.mjs';
+import { COMPRESSION_BACKENDS } from '../config/compression.mjs';
 import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 
 const DEFAULT_COPILOT_PORT = 8788;
 
 /**
+ * True when the config carries a canonical `compression.backend` selection.
+ */
+function hasCanonicalBackend(config) {
+  const compression = config?.compression;
+  return typeof compression === 'object'
+    && compression !== null
+    && !Array.isArray(compression)
+    && compression.backend != null;
+}
+
+/**
  * Resolves the selected component backend name used by the update manifest
- * (`headroom-lite` | `headroom-original` | `disabled`) from the canonical
- * `proxy.engine` / `proxy.compression.enabled` config. Legacy `proxy.headroom*`
- * flags are honoured through `normalizeCompressionEngine`.
+ * (`headroom-lite` | `headroom-original` | `disabled`). Prefers the canonical
+ * `compression.backend`; falls back to the legacy `proxy.engine` /
+ * `proxy.compression.enabled` derivation for raw configs that lack it.
  */
 export function selectedBackend(config = {}) {
+  if (hasCanonicalBackend(config)) {
+    const backend = config.compression.backend;
+    if (!COMPRESSION_BACKENDS.includes(backend)) {
+      throw new Error(
+        `[myelin] invalid compression.backend "${backend}"; expected one of ${COMPRESSION_BACKENDS.join(', ')}`,
+      );
+    }
+    return backend;
+  }
   if (config?.proxy?.compression?.enabled === false) return 'disabled';
   const engine = normalizeCompressionEngine(config, () => {});
   return engine === 'headroom_lite' ? 'headroom-lite' : 'headroom-original';
@@ -31,11 +53,15 @@ export function selectedBackend(config = {}) {
 
 /**
  * Returns the compression selection consumed by the orchestrator and the
- * `myelin update` CLI: `{ backend, copilotProxy: { enabled, port } }`.
+ * `myelin update` CLI: `{ backend, copilotProxy: { enabled, port } }`. Reads the
+ * canonical `compression.copilot_proxy` when present, else the legacy
+ * `proxy.copilot_headroom` alias.
  */
 export function resolveCompressionConfig(config = {}) {
   const backend = selectedBackend(config);
-  const copilot = config?.proxy?.copilot_headroom ?? {};
+  const copilot = hasCanonicalBackend(config)
+    ? (config.compression.copilot_proxy ?? {})
+    : (config?.proxy?.copilot_headroom ?? {});
   return {
     backend,
     copilotProxy: {

@@ -103,6 +103,31 @@ export const DEFAULT_CONFIG = {
       watchdog_interval_minutes: 2,
     },
   },
+  // Canonical compression configuration (PR #23 design). `compression.backend`
+  // is the single source of truth for which compression service runs:
+  //   'headroom-lite'      → deterministic Node sidecar (@yehsuf/headroom-lite)
+  //   'headroom-original'  → classic Python headroom-ai
+  //   'disabled'           → no MITM compression / no dedicated Copilot proxy
+  // One shared `compression.port` (8787) is used regardless of backend. The
+  // legacy `proxy.engine` / `proxy.headroom*` keys are kept as a derived alias
+  // (see reader.mjs) so pre-existing consumers and configs keep working.
+  compression: {
+    backend: 'headroom-lite',
+    port: 8787,
+    // copilot_proxy: dedicated Copilot-facing compression instance (mirrors the
+    // legacy proxy.copilot_headroom toggle). Off by default.
+    copilot_proxy: {
+      enabled: false,
+      port: 8788,
+    },
+    // original: settings that only apply when backend is 'headroom-original'.
+    original: {
+      mode: 'cache',
+      intercept_tool_results: true,
+      corporate_proxy: '',
+      openai_target_url: 'https://api.githubcopilot.com',
+    },
+  },
   index_tier: 'default',
   code_discovery: {
     serena: {

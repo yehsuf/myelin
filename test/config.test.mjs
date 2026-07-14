@@ -49,6 +49,26 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.headroom.intercept_tool_results = true', () => {
     assert.equal(DEFAULT_CONFIG.proxy.headroom.intercept_tool_results, true);
   });
+  it('DEFAULT_CONFIG canonical compression.backend = headroom-lite (PR #23)', () => {
+    assert.equal(DEFAULT_CONFIG.compression.backend, 'headroom-lite');
+  });
+  it('DEFAULT_CONFIG uses one shared canonical compression.port = 8787', () => {
+    assert.equal(DEFAULT_CONFIG.compression.port, 8787);
+  });
+  it('DEFAULT_CONFIG canonical compression.copilot_proxy is opt-in', () => {
+    assert.equal(DEFAULT_CONFIG.compression.copilot_proxy.enabled, false);
+    assert.equal(DEFAULT_CONFIG.compression.copilot_proxy.port, 8788);
+  });
+  it('DEFAULT_CONFIG canonical compression.original mirrors headroom defaults', () => {
+    assert.equal(DEFAULT_CONFIG.compression.original.mode, 'cache');
+    assert.equal(DEFAULT_CONFIG.compression.original.intercept_tool_results, true);
+    assert.equal(DEFAULT_CONFIG.compression.original.openai_target_url, 'https://api.githubcopilot.com');
+  });
+  it('DEFAULT_CONFIG retains the legacy proxy.* alias alongside canonical compression', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.engine, 'headroom_lite');
+    assert.ok(DEFAULT_CONFIG.proxy.headroom);
+    assert.ok(DEFAULT_CONFIG.proxy.headroom_lite);
+  });
   it('DEFAULT_CONFIG has index_tier = default', () => {
     assert.equal(DEFAULT_CONFIG.index_tier, 'default');
   });
@@ -320,6 +340,58 @@ describe('config reader', () => {
     assert.equal(cfg.proxy.headroom.enabled, true);
     assert.equal(cfg.proxy.headroom_lite.enabled, false);
     assert.deepEqual(warnings, ['[myelin] conflicting legacy proxy.headroom.enabled and proxy.headroom_lite.enabled; using headroom']);
+  });
+
+  it('forward-derives canonical compression.* from the default proxy model', async () => {
+    const saved = process.env.HEADROOM_PORT;
+    delete process.env.HEADROOM_PORT;
+    const cfg = await loadConfig(join(TEST_DIR, 'nonexistent.yaml'));
+    if (saved !== undefined) process.env.HEADROOM_PORT = saved;
+    assert.equal(cfg.compression.backend, 'headroom-lite');
+    assert.equal(cfg.compression.port, 8787);
+    assert.equal(cfg.compression.copilot_proxy.enabled, false);
+  });
+
+  it('forward-derives compression.backend = headroom-original from legacy engine', async () => {
+    const cfgPath = join(TEST_DIR, 'legacy-original.yaml');
+    writeFileSync(cfgPath, 'proxy:\n  engine: headroom\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.compression.backend, 'headroom-original');
+  });
+
+  it('forward-derives compression.backend = disabled when compression is turned off', async () => {
+    const cfgPath = join(TEST_DIR, 'legacy-disabled.yaml');
+    writeFileSync(cfgPath, 'proxy:\n  engine: headroom_lite\n  compression:\n    enabled: false\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.compression.backend, 'disabled');
+  });
+
+  it('lets a canonical compression.backend win and reconciles the legacy proxy alias', async () => {
+    const cfgPath = join(TEST_DIR, 'canonical-original.yaml');
+    writeFileSync(cfgPath, 'compression:\n  backend: headroom-original\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.compression.backend, 'headroom-original');
+    assert.equal(cfg.proxy.engine, 'headroom');
+    assert.equal(cfg.proxy.headroom.enabled, true);
+    assert.equal(cfg.proxy.headroom_lite.enabled, false);
+    assert.equal(cfg.proxy.compression.enabled, true);
+  });
+
+  it('lets a canonical disabled backend reconcile proxy.compression.enabled = false', async () => {
+    const cfgPath = join(TEST_DIR, 'canonical-disabled.yaml');
+    writeFileSync(cfgPath, 'compression:\n  backend: disabled\n');
+    const cfg = await loadConfig(cfgPath);
+    assert.equal(cfg.compression.backend, 'disabled');
+    assert.equal(cfg.proxy.compression.enabled, false);
+  });
+
+  it('rejects an invalid canonical compression.backend', async () => {
+    const cfgPath = join(TEST_DIR, 'canonical-invalid.yaml');
+    writeFileSync(cfgPath, 'compression:\n  backend: nope\n');
+    await assert.rejects(
+      loadConfig(cfgPath, () => {}),
+      /\[myelin\] invalid compression\.backend "nope"/,
+    );
   });
 });
 
