@@ -54,16 +54,16 @@ Layout (see `docs/superpowers/specs/2026-07-14-agent-workspace-model-design.md`)
 ```bash
 mkdir -p ~/myelin-agents/.bare
 git clone --bare git@github.com:yehsuf/myelin.git ~/myelin-agents/.bare/myelin.git
-git --git-dir=~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" config remote.origin.fetch \
     '+refs/heads/*:refs/remotes/origin/*'
-git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
 ```
 
 ### Start a feature (per agent)
 
 ```bash
-git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
-git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree add \
     ~/myelin-agents/<agent>/myelin -b <branch> origin/main
 cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
 ```
@@ -111,8 +111,8 @@ gh pr create --base main --head <branch>   # then ASK the human to approve the m
 ### Remove a worktree when done
 
 ```bash
-git --git-dir=~/myelin-agents/.bare/myelin.git worktree remove ~/myelin-agents/<agent>/myelin
-git --git-dir=~/myelin-agents/.bare/myelin.git worktree prune
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree remove ~/myelin-agents/<agent>/myelin
+git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree prune
 ```
 
 ### Retiring the legacy `~/tokenstack-wt-*` worktrees (coordinated — NOT unilateral)

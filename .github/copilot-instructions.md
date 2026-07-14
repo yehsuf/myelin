@@ -31,7 +31,7 @@
 
 ## Local development workspace
 - Layout: `~/myelin-agents/.bare/<repo>.git` (bare canonical) + `~/myelin-agents/<agent>/<repo>/` (per-agent worktree) + `~/myelin-agents/<agent>/scratch/`.
-- Create a worktree: `git --git-dir=~/myelin-agents/.bare/<repo>.git worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
+- Create a worktree: `git --git-dir="$HOME/myelin-agents/.bare/<repo>.git" worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
 - Agent identity is the `<agent>` path segment (derived, no id file). See CLAUDE.md for full setup + the coordinated legacy-worktree retirement.
 
 ## Technology
