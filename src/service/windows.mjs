@@ -1616,20 +1616,17 @@ export function removeEngineInstance(instance, {
   for (const { paths: ownedPaths } of identities) {
     uninstallWindowsWatchdogTaskImpl({ id: ownedPaths.id, home, isWslImpl });
   }
-  if (manager === 'winsw') {
-    let removed = false;
-    for (const { instance: ownedInstance, paths: ownedPaths } of identities) {
-      if (ownedWinswEngineInstance(ownedInstance, ownedPaths, {
-        home,
-        existsSyncImpl,
-        readFileSyncImpl,
-        execSyncImpl,
-        powershellExe,
-      })) {
-        removed = uninstallWinswServiceImpl({ id: ownedPaths.id, home, isWslImpl }) || removed;
-      }
+  for (const { instance: ownedInstance, paths: ownedPaths } of identities) {
+    if (ownedWinswEngineInstance(ownedInstance, ownedPaths, {
+      home,
+      existsSyncImpl,
+      readFileSyncImpl,
+      execSyncImpl,
+      powershellExe,
+      isWslImpl,
+    })) {
+      uninstallWinswServiceImpl({ id: ownedPaths.id, home, isWslImpl });
     }
-    return removed;
   }
   for (const { instance: ownedInstance } of identities) {
     runPsFn(generateEngineInstanceRemovalScript({ instance: ownedInstance, home }), { home });
@@ -2200,6 +2197,7 @@ export function mitmServiceStatus({
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
+  isWslImpl = isWsl,
 } = {}) {
   if (manager !== 'winsw') {
     try {
@@ -2233,7 +2231,14 @@ export function mitmServiceStatus({
       return { running: false, state: 'Unknown' };
     }
   }
-  return winswServiceStatus({ id: MITM_SERVICE_ID });
+  return winswServiceStatus({
+    id: MITM_SERVICE_ID,
+    home,
+    execSyncImpl,
+    existsSyncImpl,
+    powershellExe,
+    isWslImpl,
+  });
 }
 
 export function serviceStatus(opts = {}) {

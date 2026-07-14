@@ -529,6 +529,46 @@ def test_mitm_compresses_responses_input_array():
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
 
 
+def test_configured_engine_routes_responses_through_egress_to_original_provider():
+    """Responses payloads use the selected Copilot engine, never the sidecar."""
+    body = {
+        'model': 'gpt-4o',
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'x' * 2000},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+    }
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    old_engine_url = copilot_addon.COPILOT_ENGINE_URL
+    old_egress = copilot_addon.EGRESS_PORT
+    try:
+        copilot_addon.COPILOT_ENGINE_URL = 'http://127.0.0.1:8788'
+        copilot_addon.EGRESS_PORT = 8889
+        with patch('urllib.request.urlopen') as sidecar:
+            asyncio.run(MyelinAddon().request(flow))
+        assert sidecar.call_count == 0
+        assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+            '127.0.0.1', 8788, 'http',
+        )
+        assert flow.request.path == '/v1/responses'
+        assert flow.request.headers['x-myelin-original-host'] == 'api.business.githubcopilot.com'
+        assert flow.request.headers['x-myelin-original-path'] == '/responses'
+
+        flow.client_conn.sockname = ('127.0.0.1', 8889)
+        flow.request.host = '127.0.0.1'
+        flow.request.port = 8889
+        asyncio.run(MyelinAddon().request(flow))
+    finally:
+        copilot_addon.COPILOT_ENGINE_URL = old_engine_url
+        copilot_addon.EGRESS_PORT = old_egress
+
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+        'api.business.githubcopilot.com', 443, 'https',
+    )
+    assert flow.request.path == '/responses'
+    assert 'x-myelin-original-host' not in flow.request.headers
+
+
 def test_mitm_bails_when_no_messages_and_no_input():
     """A completion POST with neither `messages` nor `input` must forward
     unchanged (no compression call)."""

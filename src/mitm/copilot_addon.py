@@ -1126,6 +1126,26 @@ class MyelinAddon:
             # touching the live zone). Everything else in the request hook is
             # messages-specific, so this path is self-contained and returns.
             input_items = data.get('input')
+            if redirect_eligible and isinstance(input_items, list) and input_items:
+                new_body = json.dumps(data, separators=(',', ':')).encode()
+                encoded_body = _encode_body(new_body, raw_encoding)
+                if 'gzip' not in raw_encoding and 'br' not in raw_encoding:
+                    flow.request.headers.pop('content-encoding', None)
+                flow.request.content = encoded_body
+                flow.request.headers['content-length'] = str(len(encoded_body))
+
+                if provider['fmt'] == 'openai' and not path.startswith('/v1/'):
+                    flow.request.path = '/v1' + path
+
+                flow.metadata['myelin_redirected'] = True
+                _set_original_destination_headers(flow, host, path)
+                engine_host, engine_port = copilot_engine
+                flow.request.scheme = 'http'
+                flow.request.host = engine_host
+                flow.request.port = engine_port
+                flow.request.headers['host'] = _host_header(engine_host, 'http', engine_port)
+                return
+
             if COMPRESS and isinstance(input_items, list) and input_items:
                 model = data.get('model', '')
                 flow.metadata['myelin_model'] = model

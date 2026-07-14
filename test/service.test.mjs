@@ -510,9 +510,74 @@ describe('Windows engine descriptor migration ownership', () => {
         uninstalled.push(id);
         return true;
       },
+      runPsFn: () => {},
     });
 
     assert.deepEqual(uninstalled, ['headroom-copilot']);
+  });
+
+  it('removes an owned WinSW descriptor before registry setup during a WinSW-to-registry transition', () => {
+    const events = [];
+    const ownedConfig = [
+      '<service>',
+      '  <id>headroom-copilot</id>',
+      '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom.exe</executable>',
+      '  <arguments>proxy --port 8788</arguments>',
+      '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom-copilot</workingdirectory>',
+      '</service>',
+    ].join('\n');
+
+    removeWindowsEngineInstance(COPILOT_INSTANCE, {
+      manager: 'registry',
+      home: HOME,
+      existsSyncImpl: (path) => path.includes('headroom-copilot'),
+      readFileSyncImpl: () => ownedConfig,
+      uninstallWindowsWatchdogTaskImpl: () => {},
+      uninstallWinswServiceImpl: ({ id }) => {
+        events.push(`winsw:${id}`);
+        return true;
+      },
+      runPsFn: () => events.push('registry'),
+    });
+
+    assert.deepEqual(events, ['winsw:headroom-copilot', 'registry', 'registry']);
+  });
+
+  it('removes registry launchers during a registry-to-WinSW transition', () => {
+    const scripts = [];
+
+    removeWindowsEngineInstance(COPILOT_INSTANCE, {
+      manager: 'winsw',
+      home: HOME,
+      existsSyncImpl: () => false,
+      uninstallWindowsWatchdogTaskImpl: () => {},
+      uninstallWinswServiceImpl: () => {
+        throw new Error('no WinSW descriptor should be removed');
+      },
+      runPsFn: (script) => scripts.push(script),
+    });
+
+    assert.equal(scripts.length, 2);
+    assert.ok(scripts[0].includes('state\\headroom-copilot\\start-headroom-copilot.ps1'));
+    assert.ok(scripts[1].includes('.myelin\\copilot-headroom\\start-copilot-headroom.ps1'));
+  });
+
+  it('does not uninstall an unowned WinSW descriptor during a WinSW-to-registry transition', () => {
+    const uninstalled = [];
+    const scripts = [];
+
+    removeWindowsEngineInstance(COPILOT_INSTANCE, {
+      manager: 'registry',
+      home: HOME,
+      existsSyncImpl: () => true,
+      readFileSyncImpl: () => '<service><id>other-service</id></service>',
+      uninstallWindowsWatchdogTaskImpl: () => {},
+      uninstallWinswServiceImpl: ({ id }) => uninstalled.push(id),
+      runPsFn: (script) => scripts.push(script),
+    });
+
+    assert.deepEqual(uninstalled, []);
+    assert.equal(scripts.length, 2);
   });
 
   it('uninstalls an owned WinSW Lite descriptor configured with a .cmd executable', () => {
@@ -543,6 +608,7 @@ describe('Windows engine descriptor migration ownership', () => {
         uninstalled.push(id);
         return true;
       },
+      runPsFn: () => {},
     });
 
     assert.deepEqual(uninstalled, ['headroom_lite-copilot']);
@@ -1382,13 +1448,20 @@ describe('WinSW WSL filesystem split', () => {
       manager: 'winsw',
       home,
       isWslImpl,
-      existsSyncImpl: () => true,
-      readFileSyncImpl: () => winswConfig,
+      existsSyncImpl: (path) => {
+        filesystemReads.push(path);
+        return path.startsWith('/mnt/c/');
+      },
+      readFileSyncImpl: (path) => {
+        assert.ok(path.startsWith('/mnt/c/'));
+        return winswConfig;
+      },
       uninstallWindowsWatchdogTaskImpl: (options) => watchdogCalls.push(options),
       uninstallWinswServiceImpl: (options) => {
         uninstallCalls.push(options);
         return true;
       },
+      runPsFn: () => {},
     });
 
     assert.equal(status.running, true);
@@ -1887,6 +1960,35 @@ describe('Managed mitm status parser', () => {
 });
 
 describe('mitmServiceStatus', () => {
+  it('forwards WinSW status dependencies, home, and PowerShell selection', () => {
+    const filesystemReads = [];
+    const commands = [];
+    const isWslImpl = () => true;
+
+    const status = mitmServiceStatus({
+      manager: 'winsw',
+      home: 'C:\\Users\\alice',
+      isWslImpl,
+      existsSyncImpl: (path) => {
+        filesystemReads.push(path);
+        return path.startsWith('/mnt/c/');
+      },
+      execSyncImpl: (command) => {
+        commands.push(command);
+        return Buffer.from('Active (running)\n');
+      },
+      powershellExe: 'powershell.exe',
+    });
+
+    assert.equal(status.running, true);
+    assert.deepEqual(filesystemReads, [
+      '/mnt/c/Users/alice/.myelin/services/myelin-mitmproxy/myelin-mitmproxy.exe',
+      '/mnt/c/Users/alice/.myelin/services/myelin-mitmproxy/myelin-mitmproxy.xml',
+    ]);
+    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+    assert.ok(commands[0].includes("'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\myelin-mitmproxy.exe'"));
+  });
+
   it('reads the managed launcher and pid through PowerShell when only Windows paths are available', () => {
     const commands = [];
     const status = mitmServiceStatus({

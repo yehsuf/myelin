@@ -280,10 +280,10 @@ export async function runStats({ wide = false } = {}, {
       fetchStats: readStats,
     }))
     : buildLocalStatusSections(cfg, probeHealth);
-  const headroomLiteSection = localSections.find((section) => section.label === 'headroom-lite');
+  const primarySection = localSections[0];
   const copilotHeadroomSection = localSections.find((section) => section.label === 'copilot-headroom');
 
-  if (headroomLiteSection) sections.push(headroomLiteSection);
+  if (primarySection) sections.push(primarySection);
 
   // ── mitmproxy (if enabled in config) ───────────────────────────────────────
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;

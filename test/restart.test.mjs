@@ -715,6 +715,7 @@ describe('runRestart descriptor plan', () => {
               return true;
             },
             uninstallWindowsWatchdogTaskImpl: () => {},
+            runPsFn: () => {},
           });
         },
         restartEngineInstanceImpl: async () => true,
@@ -816,6 +817,7 @@ describe('Windows descriptor watchdogs', () => {
         return true;
       },
       uninstallWindowsWatchdogTaskImpl: (options) => removedWatchdogs.push(options),
+      runPsFn: () => {},
     });
 
     assert.equal(removed, true);
@@ -861,6 +863,7 @@ describe('Windows descriptor watchdogs', () => {
         return true;
       },
       uninstallWindowsWatchdogTaskImpl: (options) => removedWatchdogs.push(options),
+      runPsFn: () => {},
     });
 
     assert.deepEqual(removedServices.map(({ id }) => id), [

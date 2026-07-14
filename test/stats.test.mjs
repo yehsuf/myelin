@@ -300,6 +300,34 @@ describe('renderLocalStatsRows', () => {
       ]);
     });
 
+    it('renders the selected Python primary section when MITM is disabled', async () => {
+      const consoleCapture = captureConsole();
+      await runStats(
+        { wide: false },
+        {
+          loadConfig: async () => ({
+            proxy: {
+              engine: 'headroom',
+              headroom: { enabled: true, port: 9000 },
+              headroom_lite: { enabled: false },
+              mitm: { enabled: false },
+              copilot_headroom: { enabled: false },
+            },
+          }),
+          log: consoleCapture.log,
+          probeHealth: () => true,
+          pathExists: () => false,
+        },
+      );
+
+      assert.ok(consoleCapture.logs.includes('  headroom  (:9000)'));
+      assert.ok(consoleCapture.logs.includes('  running'));
+      assert.equal(
+        consoleCapture.logs.some(line => line.includes('No services configured')),
+        false,
+      );
+    });
+
     it('queries only the selected Python headroom engine in wide mode', async () => {
       const fetchCalls = [];
       const sections = await collectWideLocalStatsSections({
