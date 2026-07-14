@@ -1,5 +1,5 @@
 import { detectAll } from '../detect/tools.mjs';
-import { execSync } from 'node:child_process';
+import { execSync, spawnSync } from 'node:child_process';
 import { detectOS } from '../detect/os.mjs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -9,7 +9,7 @@ import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
 import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
 import { stageMainRuntime } from '../runtime/stage-main.mjs';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
-import { managedPaths } from '../shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, resolveMyelinRoot } from '../shared/myelin-paths.mjs';
 
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
 
@@ -121,41 +121,119 @@ export async function runUpdate(options = {}, deps = {}) {
     }
   }
   log('─'.repeat(55));
-  if (check) log('  Run without --check to apply updates.\n');
-  if (!check) {
-    const runRestartFn = deps.runRestartFn ?? (async () => {
-      const { runRestart } = await import('./restart.mjs');
-      return runRestart();
-    });
-    await runRestartFn();
+  if (check) {
+    log('  Run without --check to apply updates.\n');
+    log('  Run: myelin verify to confirm.\n');
   }
-  else log('  Run: myelin verify to confirm.\n');
 }
 
-export async function runSelfUpdate(options = {}, deps = {}) {
+export function runManagedInstaller({
+  runtimeRoot,
+  args = ['--yes'],
+  env = process.env,
+  spawnSyncFn = spawnSync,
+} = {}) {
+  const installerPath = joinManaged(runtimeRoot, 'src', 'install.mjs');
+  const result = spawnSyncFn(process.execPath, [installerPath, ...args], {
+    stdio: 'inherit',
+    env,
+  });
+  return { status: result?.status ?? 1 };
+}
+
+/**
+ * The single public update entrypoint. It stages and activates the managed
+ * main-channel runtime, re-runs the integration installer against the newly
+ * activated runtime, reports stale config, upgrades external tools, and
+ * restarts services.
+ *
+ * `--download-only` stages and validates a candidate but never activates it
+ * (no launcher, installer, tool, or restart side effects). `--check` is a
+ * non-mutating preview of external-tool updates only — it never stages or
+ * activates a runtime.
+ */
+export async function runManagedUpdate({ downloadOnly = false, check = false } = {}, deps = {}) {
   const log = deps.log ?? console.log;
   const warn = deps.warn ?? console.warn;
   const home = deps.home ?? homedir();
-  const os = deps.os ?? detectOS();
+  const env = deps.env ?? process.env;
+  const rootDir = deps.rootDir;
+  const os = deps.os ?? (deps.detectOSFn ?? detectOS)();
   const repoUrl = deps.repoUrl ?? MANAGED_MAIN_REPO_URL;
+
   const stageMainRuntimeFn = deps.stageMainRuntimeFn ?? stageMainRuntime;
   const writeManagedLauncherFn = deps.writeManagedLauncherFn ?? writeManagedLauncher;
+  const runInstallerFn = deps.runInstallerFn ?? runManagedInstaller;
+  const checkStaleConfigKeysFn = deps.checkStaleConfigKeysFn ?? checkStaleConfigKeys;
+  const runToolUpdatesFn = deps.runToolUpdatesFn
+    ?? ((options) => runUpdate(options, { home, env, os, log, warn }));
+  const runRestartFn = deps.runRestartFn ?? (async () => {
+    const { runRestart } = await import('./restart.mjs');
+    return runRestart();
+  });
 
-  log('\n🧬 Myelin Self-Update\n' + '─'.repeat(40));
-  try {
-    const staged = stageMainRuntimeFn({ home, repoUrl });
-    const launcher = writeManagedLauncherFn({ home, os });
-    log(`  ✓ Selected release: ${staged.releaseId}`);
-    log(`  ↳ Managed command: ${launcher.commandPath}\n`);
-    return { status: 'updated', ...staged, ...launcher };
-  } catch (e) {
-    warn(`  ✗ Self-update failed: ${e.message.split('\n')[0]}\n`);
-    return { status: 'failed', error: e };
+  if (check) {
+    // Non-mutating preview of external-tool updates; never stages or activates.
+    await runToolUpdatesFn({ check: true });
+    return { status: 'checked', check: true, downloadOnly: false };
   }
+
+  if (downloadOnly) {
+    log('\n🧬 Myelin Update (download-only)\n' + '─'.repeat(40));
+    const staged = stageMainRuntimeFn({ home, rootDir, repoUrl, activate: false });
+    log(`  ✓ Staged release: ${staged.releaseId}`);
+    log(`  ↳ Retained at: ${staged.runtimeRoot}`);
+    log('  ℹ Active runtime unchanged — run `myelin update` to activate.\n');
+    return {
+      status: 'downloaded',
+      downloadOnly: true,
+      releaseId: staged.releaseId,
+      runtimeRoot: staged.runtimeRoot,
+    };
+  }
+
+  log('\n🧬 Myelin Update\n' + '─'.repeat(40));
+  const staged = stageMainRuntimeFn({ home, rootDir, repoUrl, activate: true });
+  log(`  ✓ Activated release: ${staged.releaseId}`);
+  writeManagedLauncherFn({ home, rootDir, os });
+
+  const installer = await runInstallerFn({
+    runtimeRoot: staged.runtimeRoot,
+    args: ['--yes'],
+    env: { ...env, MYELIN_DIR: resolveMyelinRoot({ home, env, rootDir }) },
+  });
+  if (installer && installer.status !== 0) {
+    warn(`  ✗ Installer integration failed (exit ${installer.status}). The active runtime already points at ${staged.releaseId}.\n`);
+    return {
+      status: 'failed',
+      downloadOnly: false,
+      releaseId: staged.releaseId,
+      runtimeRoot: staged.runtimeRoot,
+      installerStatus: installer.status,
+    };
+  }
+
+  const { staleKeys = [] } = await checkStaleConfigKeysFn();
+  await runToolUpdatesFn({});
+  await runRestartFn();
+
+  return {
+    status: 'updated',
+    downloadOnly: false,
+    releaseId: staged.releaseId,
+    runtimeRoot: staged.runtimeRoot,
+    staleKeys,
+  };
 }
 
 export function runDeprecatedSelfUpdate({ error = console.error } = {}) {
-  const message = '`myelin update --self` is deprecated; run `myelin self update`.';
+  const message = '`myelin update --self` is deprecated; run `myelin update`.';
+  error(message);
+  return { status: 'deprecated', exitCode: 1, message };
+}
+
+export function runDeprecatedNestedSelfUpdate({ error = console.error } = {}) {
+  const message = '`myelin self update` is deprecated; run `myelin update`.';
   error(message);
   return { status: 'deprecated', exitCode: 1, message };
 }

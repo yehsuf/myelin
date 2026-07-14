@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   _stopForUpgrade,
   checkStaleConfigKeys,
-  runSelfUpdate,
+  runManagedUpdate,
   runUpdate,
 } from '../src/cli/update.mjs';
 import { writeCurrentRelease } from '../src/runtime/release-store.mjs';
@@ -68,7 +68,7 @@ describe('_stopForUpgrade', () => {
 });
 
 describe('CLI update commands', () => {
-  it('exposes myelin self update and removes update --force from help output', () => {
+  it('documents --download-only and removes update --force from help output', () => {
     const selfHelp = spawnSync(process.execPath, [binPath, 'self', '--help'], {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -82,10 +82,11 @@ describe('CLI update commands', () => {
     assert.match(selfHelp.stdout, /\bupdate\b/);
     assert.equal(updateHelp.status, 0);
     assert.match(updateHelp.stdout, /--check/);
+    assert.match(updateHelp.stdout, /--download-only/);
     assert.ok(!updateHelp.stdout.includes('--force'));
   });
 
-  it('exits nonzero with the exact migration message for update --self', () => {
+  it('exits nonzero with the migration message for update --self', () => {
     const result = spawnSync(process.execPath, [binPath, 'update', '--self'], {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -95,68 +96,146 @@ describe('CLI update commands', () => {
     assert.equal(result.stdout, '');
     assert.equal(
       result.stderr.trim(),
-      '`myelin update --self` is deprecated; run `myelin self update`.',
+      '`myelin update --self` is deprecated; run `myelin update`.',
+    );
+  });
+
+  it('exits nonzero with the migration message for the deprecated self update', () => {
+    const result = spawnSync(process.execPath, [binPath, 'self', 'update'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, '');
+    assert.equal(
+      result.stderr.trim(),
+      '`myelin self update` is deprecated; run `myelin update`.',
     );
   });
 });
 
-describe('runSelfUpdate', () => {
-  it('stages the managed main runtime, writes the launcher, and reports its release id', async () => {
-    const calls = [];
-    const consoleCapture = captureConsole();
-
-    const result = await runSelfUpdate(
-      {},
-      {
-        home: '/home/alice',
-        os: 'darwin',
-        repoUrl: 'https://github.com/example/myelin',
-        log: consoleCapture.log,
-        stageMainRuntimeFn(options) {
-          calls.push({ type: 'stage', options });
-          return {
-            releaseId: 'main-abcdef123456',
-            runtimeRoot: '/home/alice/.myelin/releases/main-abcdef123456',
-            reused: false,
-          };
-        },
-        writeManagedLauncherFn(options) {
-          calls.push({ type: 'launcher', options });
-          return {
-            binDir: '/home/alice/.myelin/bin',
-            launcherPath: '/home/alice/.myelin/bin/myelin-launcher.mjs',
-            commandPath: '/home/alice/.myelin/bin/myelin',
-          };
-        },
+describe('runManagedUpdate', () => {
+  function orchestrationDeps(calls, overrides = {}) {
+    return {
+      home: '/home/alice',
+      os: 'darwin',
+      repoUrl: 'https://github.com/example/myelin',
+      env: {},
+      log: () => {},
+      warn: () => {},
+      stageMainRuntimeFn(options) {
+        calls.push(['stage', { activate: options.activate }]);
+        return {
+          releaseId: 'main-abcdef123456',
+          runtimeRoot: '/home/alice/.myelin/releases/main-abcdef123456',
+          reused: false,
+        };
       },
-    );
+      writeManagedLauncherFn() {
+        calls.push(['launcher']);
+        return { commandPath: '/home/alice/.myelin/bin/myelin' };
+      },
+      runInstallerFn(options) {
+        calls.push(['installer', options.args]);
+        return { status: 0 };
+      },
+      checkStaleConfigKeysFn() {
+        calls.push(['stale-config']);
+        return { exists: true, staleKeys: [] };
+      },
+      runToolUpdatesFn() {
+        calls.push(['tool-updates']);
+      },
+      runRestartFn() {
+        calls.push(['restart']);
+      },
+      ...overrides,
+    };
+  }
+
+  it('stages, activates, integrates, reports stale config, updates tools, then restarts', async () => {
+    const calls = [];
+
+    const result = await runManagedUpdate({}, orchestrationDeps(calls));
 
     assert.deepEqual(calls, [
-      {
-        type: 'stage',
-        options: {
-          home: '/home/alice',
-          repoUrl: 'https://github.com/example/myelin',
-        },
-      },
-      {
-        type: 'launcher',
-        options: {
-          home: '/home/alice',
-          os: 'darwin',
-        },
-      },
+      ['stage', { activate: true }],
+      ['launcher'],
+      ['installer', ['--yes']],
+      ['stale-config'],
+      ['tool-updates'],
+      ['restart'],
     ]);
-    assert.deepEqual(result, {
-      status: 'updated',
-      releaseId: 'main-abcdef123456',
-      runtimeRoot: '/home/alice/.myelin/releases/main-abcdef123456',
-      reused: false,
-      binDir: '/home/alice/.myelin/bin',
-      launcherPath: '/home/alice/.myelin/bin/myelin-launcher.mjs',
-      commandPath: '/home/alice/.myelin/bin/myelin',
-    });
-    assert.match(consoleCapture.logs.join('\n'), /main-abcdef123456/);
+    assert.equal(result.status, 'updated');
+    assert.equal(result.downloadOnly, false);
+    assert.equal(result.releaseId, 'main-abcdef123456');
+    assert.equal(result.runtimeRoot, '/home/alice/.myelin/releases/main-abcdef123456');
+    assert.deepEqual(result.staleKeys, []);
+  });
+
+  it('forwards the resolved managed root to the staged installer as MYELIN_DIR', async () => {
+    const calls = [];
+    let installerEnv;
+
+    await runManagedUpdate({}, orchestrationDeps(calls, {
+      env: { MYELIN_DIR: '/custom/mroot', PATH: '/usr/bin' },
+      rootDir: '/custom/mroot',
+      runInstallerFn(options) {
+        calls.push(['installer', options.args]);
+        installerEnv = options.env;
+        return { status: 0 };
+      },
+    }));
+
+    assert.equal(installerEnv.MYELIN_DIR, '/custom/mroot');
+    assert.equal(installerEnv.PATH, '/usr/bin');
+  });
+
+  it('download-only stages a non-activating candidate and skips every later step', async () => {
+    const calls = [];
+
+    const result = await runManagedUpdate({ downloadOnly: true }, orchestrationDeps(calls));
+
+    assert.deepEqual(calls, [['stage', { activate: false }]]);
+    assert.equal(result.status, 'downloaded');
+    assert.equal(result.downloadOnly, true);
+    assert.equal(result.releaseId, 'main-abcdef123456');
+  });
+
+  it('check runs only the external-tool preview and never stages or restarts', async () => {
+    const calls = [];
+
+    const result = await runManagedUpdate({ check: true }, orchestrationDeps(calls, {
+      runToolUpdatesFn(options) {
+        calls.push(['tool-updates', { check: options.check }]);
+      },
+    }));
+
+    assert.deepEqual(calls, [['tool-updates', { check: true }]]);
+    assert.equal(result.status, 'checked');
+  });
+
+  it('returns a failed status without rolling back the activated pointer on installer failure', async () => {
+    const calls = [];
+
+    const result = await runManagedUpdate({}, orchestrationDeps(calls, {
+      runInstallerFn(options) {
+        calls.push(['installer', options.args]);
+        return { status: 7 };
+      },
+    }));
+
+    // Staged + activated + launcher written, installer ran and failed; no
+    // stale-config/tool-updates/restart, and the pointer is left in place.
+    assert.deepEqual(calls, [
+      ['stage', { activate: true }],
+      ['launcher'],
+      ['installer', ['--yes']],
+    ]);
+    assert.equal(result.status, 'failed');
+    assert.equal(result.installerStatus, 7);
+    assert.equal(result.releaseId, 'main-abcdef123456');
   });
 });
 

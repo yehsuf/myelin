@@ -294,7 +294,13 @@ exit 1`;
 }
 
 function findWindowsHeadroom(serviceHome, execFileSyncImpl, env = process.env) {
-  const root = managedPaths({ home: serviceHome, env, platform: 'windows' }).root;
+  const resolvedRoot = managedPaths({ home: serviceHome, env, platform: 'windows' }).root;
+  // A relocated MYELIN_DIR expressed as a WSL mount (/mnt/<drive>/...) maps to a
+  // native Windows path — convert it so the venv probe targets the real Windows
+  // venv instead of falling back to the Windows User-scope MYELIN_DIR.
+  const root = /^\/mnt\/[a-zA-Z](?:\/|$)/u.test(resolvedRoot)
+    ? normalizeWindowsFilesystemPath(resolvedRoot, { rejectPosix: false })
+    : resolvedRoot;
   const expectedPath = isNativeWindowsPath(root)
     ? joinManaged(root, 'venv', 'Scripts', 'headroom.exe')
     : null;

@@ -1,7 +1,17 @@
 #!/usr/bin/env sh
 set -e
 MYELIN_DIR="${MYELIN_DIR:-$HOME/.myelin}"
+export MYELIN_DIR
 REPO_URL="${MYELIN_REPO_URL:-https://github.com/yehsuf/myelin}"
+
+# --dry-run and --check are non-activating: stage/validate a candidate but never
+# switch the active runtime by writing the current-release pointer.
+ACTIVATE=1
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run|--check) ACTIVATE=0 ;;
+  esac
+done
 
 check_node() {
   if ! command -v node >/dev/null 2>&1; then
@@ -54,7 +64,9 @@ stage_main_runtime() {
       echo "[myelin] Reusing managed runtime $RELEASE_ID"
       rm -rf "$STAGE_DIR"
       STAGE_DIR=""
-      write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+      if [ "$ACTIVATE" = "1" ]; then
+        write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+      fi
       trap - EXIT INT TERM HUP
       return 0
     fi
@@ -70,7 +82,9 @@ stage_main_runtime() {
 
   mv "$STAGE_DIR" "$RUNTIME_ROOT"
   STAGE_DIR=""
-  write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+  if [ "$ACTIVATE" = "1" ]; then
+    write_current_release_pointer "$RELEASE_ID" "$RUNTIME_ROOT"
+  fi
   trap - EXIT INT TERM HUP
 }
 

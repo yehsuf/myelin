@@ -561,7 +561,10 @@ describe('stageMainRuntime', () => {
         nowFn: () => stagedAt,
       });
 
-      assert.deepEqual(events, ['clone', 'rev-parse', 'rm-incomplete', 'npm-ci', 'node-check', 'rename', 'activate']);
+      // The incomplete destination is only removed AFTER the candidate is
+      // validated (npm-ci + node-check), so a failed restage can never destroy
+      // an existing release before a working replacement is proven.
+      assert.deepEqual(events, ['clone', 'rev-parse', 'npm-ci', 'node-check', 'rm-incomplete', 'rename', 'activate']);
       assert.deepEqual(result, { releaseId, runtimeRoot, reused: false });
       assert.equal(existsSync(join(runtimeRoot, 'node_modules')), true);
       assert.deepEqual(readCurrentRelease({ home }), {
@@ -569,6 +572,165 @@ describe('stageMainRuntime', () => {
         releaseId,
         runtimeRoot,
       });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves the active runtime and pointer when a same-commit restage fails', () => {
+    const home = makeTempHome();
+    const repoUrl = 'https://github.com/yehsuf/myelin';
+    const releaseId = 'main-abcdef123456';
+    const runtimeRoot = join(home, '.myelin', 'releases', releaseId);
+    const stagedAt = 1700000000010;
+
+    try {
+      // The active release exists but is INCOMPLETE (no node_modules) and the
+      // pointer already targets it. A restage of the SAME commit must not delete
+      // it until a validated replacement exists.
+      mkdirSync(join(runtimeRoot, 'src', 'cli'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'src', 'cli', 'index.mjs'), 'export const active = true;\n', 'utf8');
+      writeCurrentRelease({ home, releaseId });
+
+      assert.throws(() => stageMainRuntime({
+        home,
+        repoUrl,
+        execFileSyncFn(command, args, options = {}) {
+          if (command === 'git' && args[0] === 'clone') {
+            mkdirSync(join(args[6], 'src', 'cli'), { recursive: true });
+            writeFileSync(join(args[6], 'src', 'cli', 'index.mjs'), 'export const staged = true;\n', 'utf8');
+            return Buffer.alloc(0);
+          }
+          if (command === 'git' && args[0] === 'rev-parse') {
+            return 'abcdef123456\n';
+          }
+          if (command === npmCommand) {
+            throw new Error('npm ci failed');
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+        existsSyncFn: existsSync,
+        rmSyncFn: rmSync,
+        mkdirSyncFn: mkdirSync,
+        nowFn: () => stagedAt,
+      }), /npm ci failed/);
+
+      // Old (incomplete) release directory and its pointer are untouched.
+      assert.equal(existsSync(runtimeRoot), true);
+      assert.equal(existsSync(join(runtimeRoot, 'src', 'cli', 'index.mjs')), true);
+      assert.deepEqual(readCurrentRelease({ home }), {
+        version: 1,
+        releaseId,
+        runtimeRoot,
+      });
+      assert.equal(existsSync(join(home, '.myelin', `releases-stage-main-${process.pid}-${stagedAt}`)), false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a validated candidate without writing the pointer when activate is false', () => {
+    const home = makeTempHome();
+    const repoUrl = 'https://github.com/yehsuf/myelin';
+    const releaseId = 'main-abcdef123456';
+    const runtimeRoot = join(home, '.myelin', 'releases', releaseId);
+    const stagedAt = 1700000000011;
+    const events = [];
+
+    try {
+      const result = stageMainRuntime({
+        home,
+        repoUrl,
+        activate: false,
+        execFileSyncFn(command, args, options = {}) {
+          if (command === 'git' && args[0] === 'clone') {
+            events.push('clone');
+            mkdirSync(join(args[6], 'src', 'cli'), { recursive: true });
+            writeFileSync(join(args[6], 'src', 'cli', 'index.mjs'), 'export const staged = true;\n', 'utf8');
+            return Buffer.alloc(0);
+          }
+          if (command === 'git' && args[0] === 'rev-parse') {
+            events.push('rev-parse');
+            return 'abcdef123456\n';
+          }
+          if (command === npmCommand) {
+            events.push('npm-ci');
+            mkdirSync(join(options.cwd, 'node_modules'), { recursive: true });
+            return Buffer.alloc(0);
+          }
+          if (command === nodeCommand) {
+            events.push('node-check');
+            return Buffer.alloc(0);
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+        existsSyncFn: existsSync,
+        rmSyncFn: rmSync,
+        mkdirSyncFn: mkdirSync,
+        renameSyncFn(from, to) {
+          events.push('rename');
+          renameSync(from, to);
+        },
+        writeCurrentReleaseFn(options) {
+          events.push('activate');
+          return writeCurrentRelease(options);
+        },
+        nowFn: () => stagedAt,
+      });
+
+      // Candidate validated and renamed into place, but never activated.
+      assert.deepEqual(events, ['clone', 'rev-parse', 'npm-ci', 'node-check', 'rename']);
+      assert.deepEqual(result, { releaseId, runtimeRoot, reused: false });
+      assert.equal(existsSync(join(runtimeRoot, 'src', 'cli', 'index.mjs')), true);
+      assert.equal(existsSync(join(runtimeRoot, 'node_modules')), true);
+      // No pointer written — the active runtime is unchanged.
+      assert.equal(readCurrentRelease({ home }), null);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses an existing release without activating when activate is false', () => {
+    const home = makeTempHome();
+    const repoUrl = 'https://github.com/yehsuf/myelin';
+    const releaseId = 'main-abcdef123456';
+    const runtimeRoot = join(home, '.myelin', 'releases', releaseId);
+    const stagedAt = 1700000000012;
+    const writeCalls = [];
+
+    try {
+      mkdirSync(join(runtimeRoot, 'src', 'cli'), { recursive: true });
+      mkdirSync(join(runtimeRoot, 'node_modules'), { recursive: true });
+      writeFileSync(join(runtimeRoot, 'src', 'cli', 'index.mjs'), 'export const existing = true;\n', 'utf8');
+
+      const result = stageMainRuntime({
+        home,
+        repoUrl,
+        activate: false,
+        execFileSyncFn(command, args) {
+          if (command === 'git' && args[0] === 'clone') {
+            mkdirSync(join(args[6], 'src', 'cli'), { recursive: true });
+            writeFileSync(join(args[6], 'src', 'cli', 'index.mjs'), 'export const staged = true;\n', 'utf8');
+            return Buffer.alloc(0);
+          }
+          if (command === 'git' && args[0] === 'rev-parse') {
+            return 'abcdef123456\n';
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+        existsSyncFn: existsSync,
+        rmSyncFn: rmSync,
+        mkdirSyncFn: mkdirSync,
+        writeCurrentReleaseFn(options) {
+          writeCalls.push(options);
+          return writeCurrentRelease(options);
+        },
+        nowFn: () => stagedAt,
+      });
+
+      assert.deepEqual(result, { releaseId, runtimeRoot, reused: true });
+      assert.equal(writeCalls.length, 0);
+      assert.equal(readCurrentRelease({ home }), null);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -684,6 +846,20 @@ describe('bootstrap scripts', () => {
     assert.ok(!script.includes('/repo'));
   });
 
+  it('exports MYELIN_DIR and skips activation for --dry-run/--check in install.sh', () => {
+    const script = readFileSync(join(process.cwd(), 'install.sh'), 'utf8');
+
+    // The selected managed root is exported so the staged installer and its
+    // generated runtime consumers resolve the same relocated MYELIN_DIR.
+    assert.ok(script.includes('export MYELIN_DIR'));
+    // Non-activating modes are detected before staging.
+    assert.ok(/--dry-run/.test(script));
+    assert.ok(/--check/.test(script));
+    // The current-release pointer is only written when activating.
+    assert.ok(/ACTIVATE/.test(script));
+    assert.ok(/if \[ "\$ACTIVATE" = "1" \]/.test(script));
+  });
+
   it('stages and runs the managed runtime installer from install.ps1', () => {
     const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
 
@@ -696,5 +872,18 @@ describe('bootstrap scripts', () => {
     assert.ok(script.includes('node @a'));
     assert.ok(!script.includes('pull --ff-only'));
     assert.ok(!script.includes('\\repo'));
+  });
+
+  it('exports MYELIN_DIR, skips activation for -DryRun/-Check, and uses MyelinDir bin in install.ps1', () => {
+    const script = readFileSync(join(process.cwd(), 'install.ps1'), 'utf8');
+
+    // Managed root is exported into the process environment for the staged run.
+    assert.ok(script.includes('$env:MYELIN_DIR = $MyelinDir'));
+    // The Windows Defender bin exclusion follows the relocated managed root.
+    assert.ok(script.includes("Join-Path $MyelinDir 'bin'"));
+    assert.ok(!script.includes('$env:USERPROFILE\\.myelin\\bin'));
+    // Non-activating modes bypass the pointer writer.
+    assert.ok(script.includes('$DryRun -or $Check'));
+    assert.ok(/\$Activate/.test(script));
   });
 });

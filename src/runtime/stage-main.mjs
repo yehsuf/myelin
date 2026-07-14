@@ -16,6 +16,7 @@ export function stageMainRuntime({
   home,
   rootDir,
   repoUrl,
+  activate = true,
   execFileSyncFn = execFileSync,
   existsSyncFn = existsSync,
   rmSyncFn = rmSync,
@@ -48,17 +49,19 @@ export function stageMainRuntime({
     const releaseId = releaseIdForCommitFn(commit);
     const runtimeRoot = joinManaged(paths.releasesDir, releaseId);
 
-    if (existsSyncFn(runtimeRoot)) {
-      if (isReusableRelease(runtimeRoot, existsSyncFn)) {
-        rmSyncFn(stageRoot, { recursive: true, force: true });
-        removeStageRoot = false;
-        writeCurrentReleaseFn({ home, rootDir, releaseId });
-        return { releaseId, runtimeRoot, reused: true };
-      }
-
-      rmSyncFn(runtimeRoot, { recursive: true, force: true });
+    // An existing, complete release for this exact commit is reused as-is; the
+    // staged candidate is discarded and no rebuild is performed.
+    if (existsSyncFn(runtimeRoot) && isReusableRelease(runtimeRoot, existsSyncFn)) {
+      rmSyncFn(stageRoot, { recursive: true, force: true });
+      removeStageRoot = false;
+      if (activate) writeCurrentReleaseFn({ home, rootDir, releaseId });
+      return { releaseId, runtimeRoot, reused: true };
     }
 
+    // Validate the candidate BEFORE touching any existing release directory, so
+    // a failed restage (including a same-commit restage that targets the active
+    // release) can never destroy a working runtime before a validated
+    // replacement exists.
     execFileSyncFn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--ignore-scripts'], {
       cwd: stageRoot,
       stdio: 'inherit',
@@ -68,10 +71,15 @@ export function stageMainRuntime({
       stdio: 'inherit',
     });
 
+    // Candidate validated — now it is safe to replace an incomplete destination.
+    if (existsSyncFn(runtimeRoot)) {
+      rmSyncFn(runtimeRoot, { recursive: true, force: true });
+    }
+
     renameSyncFn(stageRoot, runtimeRoot);
     removeStageRoot = false;
 
-    writeCurrentReleaseFn({ home, rootDir, releaseId });
+    if (activate) writeCurrentReleaseFn({ home, rootDir, releaseId });
     return { releaseId, runtimeRoot, reused: false };
   } catch (error) {
     if (removeStageRoot) {

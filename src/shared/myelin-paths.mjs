@@ -100,3 +100,17 @@ export function managedPaths({ home, env, rootDir, platform = process.platform }
     serviceStatePath: join(root, 'state'),
   };
 }
+
+/**
+ * Forward a non-blank MYELIN_DIR from `env` into a service environment map so a
+ * launchd/systemd service resolves the same relocated managed root on every
+ * restart (mirrors the Windows service env forwarding). POSIX service
+ * definitions use the path verbatim — no separator normalization. MYELIN_DIR is
+ * placed first so an explicit caller-supplied `envVars.MYELIN_DIR` still wins.
+ */
+export function withForwardedMyelinDir(envVars = {}, env = process.env) {
+  const raw = env?.MYELIN_DIR;
+  return (typeof raw === 'string' && raw.trim())
+    ? { MYELIN_DIR: raw, ...envVars }
+    : { ...envVars };
+}

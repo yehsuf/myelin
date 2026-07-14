@@ -448,6 +448,44 @@ describe('engine instance service generators', () => {
       assert.doesNotMatch(serviceDefinition, /https:\/\/api\.(anthropic\.com|githubcopilot\.com)/);
     }
   });
+
+  it('forwards a relocated MYELIN_DIR into launchd and systemd service env', () => {
+    const instance = engineInstance('headroom', 'primary');
+    const env = { MYELIN_DIR: '/srv/managed-myelin' };
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.match(plist, /<key>MYELIN_DIR<\/key>\s*<string>\/srv\/managed-myelin<\/string>/);
+    assert.match(unit, /Environment=MYELIN_DIR=\/srv\/managed-myelin/);
+  });
+
+  it('does not emit MYELIN_DIR when the managed root is not relocated', () => {
+    const instance = engineInstance('headroom', 'primary');
+    const env = {};
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.ok(!plist.includes('MYELIN_DIR'));
+    assert.ok(!unit.includes('MYELIN_DIR'));
+  });
+
+  it('keeps an explicit MYELIN_DIR env var authoritative over the forwarded root', () => {
+    const instance = {
+      ...engineInstance('headroom', 'primary'),
+      env: { MYELIN_DIR: '/instance/override' },
+    };
+    const env = { MYELIN_DIR: '/srv/ambient' };
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.match(plist, /<key>MYELIN_DIR<\/key>\s*<string>\/instance\/override<\/string>/);
+    assert.ok(!plist.includes('/srv/ambient'));
+    assert.match(unit, /Environment=MYELIN_DIR=\/instance\/override/);
+    assert.ok(!unit.includes('/srv/ambient'));
+  });
 });
 
 describe('Windows registry engine-instance ownership', () => {
@@ -1501,6 +1539,32 @@ describe('WSL Windows-service executable resolution', () => {
       }),
       /Unable to resolve a Windows-service executable for headroom from WSL/,
     );
+  });
+
+  it('resolves the headroom venv under a WSL-relocated MYELIN_DIR mount path', () => {
+    const scripts = [];
+    const resolved = windowsService.resolveWindowsServiceExecutable({
+      engine: 'headroom',
+      candidate: '/home/alice/.myelin/venv/bin/headroom',
+      serviceHome: '/home/alice',
+      servicePlatform: 'windows',
+      wsl: true,
+      env: { MYELIN_DIR: '/mnt/d/managed-myelin' },
+    }, {
+      execFileSyncImpl: (file, args) => {
+        if (file === 'powershell.exe') {
+          scripts.push(String(args.at(-1)));
+          return Buffer.from('D:\\managed-myelin\\venv\\Scripts\\headroom.exe\n');
+        }
+        throw new Error(`unexpected probe: ${file}`);
+      },
+    });
+
+    assert.equal(resolved, 'D:\\managed-myelin\\venv\\Scripts\\headroom.exe');
+    // The probe targets the native Windows venv derived from the mounted
+    // MYELIN_DIR, not the Windows User-scope MYELIN_DIR fallback.
+    assert.ok(scripts.some((s) => s.includes('D:\\managed-myelin\\venv\\Scripts\\headroom.exe')));
+    assert.ok(!scripts.some((s) => s.includes("GetEnvironmentVariable('MYELIN_DIR'")));
   });
 
   it('rejects a native WSL path instead of converting it into a \\home command path', () => {

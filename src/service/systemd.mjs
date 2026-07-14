@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
-import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
 
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
@@ -117,10 +117,10 @@ export function generateCopilotHeadroomUnit(opts = {}) {
   });
 }
 
-export function generateEngineInstanceUnit({ instance, envVars = {}, ...options }) {
+export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
-  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
+  const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
   const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]
@@ -178,9 +178,10 @@ export function removeEngineInstance(instance) {
   execSync('systemctl --user daemon-reload');
 }
 
-export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {} }) {
+export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {}, env = process.env }) {
   const execArgs = args ?? ['--listen-port', String(port), '-s', addonPath];
-  const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const mergedEnv = withForwardedMyelinDir(envVars, env);
+  const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
   return `[Unit]
 Description=Myelin mitmproxy LLM compression proxy
@@ -221,7 +222,7 @@ export function copilotHeadroomServiceStatus(opts = {}) {
   return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env }) {
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
@@ -234,6 +235,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   const content = generateMitmUnit({
     mitmdumpBin, port, addonPath, args,
     envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
+    env,
   });
   const p = mitmUnitPath();
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });

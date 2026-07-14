@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
-import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
@@ -170,14 +170,14 @@ ${envEntries}
 </plist>`;
 }
 
-export function generateEngineInstancePlist({ instance, envVars = {}, ...options }) {
+export function generateEngineInstancePlist({ instance, envVars = {}, env = process.env, ...options }) {
   const { label } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
   return generateGenericPlist({
     label,
     command: command.command,
     args: command.args,
-    envVars: { ...command.env, ...envVars, ...instance.env },
+    envVars: withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env),
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
   });
@@ -276,11 +276,11 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     label: MITM_LABEL,
     command: mitmdumpBin,
     args,
-    envVars: {
+    envVars: withForwardedMyelinDir({
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
-    },
+    }, env),
     logPath: logPath ?? joinManaged(managedPaths({ home: home ?? homedir(), env }).root, 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });

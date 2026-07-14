@@ -10,7 +10,12 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $MyelinDir = if ($env:MYELIN_DIR) { $env:MYELIN_DIR } else { "$env:USERPROFILE\.myelin" }
+$env:MYELIN_DIR = $MyelinDir
 $RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://github.com/yehsuf/myelin" }
+
+# -DryRun and -Check are non-activating: stage/validate a candidate but never
+# switch the active runtime by writing the current-release pointer.
+$Activate = -not ($DryRun -or $Check)
 
 function Check-Node {
     try {
@@ -65,7 +70,7 @@ function Stage-MainRuntime {
             if ((Test-Path $entrypoint -PathType Leaf) -and (Test-Path $nodeModules -PathType Container)) {
                 Write-Host "[myelin] Reusing managed runtime $releaseId"
                 Remove-Item -LiteralPath $stageDir -Recurse -Force
-                Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot
+                if ($Activate) { Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot }
                 return $runtimeRoot
             }
 
@@ -85,7 +90,7 @@ function Stage-MainRuntime {
 
         Move-Item -LiteralPath $stageDir -Destination $runtimeRoot
         $stageDir = $null
-        Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot
+        if ($Activate) { Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot }
         return $runtimeRoot
     } catch {
         if ($stageDir -and (Test-Path $stageDir)) {
@@ -95,7 +100,7 @@ function Stage-MainRuntime {
     }
 }
 
-try { $binDir = "$env:USERPROFILE\.myelin\bin"; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
+try { $binDir = Join-Path $MyelinDir 'bin'; New-Item -Force -Path $binDir -ItemType Directory | Out-Null; Add-MpPreference -ExclusionPath $binDir -ErrorAction SilentlyContinue } catch {}
 # Whitelist powershell.exe and node.exe for Controlled Folder Access
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications (Get-Command node -ErrorAction SilentlyContinue).Source -ErrorAction SilentlyContinue } catch {}
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -ErrorAction SilentlyContinue } catch {}
