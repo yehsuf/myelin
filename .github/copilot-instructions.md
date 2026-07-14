@@ -24,8 +24,15 @@
 ## Standing rules
 - Never take a repo-changing, service-changing, or live-machine action without explicit unambiguous approval each time.
 - Every non-trivial change: implement → test → code review (3-model) → fix → merge.
-- Parallel agents MUST use separate git worktrees, never share a checkout directory.
+- Parallel agents MUST use separate workspaces/worktrees, never share a checkout directory.
+- Each agent develops inside its own workspace `~/myelin-agents/<agent>/` (one git worktree per repo). The source of truth is a **bare** canonical repo at `~/myelin-agents/.bare/<repo>.git` that is never worked in directly.
+- Scratch/tmp/experiment files NEVER go inside a repo working tree — put them in `~/myelin-agents/<agent>/scratch/` or `~/.copilot/session-state/<id>/files/`.
 - Never rewrite git history on shared branches (main, dev).
+
+## Local development workspace
+- Layout: `~/myelin-agents/.bare/<repo>.git` (bare canonical) + `~/myelin-agents/<agent>/<repo>/` (per-agent worktree) + `~/myelin-agents/<agent>/scratch/`.
+- Create a worktree: `git --git-dir="$HOME/myelin-agents/.bare/<repo>.git" worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
+- Agent identity is the `<agent>` path segment (derived, no id file). See CLAUDE.md for full setup + the coordinated legacy-worktree retirement.
 
 ## Technology
 - Language / runtime: Node.js >=20, ESM only (.mjs extensions)
