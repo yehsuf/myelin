@@ -13,6 +13,16 @@ export function detectOS(
   return { os, arch: archImpl(), platform: p, wsl };
 }
 
+export function powerShellExecutable({
+  platformImpl = platform,
+  isWslImpl = isWsl,
+  windowsInterop = false,
+} = {}) {
+  if (windowsInterop) return 'powershell.exe';
+  const currentPlatform = platformImpl();
+  return currentPlatform === 'linux' && isWslImpl() ? 'powershell.exe' : 'powershell';
+}
+
 export function detectShell() {
   if (process.platform === 'win32') {
     return env.COMSPEC ?? 'powershell.exe';

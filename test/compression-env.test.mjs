@@ -28,8 +28,8 @@ test('undocumented proxy.headroom.backend=disabled does NOT disable (only enable
   assert.equal(r.MYELIN_COMPRESS, '1');
 });
 
-test('proxy.headroom.enabled=false turns compression off', () => {
-  const r = resolveMitmCompression({ proxy: { headroom: { enabled: false } } });
+test('proxy.compression.enabled=false turns compression off', () => {
+  const r = resolveMitmCompression({ proxy: { compression: { enabled: false } } });
   assert.equal(r.MYELIN_COMPRESS, '0');
 });
 
@@ -61,11 +61,25 @@ test('copilot_headroom redirect suppressed under litellm (avoids double-compress
 test('copilot_headroom redirect suppressed when compression disabled', () => {
   const r = resolveMitmCompression({
     proxy: {
-      headroom: { enabled: false },
+      compression: { enabled: false },
       copilot_headroom: { enabled: true, port: 8788 },
     },
   });
   assert.equal(r.copilotHeadroomPort, undefined);
+});
+
+test('selected Lite with Copilot keeps MITM compression and its redirect enabled', () => {
+  const r = resolveMitmCompression({
+    proxy: {
+      engine: 'headroom_lite',
+      compression: { enabled: true },
+      headroom: { enabled: false },
+      headroom_lite: { enabled: true, port: 8790 },
+      copilot_headroom: { enabled: true, port: 8799 },
+    },
+  });
+  assert.equal(r.MYELIN_COMPRESS, '1');
+  assert.equal(r.copilotHeadroomPort, 8799);
 });
 
 test('copilot_headroom redirect active when enabled and compression on', () => {

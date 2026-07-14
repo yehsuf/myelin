@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { win32 as pathWin32 } from 'node:path';
+import { isWsl } from '../detect/wsl.mjs';
 
 export const WINSW_REPO = 'winsw/winsw';
 // Pinned to the current 3.x line this Windows keepalive work was researched
@@ -29,6 +30,20 @@ export function getWinswVersionStatus(raw = '') {
 
 export function winswBinPath({ home = homedir() } = {}) {
   return pathWin32.join(home, '.myelin', 'bin', 'winsw.exe');
+}
+
+export function winswFilesystemPath(value = '', { wsl = isWsl() } = {}) {
+  const commandPath = String(value ?? '');
+  if (!wsl) return commandPath;
+  const match = commandPath.replace(/\\/g, '/').match(/^([a-zA-Z]):\/?(.*)$/u);
+  if (match) {
+    const [, drive, rest = ''] = match;
+    return `/mnt/${drive.toLowerCase()}${rest ? `/${rest}` : ''}`;
+  }
+  if (/^[/\\]{2}/u.test(commandPath)) {
+    throw new Error(`Cannot access UNC WinSW assets from WSL with Node filesystem APIs: ${commandPath}`);
+  }
+  return commandPath;
 }
 
 export function winswReleaseApiUrl(version = WINSW_PINNED_VERSION) {
@@ -64,17 +79,24 @@ export function selectWinswAsset(release = {}, { arch = process.arch, preferNetF
     ?? findAsset((name) => name.endsWith('.exe') && name.startsWith('winsw.'));
 }
 
-export function detectWinsw({ home = homedir(), execFileSyncImpl = execFileSync, existsSyncImpl = existsSync } = {}) {
+export function detectWinsw({
+  home = homedir(),
+  execFileSyncImpl = execFileSync,
+  existsSyncImpl = existsSync,
+  filesystemPathImpl = winswFilesystemPath,
+  wsl = isWsl(),
+} = {}) {
   const path = winswBinPath({ home });
-  if (!existsSyncImpl(path)) {
+  const filesystemPath = filesystemPathImpl(path, { wsl });
+  if (!existsSyncImpl(filesystemPath)) {
     return { installed: false, version: null, path: null, ...getWinswVersionStatus('') };
   }
   try {
-    const version = execFileSyncImpl(path, ['--version'], {
+    const version = execFileSyncImpl(filesystemPath, ['--version'], {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString().trim().split('\n')[0].trim();
-    return { installed: true, version, path, ...getWinswVersionStatus(version) };
+    return { installed: true, version, path, filesystemPath, ...getWinswVersionStatus(version) };
   } catch {
     return { installed: false, version: null, path: null, ...getWinswVersionStatus('') };
   }
@@ -86,6 +108,11 @@ export async function downloadWinsw({
   arch = process.arch,
   preferNetFx = false,
   fetchImpl = globalThis.fetch,
+  mkdirSyncImpl = mkdirSync,
+  writeFileSyncImpl = writeFileSync,
+  chmodSyncImpl = chmodSync,
+  filesystemPathImpl = winswFilesystemPath,
+  wsl = isWsl(),
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch is unavailable — cannot download WinSW');
   const releaseRes = await fetchImpl(winswReleaseApiUrl(version), {
@@ -116,13 +143,16 @@ export async function downloadWinsw({
   }
 
   const target = winswBinPath({ home });
-  mkdirSync(pathWin32.join(home, '.myelin', 'bin'), { recursive: true });
-  writeFileSync(target, Buffer.from(await assetRes.arrayBuffer()));
-  try { chmodSync(target, 0o755); } catch {}
+  const filesystemTarget = filesystemPathImpl(target, { wsl });
+  const filesystemDir = filesystemPathImpl(pathWin32.dirname(target), { wsl });
+  mkdirSyncImpl(filesystemDir, { recursive: true });
+  writeFileSyncImpl(filesystemTarget, Buffer.from(await assetRes.arrayBuffer()));
+  try { chmodSyncImpl(filesystemTarget, 0o755); } catch {}
 
   return {
     ok: true,
     path: target,
+    filesystemPath: filesystemTarget,
     version: normalizePinnedVersion(version),
     assetName: asset.name,
     downloaded: true,

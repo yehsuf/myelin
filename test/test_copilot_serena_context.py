@@ -110,7 +110,7 @@ def _run_request(monkeypatch, *, serena_on, rag_on,
     monkeypatch.setattr(copilot_addon, 'TOOL_FILTER', True)
     monkeypatch.setattr(copilot_addon, 'THRASH_CACHE', False)
     monkeypatch.setattr(copilot_addon, 'COMPRESS', True)
-    monkeypatch.setattr(copilot_addon, 'COPILOT_HEADROOM_PORT', None)
+    monkeypatch.setattr(copilot_addon, 'COPILOT_ENGINE_URL', None)
     # Neutralize compression so we can inspect the final body directly.
     monkeypatch.setattr(
         copilot_addon, '_compress_messages',
@@ -278,7 +278,7 @@ def test_end_to_end_with_real_serena_context(monkeypatch, tmp_path):
     monkeypatch.setattr(copilot_addon, 'TOOL_FILTER', False)
     monkeypatch.setattr(copilot_addon, 'THRASH_CACHE', False)
     monkeypatch.setattr(copilot_addon, 'COMPRESS', True)
-    monkeypatch.setattr(copilot_addon, 'COPILOT_HEADROOM_PORT', None)
+    monkeypatch.setattr(copilot_addon, 'COPILOT_ENGINE_URL', None)
     monkeypatch.setattr(
         copilot_addon, '_compress_messages',
         lambda messages, fmt, model: (messages, 0, 0, True),

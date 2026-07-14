@@ -49,10 +49,40 @@ The proxy is the backbone of TokenStack. It sits between your AI agent and the L
 
 ---
 
-### `proxy.headroom.enabled`
-**Type:** boolean | **Default:** `true`
+### `proxy.engine`
+**Type:** `'headroom' | 'headroom_lite'` | **Default:** `headroom`
 
-**What it does:** Enables the Headroom transparent proxy. When enabled, all Claude Code and Copilot CLI API calls pass through the local proxy before reaching the LLM provider.
+**What it does:** Selects the one compression backend Myelin installs, starts, probes, and supervises. The non-selected engine is never installed, started, probed, watched, or used as a fallback.
+
+- **`headroom`** (default): Python Headroom. Requires Python 3.10+. Supports configurable backends (`kompress-base`, `llmlingua-2`) and Python-specific settings under `proxy.headroom`.
+- **`headroom_lite`**: Node-native Headroom Lite. No Python dependency. Fast cold-start, deterministic lossless transforms. Does not use `proxy.headroom.backend`; Lite settings live under `proxy.headroom_lite`.
+
+**When Lite is selected and the Lite binary is missing, Myelin reports a Lite error. It does not fall back to Python Headroom.**
+
+```yaml
+proxy:
+  engine: headroom_lite   # or: headroom (default)
+```
+
+---
+
+### `proxy.headroom_lite.port`
+**Type:** integer | **Default:** `8790` | **Range:** 1024–65535
+
+**What it does:** Port for the Headroom Lite primary instance. Only active when `proxy.engine: headroom_lite`.
+
+```yaml
+proxy:
+  headroom_lite:
+    port: 8790
+```
+
+---
+
+### `proxy.headroom.enabled`
+**Type:** boolean | **Default:** `true` | **Active when:** `proxy.engine: headroom`
+
+**What it does:** Enables Python Headroom. When `proxy.engine` is `headroom` (the default) and this is `true`, Claude Code API calls pass through the Python Headroom proxy before reaching the LLM provider. Has no effect when `proxy.engine: headroom_lite`.
 
 **What you gain:** 60-95% outbound token compression. Network-layer enforcement (impossible to bypass, unlike hooks). Corporate SSL interception support. Cross-agent shared memory.
 
@@ -105,9 +135,9 @@ proxy:
 ---
 
 ### `proxy.headroom.backend`
-**Type:** string | **Default:** `"kompress-base"` | **Options:** `"kompress-base"`, `"llmlingua-2"`
+**Type:** string | **Default:** `"kompress-base"` | **Options:** `"kompress-base"`, `"llmlingua-2"` | **Active when:** `proxy.engine: headroom`
 
-**What it does:** Selects the compression model used by the Headroom proxy.
+**What it does:** Selects the compression model used by Python Headroom. Has no effect when `proxy.engine: headroom_lite`.
 
 **`kompress-base` (default):**
 - Headroom's proprietary model trained on agentic traces
@@ -212,7 +242,7 @@ proxy:
 
 **Why a second layer exists:** WinSW already handles the crash/exit case (`onfailure restart`). It cannot detect the "process still exists but the HTTP service is hung" case, because the process never exited. The watchdog closes that gap by checking real liveness instead of mere process existence.
 
-**What it watches:** The main `proxy.headroom` service, plus the separate `proxy.copilot_headroom` service if that feature is enabled.
+**What it watches:** The selected-engine primary service, plus the selected-engine Copilot instance if `proxy.copilot_headroom.enabled` is `true`.
 
 **Has no effect unless `manager` is `winsw`** — a registry-based install has no WinSW service for the watchdog to restart.
 
@@ -225,6 +255,55 @@ proxy:
 ```
 
 ---
+
+### `proxy.copilot_headroom.enabled` / `.port`
+**Type:** boolean / integer | **Default:** `false` / `8788`
+
+**What it does:** Enables an isolated second instance of the *selected* engine for Copilot CLI traffic. `proxy.copilot_headroom` names the role, not an engine: `proxy.engine` determines which engine both the primary and Copilot instances use.
+
+When enabled, Copilot traffic follows this loopback path:
+
+```
+Copilot CLI → MITM ingress (:8888) → selected-engine Copilot instance (:8788) → MITM egress (:8889) → Copilot API
+```
+
+The Copilot instance has isolated cache, workspace, log, and telemetry state from the primary instance. MITM is the sole real Copilot-provider egress owner; the engine instance targets only the MITM loopback egress port and never receives a configured Copilot provider URL. Requests reaching MITM egress without the private loopback headers are rejected.
+
+**When Lite is selected,** a missing Lite binary is reported as a Lite error — Myelin never starts Python Headroom as a substitute.
+
+**When `enabled: false` (the default):** No Copilot engine service is created, no watchdog probe is registered for the Copilot role, and no readiness or status endpoint is added for Copilot. MITM still runs; Copilot CLI traffic passes through MITM compression only, without an additional engine hop.
+
+```bash
+myelin config set proxy.copilot_headroom.enabled true
+myelin install
+myelin verify   # shows primary and copilot selected-engine rows plus MITM
+```
+
+```yaml
+proxy:
+  engine: headroom_lite
+  headroom_lite:
+    port: 8790
+  copilot_headroom:
+    enabled: true
+    port: 8788
+  mitm:
+    port: 8888
+    egress_port: 8889
+```
+
+---
+
+### `proxy.mitm.egress_port`
+**Type:** integer | **Default:** `8889` | **Range:** 1024–65535
+
+**What it does:** Port for the MITM loopback egress listener. The selected-engine Copilot instance targets `http://127.0.0.1:<egress_port>` rather than the real Copilot provider URL. MITM restores the original destination at this listener before forwarding to the provider.
+
+```yaml
+proxy:
+  mitm:
+    egress_port: 8889
+```
 
 ## 2. Index Tier
 

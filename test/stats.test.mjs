@@ -101,6 +101,7 @@ describe('renderLocalStatsRows', () => {
       const healthCalls = [];
       const config = {
         proxy: {
+          engine: 'headroom_lite',
           headroom_lite: { enabled: true, port: 9001 },
           mitm: { enabled: false },
           copilot_headroom: { enabled: false },
@@ -110,10 +111,11 @@ describe('renderLocalStatsRows', () => {
       assert.equal(getWideStatsHint(config), 'More detail: myelin stats --wide');
       assert.equal(getWideStatsHint({
         proxy: {
+          engine: 'headroom_lite',
           headroom_lite: { enabled: false },
           copilot_headroom: { enabled: false },
         },
-      }), null);
+      }), 'More detail: myelin stats --wide');
 
       assert.deepEqual(
         await collectWideLocalStatsSections({
@@ -168,6 +170,7 @@ describe('renderLocalStatsRows', () => {
       const fetchCalls = [];
       const config = {
         proxy: {
+          engine: 'headroom_lite',
           headroom_lite: { enabled: true, port: 9001 },
           copilot_headroom: { enabled: true, port: 9002 },
         },
@@ -236,6 +239,7 @@ describe('renderLocalStatsRows', () => {
     it('returns explicit unavailable sections when a wide stats endpoint is malformed or fails', async () => {
       const config = {
         proxy: {
+          engine: 'headroom_lite',
           headroom_lite: { enabled: true, port: 9001 },
           copilot_headroom: { enabled: true, port: 9002 },
         },
@@ -276,6 +280,7 @@ describe('renderLocalStatsRows', () => {
         {
           loadConfig: async () => ({
             proxy: {
+              engine: 'headroom',
               headroom_lite: { enabled: false, port: 9001 },
               mitm: { enabled: true, port: 9003 },
               copilot_headroom: { enabled: true, port: 9002 },
@@ -293,6 +298,65 @@ describe('renderLocalStatsRows', () => {
         '  mitmproxy  (:9003)  — Copilot CLI',
         '  copilot-headroom  (:9002)',
       ]);
+    });
+
+    it('renders the selected Python primary section when MITM is disabled', async () => {
+      const consoleCapture = captureConsole();
+      await runStats(
+        { wide: false },
+        {
+          loadConfig: async () => ({
+            proxy: {
+              engine: 'headroom',
+              headroom: { enabled: true, port: 9000 },
+              headroom_lite: { enabled: false },
+              mitm: { enabled: false },
+              copilot_headroom: { enabled: false },
+            },
+          }),
+          log: consoleCapture.log,
+          probeHealth: () => true,
+          pathExists: () => false,
+        },
+      );
+
+      assert.ok(consoleCapture.logs.includes('  headroom  (:9000)'));
+      assert.ok(consoleCapture.logs.includes('  running'));
+      assert.equal(
+        consoleCapture.logs.some(line => line.includes('No services configured')),
+        false,
+      );
+    });
+
+    it('queries only the selected Python headroom engine in wide mode', async () => {
+      const fetchCalls = [];
+      const sections = await collectWideLocalStatsSections({
+        config: {
+          proxy: {
+            engine: 'headroom',
+            headroom: { enabled: true, port: 9000 },
+            headroom_lite: { enabled: true, port: 9001 },
+            copilot_headroom: { enabled: false },
+          },
+        },
+        wide: true,
+        fetchStats: async (url) => {
+          fetchCalls.push(url);
+          return {
+            summary: {
+              api_requests: 1,
+              compression: {
+                requests_compressed: 1,
+                total_tokens_before_with_cli_filtering: 100,
+                total_tokens_saved_with_cli_filtering: 50,
+              },
+            },
+          };
+        },
+      });
+
+      assert.deepEqual(fetchCalls, ['http://127.0.0.1:9000/stats']);
+      assert.deepEqual(sections.map(({ label }) => label), ['headroom']);
     });
   });
 

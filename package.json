@@ -7,8 +7,8 @@
     "myelin": "./bin/myelin"
   },
   "scripts": {
-    "test": "node --test test/**/*.test.mjs",
-    "test:watch": "node --test --watch test/**/*.test.mjs"
+    "test": "node scripts/run-tests.mjs",
+    "test:watch": "node scripts/run-tests.mjs --watch"
   },
   "dependencies": {
     "commander": "^12.0.0",

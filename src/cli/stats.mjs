@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
-import { headroomHealthUrl } from '../tools/headroom.mjs';
+import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 
 const SEP = '─'.repeat(60);
 const WIDE_DISCOVERY_HINT = 'More detail: myelin stats --wide';
@@ -136,38 +136,18 @@ export function renderLocalStatsRows(payload) {
   return renderCopilotHeadroomStatsRows(payload);
 }
 
-const LOCAL_STATS_SERVICE_DESCRIPTORS = [
-  {
-    label: 'headroom-lite',
-    isEnabled: (config) => config?.proxy?.headroom_lite?.enabled !== false,
-    port: (config) => config?.proxy?.headroom_lite?.port ?? 8790,
-    healthUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/health`,
-    statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.headroom_lite?.port ?? 8790}/stats`,
-    formatter: renderLocalStatsRows,
-  },
-  {
-    label: 'copilot-headroom',
-    isEnabled: (config) => config?.proxy?.copilot_headroom?.enabled ?? false,
-    port: (config) => config?.proxy?.copilot_headroom?.port ?? 8788,
-    healthUrl: (config) => headroomHealthUrl(config?.proxy?.copilot_headroom?.port ?? 8788),
-    statsUrl: (config) => `http://127.0.0.1:${config?.proxy?.copilot_headroom?.port ?? 8788}/stats`,
-    formatter: renderLocalStatsRows,
-  },
-];
-
 function getConfiguredLocalStatsDescriptors(config) {
-  return LOCAL_STATS_SERVICE_DESCRIPTORS
-    .filter((descriptor) => descriptor.isEnabled(config))
-    .map((descriptor) => {
-      const port = descriptor.port(config);
-      return {
-        ...descriptor,
-        port,
-        title: `${descriptor.label}  (:${port})`,
-        healthUrl: descriptor.healthUrl(config),
-        url: descriptor.statsUrl(config),
-      };
-    });
+  return buildEngineInstancePlan(config).instances.map((instance) => {
+    const label = instance.role === 'copilot' ? 'copilot-headroom' : instance.engine.replace('_', '-');
+    return {
+      label,
+      port: instance.port,
+      title: `${label}  (:${instance.port})`,
+      healthUrl: instance.healthUrl,
+      url: `http://127.0.0.1:${instance.port}/stats`,
+      formatter: renderLocalStatsRows,
+    };
+  });
 }
 
 export function getWideStatsHint(config) {
@@ -300,10 +280,10 @@ export async function runStats({ wide = false } = {}, {
       fetchStats: readStats,
     }))
     : buildLocalStatusSections(cfg, probeHealth);
-  const headroomLiteSection = localSections.find((section) => section.label === 'headroom-lite');
+  const primarySection = localSections[0];
   const copilotHeadroomSection = localSections.find((section) => section.label === 'copilot-headroom');
 
-  if (headroomLiteSection) sections.push(headroomLiteSection);
+  if (primarySection) sections.push(primarySection);
 
   // ── mitmproxy (if enabled in config) ───────────────────────────────────────
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;

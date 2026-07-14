@@ -7,11 +7,12 @@
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
-import { detectOS, detectShell } from './detect/os.mjs';
+import { detectOS, detectShell, powerShellExecutable } from './detect/os.mjs';
+import { isWsl } from './detect/wsl.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
@@ -20,6 +21,7 @@ import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
+import { buildEngineInstancePlan, buildServiceEnginePlan, selectedEnginePort } from './config/engine-runtime.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import {
   installTokenOptimizerForCopilot,
@@ -32,9 +34,20 @@ import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv } from './tools/uv.mjs';
 import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
-import { installService, installMitmService, installCopilotHeadroomService } from './service/index.mjs';
+import {
+  installService,
+  installMitmService,
+  installEngineInstance,
+  removeEngineInstance,
+  removeMitmService,
+} from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
-import { setUserEnvVars } from './service/windows.mjs';
+import {
+  defaultWindowsHome,
+  normalizeWindowsFilesystemPath,
+  resolveWindowsServiceExecutable,
+  setUserEnvVars,
+} from './service/windows.mjs';
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
@@ -70,6 +83,11 @@ function mergeJsonFile(path, updates, createIfMissing = {}) {
   writeFileSync(path, JSON.stringify(mergeDeepPlain(current, updates), null, 2), 'utf8');
 }
 
+export function shouldInstallPythonHeadroomPackage({ cfg = {}, flags = {} } = {}) {
+  if (flags['no-headroom']) return false;
+  return buildServiceEnginePlan(cfg).selectedEngine === 'headroom';
+}
+
 function isVersionAtLeast(version, minimum) {
   const parse = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
   const a = parse(version ?? '0.0.0');
@@ -82,6 +100,438 @@ function isVersionAtLeast(version, minimum) {
     if (left < right) return false;
   }
   return true;
+}
+
+export function buildManagedHeadroomRunKeyCleanupCommand({ powershellExe = powerShellExecutable() } = {}) {
+  return `${powershellExe} -NoProfile -Command "Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue"`;
+}
+
+export async function removeManagedHeadroomRegistration({
+  os,
+  winManager,
+  home,
+  headroomPort = 8787,
+  warnFn = warn,
+  okFn = ok,
+  execSyncImpl = execSync,
+  powershellExe = powerShellExecutable(),
+  stopManagedHeadroomProcessImpl,
+} = {}) {
+  if (os === 'darwin') {
+    try {
+      const { plistPath } = await import('./service/launchd.mjs');
+      const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
+      try { execSync(`launchctl bootout gui/${uid}/com.myelin.headroom`, { stdio: 'ignore' }); } catch {}
+      const path = plistPath();
+      if (existsSync(path)) unlinkSync(path);
+      okFn('obsolete headroom launchd service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (os === 'linux') {
+    try {
+      const { unitPath } = await import('./service/systemd.mjs');
+      try { execSync('systemctl --user disable --now myelin-headroom.service', { stdio: 'pipe' }); } catch {}
+      const path = unitPath();
+      if (existsSync(path)) unlinkSync(path);
+      try { execSync('systemctl --user daemon-reload', { stdio: 'pipe' }); } catch {}
+      okFn('obsolete headroom systemd service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  if (winManager === 'winsw') {
+    try {
+      const { HEADROOM_SERVICE_ID, uninstallWinswService } = await import('./service/windows.mjs');
+      uninstallWinswService({ id: HEADROOM_SERVICE_ID });
+      okFn('obsolete headroom WinSW service removed');
+    } catch (e) {
+      warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+    }
+    return;
+  }
+
+  try {
+    try {
+      const stopManagedHeadroomProcess = stopManagedHeadroomProcessImpl
+        ?? (await import('./service/windows.mjs')).stopManagedHeadroomProcess;
+      stopManagedHeadroomProcess({ port: headroomPort, home, execSyncImpl, powershellExe });
+    } catch {}
+    execSyncImpl(buildManagedHeadroomRunKeyCleanupCommand({ powershellExe }), { stdio: 'pipe' });
+    okFn('obsolete headroom Run key removed');
+  } catch (e) {
+    warnFn(`obsolete headroom cleanup failed: ${e.message}`);
+  }
+}
+
+export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787 } = {}) {
+  if (os === 'darwin') {
+    const { plistPath } = await import('./service/launchd.mjs');
+    return { registered: existsSync(plistPath()) };
+  }
+
+  if (os === 'linux') {
+    const { unitPath } = await import('./service/systemd.mjs');
+    return { registered: existsSync(unitPath()) };
+  }
+
+  if (winManager === 'winsw') {
+    const { HEADROOM_SERVICE_ID, winswServiceStatus } = await import('./service/windows.mjs');
+    const status = winswServiceStatus({ id: HEADROOM_SERVICE_ID, home });
+    return {
+      registered: status.state !== 'Missing' && status.state !== 'NonExistent',
+      status,
+    };
+  }
+
+  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue } = await import('./service/windows.mjs');
+  const status = headroomRunKeyStatus();
+  return {
+    ...status,
+    registered: status.registered && !isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+    needsMigration: isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+  };
+}
+
+export async function ensureManagedHeadroomService({
+  os = detectOS(),
+  winManager = 'registry',
+  home,
+  headroomBin,
+  port,
+  envVars = {},
+  interceptToolResults,
+  logFn = console.log,
+  okFn = ok,
+  warnFn = warn,
+  installServiceImpl = installService,
+  waitForHeadroomImpl = waitForHeadroom,
+  registrationStatusImpl = managedHeadroomRegistrationStatus,
+  stopHealthyProcessImpl = stopHealthyProcessForManagedInstall,
+} = {}) {
+  const registration = await registrationStatusImpl({ os, winManager, home, headroomPort: port });
+  const alreadyHealthy = await waitForHeadroomImpl(port, 1500).catch(() => false);
+  const shouldInstall = !alreadyHealthy || !registration?.registered;
+
+  if (shouldInstall) {
+    if (alreadyHealthy && !registration?.registered) {
+      if (os === 'windows' && !registration?.needsMigration) {
+        const reason = `unmanaged Headroom process is already healthy on :${port}; leaving it untouched`;
+        warnFn(`  ⚠ ${reason}`);
+        return {
+          installed: false,
+          alreadyHealthy: true,
+          registeredBefore: false,
+          healthy: true,
+          conflict: true,
+          reason,
+        };
+      }
+      await stopHealthyProcessImpl({ os, winManager, home, port, headroomBin });
+    }
+    await installServiceImpl({
+      headroomBin,
+      port,
+      envVars,
+      home,
+      interceptToolResults,
+      logPath: join(home, '.myelin', 'headroom.log'),
+      manager: winManager,
+    });
+    okFn(`service registered (port ${port})`);
+    logFn('  Waiting for proxy...');
+    const healthy = await waitForHeadroomImpl(port, os === 'windows' ? 15000 : 10000);
+    healthy ? okFn(`proxy healthy on :${port}`) : warnFn('no response — run: myelin diagnose');
+    return { installed: true, alreadyHealthy, registeredBefore: !!registration?.registered, healthy };
+  }
+
+  okFn(`service registered (port ${port})`);
+  okFn(`proxy healthy on :${port}`);
+  return { installed: false, alreadyHealthy: true, registeredBefore: true, healthy: true };
+}
+
+function cleanupPort(engine, role, cfg = {}) {
+  const rawPort = role === 'primary'
+    ? (engine === 'headroom_lite'
+      ? cfg?.proxy?.headroom_lite?.port ?? 8790
+      : cfg?.proxy?.headroom?.port ?? 8787)
+    : cfg?.proxy?.copilot_headroom?.port ?? 8788;
+  const port = typeof rawPort === 'string' ? Number(rawPort) : rawPort;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return port;
+}
+
+function ownedEngineRoleInstance(engine, role, home = homedir(), cfg = {}) {
+  const id = `${engine}-${role}`;
+  const port = cleanupPort(engine, role, cfg);
+  if (port == null) return null;
+  return {
+    engine,
+    role,
+    id,
+    port,
+    stateDir: join(home, '.myelin', 'state', id),
+    logPath: join(home, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
+  };
+}
+
+function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defaultWindowsHomeImpl = defaultWindowsHome) {
+  const port = cleanupPort('headroom', role, cfg);
+  if (port == null) return null;
+  const winHome = defaultWindowsHomeImpl(home);
+  const id = `headroom-${role}`;
+  const stateDir = role === 'primary'
+    ? pathWin32.join(winHome, '.myelin', 'services', 'myelin-headroom')
+    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+  return {
+    engine: 'headroom',
+    role,
+    id,
+    legacy: true,
+    port,
+    stateDir,
+    logPath: pathWin32.join(winHome, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
+  };
+}
+
+export async function removeObsoleteOwnedInstances({
+  selectedEngine,
+  cfg = {},
+  winManager,
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  const obsoleteEngine = selectedEngine === 'headroom' ? 'headroom_lite' : 'headroom';
+  for (const role of ['primary', 'copilot']) {
+    const instance = ownedEngineRoleInstance(obsoleteEngine, role, home, cfg);
+    if (!instance) {
+      warnFn?.(`  ⚠ skipped ${obsoleteEngine}-${role} cleanup: configured port is invalid`);
+      continue;
+    }
+    await removeEngineInstanceImpl(instance, {
+      manager: winManager,
+      home,
+      warn: warnFn,
+      includeLegacy: false,
+    });
+  }
+
+}
+
+async function removeSelectedLegacyWindowsInstances({
+  os,
+  cfg = {},
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+} = {}) {
+  if (os !== 'windows') return false;
+  for (const role of ['primary', 'copilot']) {
+    const instance = legacyWindowsEngineRoleInstance(role, home, cfg, defaultWindowsHomeImpl);
+    if (!instance) {
+      warnFn?.(`  ⚠ skipped legacy ${role} cleanup: configured port is invalid`);
+      continue;
+    }
+    // The selected manager can differ from the manager that created a legacy
+    // registration, so verify and remove each legacy registration type first.
+    for (const manager of ['registry', 'winsw']) {
+      await removeEngineInstanceImpl(instance, {
+        manager,
+        home,
+        warn: warnFn,
+        includeLegacy: false,
+      });
+    }
+  }
+  return true;
+}
+
+async function removeSelectedAlternateManagerInstances({
+  os,
+  plan,
+  winManager,
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  if (os !== 'windows') return false;
+  const alternateManager = winManager === 'winsw' ? 'registry' : 'winsw';
+  for (const instance of plan.instances ?? []) {
+    await removeEngineInstanceImpl(instance, {
+      manager: alternateManager,
+      home,
+      warn: warnFn,
+      includeLegacy: false,
+    });
+  }
+  return true;
+}
+
+async function removeDisabledOwnedCopilotInstance({
+  plan,
+  cfg = {},
+  winManager,
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+} = {}) {
+  if (plan.instances.some((instance) => instance.role === 'copilot')) return false;
+  const instance = ownedEngineRoleInstance(plan.engine, 'copilot', home, cfg);
+  if (!instance) {
+    warnFn?.(`  ⚠ skipped ${plan.engine}-copilot cleanup: configured port is invalid`);
+    return false;
+  }
+  await removeEngineInstanceImpl(instance, {
+    manager: winManager,
+    home,
+    warn: warnFn,
+    includeLegacy: false,
+  });
+  return true;
+}
+
+function engineInstanceServiceEnv(instance, envVars = {}) {
+  if (instance.role !== 'primary') return {};
+  if (instance.engine === 'headroom') return envVars;
+  const {
+    HEADROOM_PORT: _headroomPort,
+    ANTHROPIC_TARGET_API_URL: _anthropicTarget,
+    OPENAI_TARGET_API_URL: _openaiTarget,
+    HEADROOM_MODE: _headroomMode,
+    ...connectionEnv
+  } = envVars;
+  return connectionEnv;
+}
+
+export async function applyServiceEngineInstallPlan({
+  enginePlan,
+  cfg = {},
+  os,
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  home,
+  headroomBin,
+  envVars = {},
+  warnFn = warn,
+  installEngineInstanceImpl = installEngineInstance,
+  removeEngineInstanceImpl = removeEngineInstance,
+  detectToolImpl,
+  isWslImpl = isWsl,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
+} = {}) {
+  const wsl = os === 'windows' && isWslImpl();
+  const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
+  const resolvedPlan = enginePlan ?? buildEngineInstancePlan(cfg, {
+    home: serviceHome,
+    os,
+    defaultWindowsHomeImpl,
+  });
+  const primary = resolvedPlan.instances?.find(({ role }) => role === 'primary');
+  if (!primary) throw new Error('Engine instance plan must include a primary descriptor');
+
+  const platformOptions = { manager: winManager, home, envVars };
+  if (resolvedPlan.engine === 'headroom') {
+    platformOptions.headroomBin = resolveWindowsServiceExecutableImpl({
+      engine: resolvedPlan.engine,
+      candidate: headroomBin,
+      serviceHome,
+      servicePlatform: os,
+      wsl,
+    });
+  } else if (resolvedPlan.engine === 'headroom_lite') {
+    const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+    const headroomLite = await detectTool('headroom-lite', '--version');
+    if (!headroomLite.installed || !headroomLite.path) {
+      throw new Error('headroom-lite selected but not installed');
+    }
+    platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({
+      engine: resolvedPlan.engine,
+      candidate: headroomLite.path,
+      serviceHome,
+      servicePlatform: os,
+      wsl,
+    });
+  } else {
+    throw new Error(`Unsupported engine: ${resolvedPlan.engine}`);
+  }
+
+  await removeSelectedLegacyWindowsInstances({
+    os,
+    cfg,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+    defaultWindowsHomeImpl,
+  });
+  await removeSelectedAlternateManagerInstances({
+    os,
+    plan: resolvedPlan,
+    winManager,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+  });
+  await removeObsoleteOwnedInstances({
+    selectedEngine: resolvedPlan.engine,
+    cfg,
+    winManager,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+  });
+  await removeDisabledOwnedCopilotInstance({
+    plan: resolvedPlan,
+    cfg,
+    winManager,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+  });
+
+  for (const instance of resolvedPlan.instances) {
+    await installEngineInstanceImpl(instance, {
+      ...platformOptions,
+      envVars: engineInstanceServiceEnv(instance, envVars),
+    });
+  }
+
+  const servicePlan = buildServiceEnginePlan(cfg);
+  return {
+    enginePlan: {
+      ...servicePlan,
+      engine: resolvedPlan.engine,
+      instances: resolvedPlan.instances,
+      selectedEngine: resolvedPlan.engine,
+      selectedPort: primary.port,
+    },
+    persistHeadroomFallback: false,
+    selectedInstallEngine: resolvedPlan.engine,
+    selectedProxyPort: primary.port,
+  };
+}
+
+async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
+  if (os === 'windows') {
+    try {
+      const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
+      stopManagedHeadroomProcess({ port, home });
+    } catch {}
+    return;
+  }
+
+  try {
+    const command = `pids=$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null); for pid in $pids; do cmd=$(ps -p "$pid" -o command=); case "$cmd" in *"${headroomBin}"*"proxy --port ${port}"*) kill -9 "$pid" ;; esac; done`;
+    execSync(command, { stdio: 'pipe', shell: '/bin/bash' });
+  } catch {}
 }
 
 async function detectHeadroomFork() {
@@ -325,16 +775,32 @@ function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
  */
 function resolveRepoRoot(home, os) {
   const sep = os === 'windows' ? '\\' : '/';
-  const canonical = join(home, '.myelin', 'repo');
+  const serviceHome = os === 'windows' ? defaultWindowsHome(home) : home;
+  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(serviceHome)) {
+    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
+  }
+  const canonical = os === 'windows'
+    ? pathWin32.join(serviceHome, '.myelin', 'repo')
+    : join(home, '.myelin', 'repo');
   if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
-  return fileURLToPath(new URL('..', import.meta.url));
+  const currentRoot = fileURLToPath(new URL('..', import.meta.url));
+  if (os === 'windows') {
+    if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(currentRoot) || /^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(currentRoot)) {
+      return normalizeWindowsFilesystemPath(currentRoot);
+    }
+    // A native WSL checkout (for example /home/alice/repo) is not a path a
+    // Windows service can execute or import from. Keep service assets bound to
+    // the canonical Windows checkout rather than emitting an invalid \home path.
+    return canonical + sep;
+  }
+  return currentRoot;
 }
 
 /**
  * Return the path to the Myelin mitmproxy addon script.
  * Resolves relative to the myelin repo root so it works on all platforms.
  */
-function mitmAddonPath(home, os) {
+export function mitmAddonPath(home, os) {
   return join(resolveRepoRoot(home, os), 'src', 'mitm', 'copilot_addon.py');
 }
 
@@ -420,7 +886,7 @@ exec "${codegraphBin}" mcp "$@"
  * Detect the mitmdump binary path (cross-platform).
  * Checks existence for absolute paths, then tries running --version.
  */
-function detectMitmdump(os) {
+export function detectMitmdump(os) {
   const candidates =
     os === 'windows'
       ? [
@@ -456,6 +922,159 @@ function detectMitmdump(os) {
     } catch { /* not found in PATH */ }
   }
   return null;
+}
+
+const LOOPBACK_PROXY_PATTERN = /https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i;
+
+export function buildMitmServiceInstallOptions({
+  cfg = {},
+  os,
+  home = homedir(),
+  mitmdumpBin,
+  sslEnv = buildCorporateSslEnv(),
+  corpProxy = cfg?.proxy?.headroom?.corporate_proxy ?? '',
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  headroomPort = selectedEnginePort(cfg),
+  enginePlan = buildEngineInstancePlan(cfg),
+  mitmAddonPathImpl = mitmAddonPath,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+} = {}) {
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
+  const copilotInstance = copilotHeadroomPort
+    ? enginePlan.instances?.find(({ role }) => role === 'copilot')
+    : undefined;
+  const copilotEngineUrl = copilotInstance ? `http://127.0.0.1:${copilotInstance.port}` : undefined;
+  const egressPort = copilotInstance ? (mitmCfg.egress_port ?? 8889) : undefined;
+  const windowsHome = os === 'windows' &&
+    /^\/(?!mnt\/[a-zA-Z](?:\/|$))/u.test(String(home ?? ''))
+    ? defaultWindowsHomeImpl(home)
+    : home;
+  const normalizedHomeCandidate = os === 'windows' ? normalizeWindowsFilesystemPath(windowsHome) : home;
+  const effectiveHome = os === 'windows' && !/^(?:[a-z]:\\|\\\\)/i.test(normalizedHomeCandidate)
+    ? defaultWindowsHomeImpl(home)
+    : normalizedHomeCandidate;
+  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(effectiveHome)) {
+    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
+  }
+  const envVars = {
+    MYELIN_HEADROOM_PORT: String(headroomPort),
+    MYELIN_COMPRESS,
+    ...(copilotEngineUrl ? { MYELIN_COPILOT_ENGINE_URL: copilotEngineUrl } : {}),
+    ...(mitmCfg.block_bypass ? { MYELIN_BLOCK_BYPASS: '1' } : {}),
+    ...(mitmCfg.block_marker ? { MYELIN_BLOCK_MARKER: mitmCfg.block_marker } : {}),
+    ...(mitmCfg.override_proxy ? { MYELIN_OVERRIDE_PROXY: mitmCfg.override_proxy } : {}),
+    ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
+    ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers } : {}),
+    ...sslEnv,
+  };
+  if (os === 'windows') {
+    for (const key of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'HEADROOM_CA_BUNDLE', 'MYELIN_VPN_DOMAINS_FILE']) {
+      if (envVars[key]) envVars[key] = normalizeWindowsFilesystemPath(envVars[key]);
+    }
+  }
+  return {
+    mitmdumpBin: os === 'windows' ? normalizeWindowsFilesystemPath(mitmdumpBin) : mitmdumpBin,
+    port: mitmCfg.port ?? 8888,
+    addonPath: os === 'windows'
+      ? normalizeWindowsFilesystemPath(mitmAddonPathImpl(effectiveHome, os), { rejectPosix: true })
+      : mitmAddonPathImpl(effectiveHome, os),
+    envVars,
+    upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
+    logPath: os === 'windows' ? normalizeWindowsFilesystemPath(join(effectiveHome, '.myelin', 'mitmproxy.log')) : join(effectiveHome, '.myelin', 'mitmproxy.log'),
+    home: effectiveHome,
+    egressPort,
+    manager: winManager,
+  };
+}
+
+export function buildCopilotHeadroomServiceInstallOptions({
+  cfg = {},
+  headroomBin,
+  home = homedir(),
+  manager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  sslEnv = buildCorporateSslEnv(),
+} = {}) {
+  const copilotHeadroomCfg = cfg?.proxy?.copilot_headroom ?? {};
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const egressPort = mitmCfg.egress_port ?? 8889;
+  const port = copilotHeadroomCfg.port ?? 8788;
+  const loopbackTarget = `http://127.0.0.1:${egressPort}`;
+  return {
+    headroomBin,
+    port,
+    envVars: {
+      ANTHROPIC_TARGET_API_URL: loopbackTarget,
+      OPENAI_TARGET_API_URL: loopbackTarget,
+      HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
+      NO_PROXY: '127.0.0.1,localhost,::1',
+      ...sslEnv,
+    },
+    home,
+    manager,
+    egressPort,
+  };
+}
+
+export function buildDownstreamProxyServiceInstallOptions({
+  cfg = {},
+  os,
+  home = homedir(),
+  mitmdumpBin,
+  sslEnv = buildCorporateSslEnv(),
+  corpProxy = cfg?.proxy?.headroom?.corporate_proxy ?? '',
+  winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
+  installPlan = {},
+} = {}) {
+  const resolvedEnginePlan = { ...(installPlan?.enginePlan ?? installPlan ?? buildServiceEnginePlan(cfg)) };
+  const windowsServiceCfg = cfg?.proxy?.windows_service ?? {};
+  const mitmCfg = cfg?.proxy?.mitm ?? {};
+  const mitmEnabled = mitmCfg.enabled !== false;
+  const { copilotHeadroomPort } = resolveMitmCompression(cfg);
+  const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
+  return {
+    mitmOpts: mitmEnabled && mitmdumpBin ? buildMitmServiceInstallOptions({
+      cfg,
+      os,
+      home,
+      mitmdumpBin,
+      sslEnv,
+      corpProxy,
+      winManager,
+      headroomPort: resolvedEnginePlan.selectedPort,
+      enginePlan: resolvedEnginePlan.instances ? resolvedEnginePlan : buildEngineInstancePlan(cfg),
+    }) : null,
+    watchdogOpts: {
+      home,
+      enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
+      intervalMinutes: watchdogInterval,
+      instances: resolvedEnginePlan.instances ?? buildEngineInstancePlan(cfg).instances,
+      headroomPort: resolvedEnginePlan.selectedPort,
+      ...(mitmEnabled ? { mitmPort: mitmCfg.port ?? 8888 } : {}),
+      ...(mitmEnabled && copilotHeadroomPort && mitmdumpBin ? {
+        copilotHeadroomPort,
+        egressPort: mitmCfg.egress_port ?? 8889,
+      } : {}),
+    },
+  };
+}
+
+export async function applyMitmServiceInstallPlan({
+  cfg = {},
+  os,
+  home,
+  winManager,
+  mitmOpts,
+  installMitmServiceImpl = installMitmService,
+  removeMitmServiceImpl = removeMitmService,
+} = {}) {
+  if (cfg?.proxy?.mitm?.enabled === false) {
+    await removeMitmServiceImpl({ os, manager: winManager, home });
+    return { installed: false, removed: true };
+  }
+  if (!mitmOpts) return { installed: false, removed: false };
+  await installMitmServiceImpl(mitmOpts);
+  return { installed: true, removed: false };
 }
 
 /**
@@ -698,6 +1317,9 @@ async function main() {
 
   mkdirSync(join(home, '.myelin'), { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+  const initialEnginePlan = buildEngineInstancePlan(existingCfg);
+  const initialPrimaryInstance = initialEnginePlan.instances.find(({ role }) => role === 'primary');
+  const installsPythonHeadroomPackage = shouldInstallPythonHeadroomPackage({ cfg: existingCfg, flags });
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
@@ -710,8 +1332,10 @@ async function main() {
   // any stale entry mergeJsonFile previously wrote (mergeDeepPlain otherwise
   // never deletes keys — only overlays what's present in the update object).
   let codegraphReady = codegraphEnabled && tools.codegraph.installed;
-  let port = existingCfg.proxy.headroom.port;
-  if (!(await isPortFree(port))) {
+  let port = initialPrimaryInstance.port;
+  let selectedInstallEngine = initialEnginePlan.engine;
+  let selectedProxyPort = initialPrimaryInstance.port;
+  if (initialEnginePlan.engine === 'headroom' && !(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {
       ok(`Headroom already running on port ${port} — keeping`);
@@ -721,13 +1345,14 @@ async function main() {
       ok(`Using port ${port}`);
     }
   }
+  if (existingCfg.proxy?.engine !== 'headroom_lite') selectedProxyPort = port;
 
   if (flags['dry-run']) {
     console.log('\n[dry-run] Would install / configure:');
     const dryRunTools = ['uv', 'serena', 'semble', 'ast-grep', ...(existingCfg.budget_routing?.litellm ? ['litellm'] : []), ...(codegraphEnabled ? ['codegraph'] : []), 'rtk', 'mitmproxy'];
     console.log(`  ${dryRunTools.join(', ')}`);
     if (copilotHudEnabled && copilot) console.log('  copilot-hud plugin');
-    if (!flags['no-headroom']) console.log('  headroom-ai[all] from PyPI');
+    if (installsPythonHeadroomPackage) console.log('  headroom-ai[all] from PyPI');
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
@@ -971,7 +1596,7 @@ async function main() {
 
   // 3. Proxy backbone
   step('[3/7] Proxy backbone...');
-  if (!flags['no-headroom']) {
+  if (installsPythonHeadroomPackage) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
       if (!existsSync(join(venv, 'pyvenv.cfg'))) {
@@ -981,7 +1606,11 @@ async function main() {
       const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
       execSync(`uv pip install --python "${venv}" ${headroomPkg}`, { stdio: 'inherit' });
       ok('headroom installed (headroom-ai from PyPI)');
-    } else { skip(`headroom (${tools.headroom.version})`); }
+    } else {
+      skip(`headroom (${tools.headroom.version})`);
+    }
+  } else if (!flags['no-headroom']) {
+    skip('headroom install skipped (proxy.engine=headroom_lite)');
   }
 
   // Build combined CA bundle: root CA + intermediate CA extracted from live TLS chain
@@ -1007,8 +1636,11 @@ async function main() {
   }
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
-  const mitmdumpBin = await ensureMitmproxy(os);
-  if (mitmdumpBin) {
+  const mitmEnabled = existingCfg?.proxy?.mitm?.enabled !== false;
+  const mitmdumpBin = mitmEnabled ? await ensureMitmproxy(os) : null;
+  if (!mitmEnabled) {
+    skip('mitmproxy setup skipped (proxy.mitm.enabled=false)');
+  } else if (mitmdumpBin) {
     await ensureMitmCA(home, mitmdumpBin);
     // non-interactive when --yes: auto-append CA to bundle without prompting
     await installMitmproxyCA(home, !flags['yes']);
@@ -1020,104 +1652,64 @@ async function main() {
   // 4. Service
   if (!flags['no-headroom'] && flags.profile === 'proxy') {
     step('[4/7] Background service...');
-    const binPath = headroomBinPath();
-    const cfg = await loadConfig(DEFAULT_CONFIG_PATH);
-    const envVars = { HEADROOM_PORT: String(port), ...sslEnv };
-    const mitmCfg = cfg.proxy?.mitm ?? {};
-    const copilotHeadroomCfg = cfg.proxy?.copilot_headroom ?? {};
+    const loadedCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+    const cfg = selectedInstallEngine === 'headroom' && port !== (loadedCfg.proxy?.headroom?.port ?? 8787)
+      ? {
+        ...loadedCfg,
+        proxy: {
+          ...loadedCfg.proxy,
+          headroom: { ...loadedCfg.proxy?.headroom, port },
+        },
+      }
+      : loadedCfg;
+    const enginePlan = buildEngineInstancePlan(cfg);
+    const primaryInstance = enginePlan.instances.find(({ role }) => role === 'primary');
+    const binPath = enginePlan.engine === 'headroom' ? headroomBinPath() : undefined;
+    const envVars = { HEADROOM_PORT: String(primaryInstance.port), ...sslEnv };
     const windowsServiceCfg = cfg.proxy?.windows_service ?? {};
     const winManager = windowsServiceCfg.manager ?? 'registry';
     if (corpProxy) envVars.HTTPS_PROXY = corpProxy;
     envVars.OPENAI_TARGET_API_URL = cfg.proxy.headroom.openai_target_url ?? 'https://api.githubcopilot.com';
     envVars.HEADROOM_MODE = cfg.proxy.headroom.mode ?? 'cache';
-    // Skip re-registration if already healthy (avoids false "no response" on re-run)
-    const alreadyHealthy = await waitForHeadroom(port, 1500).catch(() => false);
-    if (!alreadyHealthy) {
-      await installService({ headroomBin: binPath, port, envVars,
-        interceptToolResults: cfg.proxy.headroom.intercept_tool_results ?? true,
-        logPath: join(home, '.myelin', 'headroom.log'), manager: winManager });
-      ok(`service registered (port ${port})`);
-      console.log('  Waiting for proxy...');
-      const healthy = await waitForHeadroom(port, detectOS() === 'windows' ? 15000 : 10000);
-      healthy ? ok(`proxy healthy on :${port}`) : warn(`no response — run: myelin diagnose`);
-    } else {
-      ok(`service registered (port ${port})`);
-      ok(`proxy healthy on :${port}`);
-    }
+    const installPlan = await applyServiceEngineInstallPlan({
+      enginePlan,
+      cfg,
+      os,
+      winManager,
+      home,
+      headroomBin: binPath,
+      envVars,
+      warnFn: warn,
+    });
+    selectedInstallEngine = installPlan.selectedInstallEngine;
+    selectedProxyPort = installPlan.selectedProxyPort;
+    const downstreamProxyInstallOpts = buildDownstreamProxyServiceInstallOptions({
+      cfg,
+      os,
+      home,
+      mitmdumpBin,
+      sslEnv,
+      corpProxy,
+      winManager,
+      installPlan,
+    });
 
     // mitmproxy service on port 8888 — intercepts Copilot TLS for compression
-    if (mitmdumpBin) {
-      const addonPath = mitmAddonPath(home, os);
-      const mitmPort = mitmCfg.port ?? 8888;
-      // Honor compression.backend: disabled (and suppress the copilot_headroom
-      // redirect when disabled); emit MYELIN_COMPRESS explicitly so no stale
-      // value survives a config change.
-      const { MYELIN_COMPRESS, copilotHeadroomPort } = resolveMitmCompression(cfg);
-      const mitmEnv = {
-        MYELIN_HEADROOM_PORT: String(port),
-        MYELIN_COMPRESS,
-        // When copilot_headroom is enabled (and compression not disabled), tell
-        // the addon to redirect Copilot traffic to the dedicated headroom
-        // instance so it gets the full pipeline (cache-mode, TOIN, stats)
-        // instead of the stateless /v1/compress sidecar.
-        ...(copilotHeadroomPort ? { MYELIN_COPILOT_HEADROOM_PORT: String(copilotHeadroomPort) } : {}),
-        ...(mitmCfg.block_bypass    ? { MYELIN_BLOCK_BYPASS:    '1'                      } : {}),
-        ...(mitmCfg.block_marker    ? { MYELIN_BLOCK_MARKER:    mitmCfg.block_marker     } : {}),
-        ...(mitmCfg.override_proxy  ? { MYELIN_OVERRIDE_PROXY:  mitmCfg.override_proxy   } : {}),
-        ...(mitmCfg.vpn_domains_file ? { MYELIN_VPN_DOMAINS_FILE: mitmCfg.vpn_domains_file } : {}),
-        ...(mitmCfg.extra_providers ? { MYELIN_EXTRA_PROVIDERS: mitmCfg.extra_providers  } : {}),
-        ...sslEnv,
-      };
-      try {
-        // Never pass localhost/127.x as upstream — that would route mitmproxy to itself
-        const safeUpstream = (corpProxy || '').replace(/https?:\/\/(127\.\d+\.\d+\.\d+|localhost):\d+\/?/i, '').trim();
-        // Egress + copilot-headroom are only meaningful when the redirect is
-        // actually active. Gate on the RESOLVED copilotHeadroomPort (undefined
-        // when compression/redirect is disabled) — not raw config — so we never
-        // generate a service with `--port undefined`.
-        const egressPort = copilotHeadroomPort ? (mitmCfg.egress_port ?? 8889) : undefined;
-        await installMitmService({
-          mitmdumpBin,
-          port: mitmPort,
-          addonPath,
-          envVars: mitmEnv,
-          upstreamProxy: safeUpstream,
-          logPath: join(home, '.myelin', 'mitmproxy.log'),
-          home,
-          egressPort,
-          manager: winManager,
-        });
-        ok(`mitmproxy service registered (port ${mitmPort}${egressPort ? ` + egress ${egressPort}` : ''})`);
-
-        // Copilot-Headroom: a SEPARATE, dedicated instance that gives Copilot
-        // CLI traffic the same full pipeline treatment Claude Code already
-        // gets. Its upstream target is the local mitmproxy egress listener,
-        // not a Copilot provider URL; mitmproxy restores the original
-        // destination from private loopback headers.
-        if (copilotHeadroomPort) {
-          const loopbackTarget = `http://127.0.0.1:${egressPort}`;
-          try {
-            await installCopilotHeadroomService({
-              headroomBin: binPath,
-              port: copilotHeadroomPort,
-              envVars: {
-                ANTHROPIC_TARGET_API_URL: loopbackTarget,
-                OPENAI_TARGET_API_URL: loopbackTarget,
-                HEADROOM_MODE: copilotHeadroomCfg.mode ?? 'cache',
-                NO_PROXY: '127.0.0.1,localhost,::1',
-                ...sslEnv,
-              },
-              home,
-              manager: winManager,
-            });
-            ok(`copilot-headroom service registered (port ${copilotHeadroomPort}, egress ${egressPort})`);
-          } catch (e) {
-            warn(`copilot-headroom service registration failed: ${e.message}`);
-          }
-        }
-      } catch (e) {
-        warn(`mitmproxy service registration failed: ${e.message}`);
+    try {
+      const mitmResult = await applyMitmServiceInstallPlan({
+        cfg,
+        os,
+        home,
+        winManager,
+        mitmOpts: downstreamProxyInstallOpts.mitmOpts,
+      });
+      if (mitmResult.installed) {
+        const mitmOpts = downstreamProxyInstallOpts.mitmOpts;
+        ok(`mitmproxy service registered (port ${mitmOpts.port}${mitmOpts.egressPort ? ` + egress ${mitmOpts.egressPort}` : ''})`);
       }
+      if (mitmResult.removed) ok('disabled mitmproxy service registration removed');
+    } catch (e) {
+      warn(`mitmproxy service registration failed: ${e.message}`);
     }
 
     // Watchdog: macOS uses a launchd poller; Windows can opt into a
@@ -1126,21 +1718,10 @@ async function main() {
     // WinSW service for a registry-based install's watchdog to restart).
     try {
       const { installWatchdog } = await import('./service/index.mjs');
-      const watchdogInterval = Number(windowsServiceCfg.watchdog_interval_minutes ?? 2) || 2;
-      const installed = await installWatchdog({
-        home,
-        enabled: winManager === 'winsw' && (windowsServiceCfg.watchdog_enabled ?? false),
-        intervalMinutes: watchdogInterval,
-        headroomPort: port,
-        mitmPort: mitmCfg.port ?? 8888,
-        ...(copilotHeadroomCfg.enabled && mitmdumpBin ? {
-          copilotHeadroomPort: copilotHeadroomCfg.port ?? 8788,
-          egressPort: mitmCfg.egress_port ?? 8889,
-        } : {}),
-      });
+      const installed = await installWatchdog(downstreamProxyInstallOpts.watchdogOpts);
       if (installed) {
         const cadence = os === 'windows'
-          ? `every ${watchdogInterval} minute${watchdogInterval === 1 ? '' : 's'}`
+          ? `every ${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes} minute${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
           : 'every 90s';
         ok(`watchdog installed — auto-revives dropped services ${cadence}`);
       }
@@ -1219,11 +1800,11 @@ async function main() {
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
-        ANTHROPIC_BASE_URL: `http://127.0.0.1:${port}`,
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${selectedProxyPort}`,
         ENABLE_PROMPT_CACHING_1H: '1',
         CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50',
         CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-4-6',
-        HEADROOM_PORT: String(port),
+        HEADROOM_PORT: String(selectedProxyPort),
         ...sslEnv,
       },
       mcpServers: claudeMcpServers,
@@ -1249,7 +1830,7 @@ async function main() {
       provider: 'claude',
       model: installCfg.copilot?.model,
       cfg: installCfg,
-      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${port}.`],
+      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${selectedProxyPort}.`],
     });
     writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
@@ -1372,7 +1953,7 @@ ${initSkillBody}`);
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
-    const claudeAlias = buildClaudeWrapper({ os, headroomPort: port });
+    const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
     const repoRoot = resolveRepoRoot(home, os);
     const myelinCmd = os === 'windows'
       ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
@@ -1403,7 +1984,7 @@ ${initSkillBody}`);
       // NOTE: provider-specific env vars (ANTHROPIC_BASE_URL, HTTPS_PROXY) are
       // deliberately NOT set in $PROFILE — they live only inside the _copilot
       // and _claude wrappers so they can't cross-contaminate each other.
-      const psEnv = `$env:HEADROOM_PORT = "${port}"`;
+      const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
       const psPaths = [
         `$env:USERPROFILE\\.local\\bin`,
@@ -1415,7 +1996,7 @@ ${initSkillBody}`);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${port}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
@@ -1482,7 +2063,7 @@ ${initSkillBody}`);
     const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
-      HEADROOM_PORT: String(port),
+      HEADROOM_PORT: String(selectedProxyPort),
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
@@ -1529,9 +2110,13 @@ ${initSkillBody}`);
 
   // 7. Summary
   step('[7/7] Complete! \ud83e\uddec\n' + '\u2500'.repeat(55));
-  console.log(`  Headroom port: ${port}`);
+  console.log(`  Headroom port: ${selectedProxyPort}`);
   console.log(`  Mitmproxy:     8888  (Copilot compression + cache)`);
-  console.log(`  Headroom:      ${headroomBinPath()}`);
+  if (selectedInstallEngine === 'headroom') {
+    console.log(`  Headroom:      ${headroomBinPath()}`);
+  } else {
+    console.log('  Headroom:      headroom-lite');
+  }
   console.log(`  Config:        ${DEFAULT_CONFIG_PATH}`);
   if (caBundles.length) console.log(`  Corporate SSL: ${caBundles[0].path}`);
   console.log('\n  myelin verify          \u2192 health check');
@@ -1545,4 +2130,6 @@ ${initSkillBody}`);
   await runReload();
 }
 
-main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
+}

@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { load as parse } from 'js-yaml';
-import { DEFAULT_CONFIG, mergeDeep } from './schema.mjs';
+import { DEFAULT_CONFIG, mergeDeep, normalizeCompressionEngine } from './schema.mjs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,8 +18,8 @@ export function readUserConfig(configPath = DEFAULT_CONFIG_PATH, warn = console.
   return userConfig;
 }
 
-export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
-  const userConfig = readUserConfig(configPath);
+export async function loadConfig(configPath = DEFAULT_CONFIG_PATH, warn = console.warn) {
+  const userConfig = readUserConfig(configPath, warn);
   let merged = mergeDeep(DEFAULT_CONFIG, userConfig);
 
   // Env var overrides (highest priority)
@@ -28,7 +28,7 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
     if (!Number.isNaN(rawPort)) {
       merged = mergeDeep(merged, { proxy: { headroom: { port: rawPort } } });
     } else {
-      console.warn(`[myelin] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
+      warn(`[myelin] Warning: HEADROOM_PORT="${process.env.HEADROOM_PORT}" is not a valid integer, ignoring.`);
     }
   }
   if (process.env.MYELIN_PROFILE) {
@@ -37,6 +37,21 @@ export async function loadConfig(configPath = DEFAULT_CONFIG_PATH) {
   if (process.env.MYELIN_INDEX_TIER) {
     merged.index_tier = process.env.MYELIN_INDEX_TIER;
   }
+
+  const engine = normalizeCompressionEngine(userConfig, warn);
+  const legacyCompressionDisabled =
+    userConfig.proxy?.compression?.enabled === undefined &&
+    userConfig.proxy?.headroom?.enabled === false &&
+    userConfig.proxy?.engine !== 'headroom_lite' &&
+    userConfig.proxy?.headroom_lite?.enabled !== true;
+  merged = mergeDeep(merged, {
+    proxy: {
+      engine,
+      ...(legacyCompressionDisabled ? { compression: { enabled: false } } : {}),
+      headroom: { enabled: engine === 'headroom' },
+      headroom_lite: { enabled: engine === 'headroom_lite' },
+    },
+  });
 
   return merged;
 }

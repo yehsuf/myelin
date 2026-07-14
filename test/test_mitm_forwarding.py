@@ -2,7 +2,7 @@
 
 The mitmproxy addon (copilot_addon.MyelinAddon) must:
 
-  1. In the default sidecar path (no MYELIN_COPILOT_HEADROOM_PORT set),
+  1. In the default sidecar path (no MYELIN_COPILOT_ENGINE_URL set),
      NEVER rewrite `flow.request.host`, `flow.request.port`, or
      `flow.request.scheme`. mitmproxy forwards the (body-modified) request
      to the ORIGINAL destination.
@@ -51,7 +51,7 @@ sys.modules['mitmproxy.http'] = http_stub
 # module does not pollute unrelated pytest modules imported later in the same
 # Python process.
 _ENV_OVERRIDES = {
-    'MYELIN_COPILOT_HEADROOM_PORT': None,
+    'MYELIN_COPILOT_ENGINE_URL': None,
     'MYELIN_THRASH_CACHE': '0',
     'MYELIN_LOG_SAVINGS': '0',
     'MYELIN_TOOL_FILTER': '0',
@@ -184,14 +184,14 @@ def test_copilot_headroom_redirect_carries_original_destination():
     """Full-proxy mode redirects to local copilot-headroom only; the original
     provider destination is carried out-of-band for the egress listener."""
     flow = _make_flow('api.business.githubcopilot.com', '/chat/completions')
-    old_copilot = copilot_addon.COPILOT_HEADROOM_PORT
+    old_copilot = copilot_addon.COPILOT_ENGINE_URL
     old_egress = copilot_addon.EGRESS_PORT
     try:
-        copilot_addon.COPILOT_HEADROOM_PORT = 8788
+        copilot_addon.COPILOT_ENGINE_URL = 'http://127.0.0.1:8788'
         copilot_addon.EGRESS_PORT = 8889
         asyncio.run(MyelinAddon().request(flow))
     finally:
-        copilot_addon.COPILOT_HEADROOM_PORT = old_copilot
+        copilot_addon.COPILOT_ENGINE_URL = old_copilot
         copilot_addon.EGRESS_PORT = old_egress
 
     assert (flow.request.host, flow.request.port, flow.request.scheme) == (
@@ -202,6 +202,56 @@ def test_copilot_headroom_redirect_carries_original_destination():
     assert flow.request.headers['x-myelin-original-host'] == 'api.business.githubcopilot.com'
     assert flow.request.headers['x-myelin-original-port'] == '443'
     assert flow.request.headers['x-myelin-original-path'] == '/chat/completions'
+
+
+def test_selected_engine_loopback_restores_original_destination():
+    flow = _make_egress_flow('127.0.0.1', '/v1/chat/completions')
+    flow.request.port = 8889
+    flow.request.scheme = 'http'
+    flow.request.headers['x-myelin-original-scheme'] = 'https'
+    flow.request.headers['x-myelin-original-host'] = 'api.githubcopilot.com'
+    flow.request.headers['x-myelin-original-port'] = '443'
+    flow.request.headers['x-myelin-original-path'] = '/chat/completions'
+    old_egress = copilot_addon.EGRESS_PORT
+    try:
+        copilot_addon.EGRESS_PORT = 8889
+        asyncio.run(MyelinAddon().request(flow))
+    finally:
+        copilot_addon.EGRESS_PORT = old_egress
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+        'api.githubcopilot.com', 443, 'https',
+    )
+    assert 'x-myelin-original-host' not in flow.request.headers
+
+
+def test_configured_copilot_engine_url_is_the_only_redirect_target():
+    assert hasattr(copilot_addon, 'COPILOT_ENGINE_URL')
+    flow = _make_flow('api.githubcopilot.com', '/chat/completions')
+    old_engine_url = copilot_addon.COPILOT_ENGINE_URL
+    try:
+        copilot_addon.COPILOT_ENGINE_URL = 'http://127.0.0.1:8788'
+        asyncio.run(MyelinAddon().request(flow))
+    finally:
+        copilot_addon.COPILOT_ENGINE_URL = old_engine_url
+
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+        '127.0.0.1', 8788, 'http',
+    )
+    assert flow.request.headers['x-myelin-original-host'] == 'api.githubcopilot.com'
+
+
+
+def test_configured_ipv6_loopback_engine_url_uses_a_valid_host_header():
+    flow = _make_flow('api.githubcopilot.com', '/chat/completions')
+    old_engine_url = copilot_addon.COPILOT_ENGINE_URL
+    try:
+        copilot_addon.COPILOT_ENGINE_URL = 'http://[::1]:8788'
+        asyncio.run(MyelinAddon().request(flow))
+    finally:
+        copilot_addon.COPILOT_ENGINE_URL = old_engine_url
+
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == ('::1', 8788, 'http')
+    assert flow.request.headers['host'] == '[::1]:8788'
 
 
 def test_egress_listener_restores_original_destination_and_path():
@@ -327,10 +377,10 @@ def test_egress_listener_reentry_after_restore_is_noop():
     flow.request.headers['x-myelin-original-path'] = '/chat/completions'
 
     old_egress = copilot_addon.EGRESS_PORT
-    old_copilot = copilot_addon.COPILOT_HEADROOM_PORT
+    old_copilot = copilot_addon.COPILOT_ENGINE_URL
     try:
         copilot_addon.EGRESS_PORT = 8889
-        copilot_addon.COPILOT_HEADROOM_PORT = 8788
+        copilot_addon.COPILOT_ENGINE_URL = 'http://127.0.0.1:8788'
         asyncio.run(MyelinAddon().request(flow))
         assert flow.metadata['myelin_egress_restored'] is True
 
@@ -340,7 +390,7 @@ def test_egress_listener_reentry_after_restore_is_noop():
         assert mock.call_count == 0
     finally:
         copilot_addon.EGRESS_PORT = old_egress
-        copilot_addon.COPILOT_HEADROOM_PORT = old_copilot
+        copilot_addon.COPILOT_ENGINE_URL = old_copilot
 
     assert flow.response is None
     assert flow.request.scheme == 'https'
@@ -477,6 +527,46 @@ def test_mitm_compresses_responses_input_array():
     assert flow.request.headers['content-length'] == str(len(flow.request.content))
     # Destination never rewritten (MITM invariant).
     assert (flow.request.host, flow.request.port, flow.request.scheme) == origin
+
+
+def test_configured_engine_routes_responses_through_egress_to_original_provider():
+    """Responses payloads use the selected Copilot engine, never the sidecar."""
+    body = {
+        'model': 'gpt-4o',
+        'input': [
+            {'type': 'function_call_output', 'call_id': 'c1', 'output': 'x' * 2000},
+            {'type': 'message', 'role': 'user', 'content': 'go'},
+        ],
+    }
+    flow = _make_flow('api.business.githubcopilot.com', '/responses', body=body)
+    old_engine_url = copilot_addon.COPILOT_ENGINE_URL
+    old_egress = copilot_addon.EGRESS_PORT
+    try:
+        copilot_addon.COPILOT_ENGINE_URL = 'http://127.0.0.1:8788'
+        copilot_addon.EGRESS_PORT = 8889
+        with patch('urllib.request.urlopen') as sidecar:
+            asyncio.run(MyelinAddon().request(flow))
+        assert sidecar.call_count == 0
+        assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+            '127.0.0.1', 8788, 'http',
+        )
+        assert flow.request.path == '/v1/responses'
+        assert flow.request.headers['x-myelin-original-host'] == 'api.business.githubcopilot.com'
+        assert flow.request.headers['x-myelin-original-path'] == '/responses'
+
+        flow.client_conn.sockname = ('127.0.0.1', 8889)
+        flow.request.host = '127.0.0.1'
+        flow.request.port = 8889
+        asyncio.run(MyelinAddon().request(flow))
+    finally:
+        copilot_addon.COPILOT_ENGINE_URL = old_engine_url
+        copilot_addon.EGRESS_PORT = old_egress
+
+    assert (flow.request.host, flow.request.port, flow.request.scheme) == (
+        'api.business.githubcopilot.com', 443, 'https',
+    )
+    assert flow.request.path == '/responses'
+    assert 'x-myelin-original-host' not in flow.request.headers
 
 
 def test_mitm_bails_when_no_messages_and_no_input():

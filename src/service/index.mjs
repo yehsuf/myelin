@@ -1,5 +1,47 @@
 import { detectOS } from '../detect/os.mjs';
 
+export async function installEngineInstance(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.installEngineInstance(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.installEngineInstance(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.installEngineInstance(instance, platformOptions);
+}
+
+export async function engineInstanceStatus(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.engineInstanceStatus(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.engineInstanceStatus(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.engineInstanceStatus(instance, platformOptions);
+}
+
+export async function removeEngineInstance(instance, platformOptions = {}) {
+  const os = detectOS();
+  if (os === 'darwin') {
+    const service = await import('./launchd.mjs');
+    return service.removeEngineInstance(instance, platformOptions);
+  }
+  if (os === 'linux') {
+    const service = await import('./systemd.mjs');
+    return service.removeEngineInstance(instance, platformOptions);
+  }
+  const service = await import('./windows.mjs');
+  return service.removeEngineInstance(instance, platformOptions);
+}
+
 export async function installService(opts) {
   const os = detectOS();
   if (os === 'darwin') {
@@ -28,6 +70,20 @@ export async function installMitmService(opts) {
   }
 }
 
+export async function removeMitmService(opts = {}) {
+  const os = opts.os ?? detectOS();
+  if (os === 'darwin') {
+    const { removeMitmService: remove } = await import('./launchd.mjs');
+    return remove(opts);
+  }
+  if (os === 'linux') {
+    const { removeMitmService: remove } = await import('./systemd.mjs');
+    return remove(opts);
+  }
+  const { removeMitmService: remove } = await import('./windows.mjs');
+  return remove(opts);
+}
+
 /**
  * Install a watchdog that periodically revives dropped or hung services.
  * macOS always gets the launchd watchdog; Windows can opt into a Scheduled
@@ -41,7 +97,6 @@ export async function installWatchdog(opts) {
     return installWatchdog(opts);
   }
   if (os === 'windows') {
-    if (!opts?.enabled) return null;
     const { installWatchdog } = await import('./windows.mjs');
     return installWatchdog(opts);
   }
