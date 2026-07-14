@@ -7,11 +7,12 @@
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
 import { detectOS, detectShell, powerShellExecutable } from './detect/os.mjs';
+import { isWsl } from './detect/wsl.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
@@ -35,7 +36,12 @@ import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headr
 import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
 import { installService, installMitmService, installEngineInstance, removeEngineInstance } from './service/index.mjs';
 import { linkGlobalBin } from './service/npmlink.mjs';
-import { defaultWindowsHome, normalizeWindowsFilesystemPath, setUserEnvVars } from './service/windows.mjs';
+import {
+  defaultWindowsHome,
+  normalizeWindowsFilesystemPath,
+  resolveWindowsServiceExecutable,
+  setUserEnvVars,
+} from './service/windows.mjs';
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
@@ -269,6 +275,26 @@ function ownedEngineRoleInstance(engine, role, home = homedir(), cfg = {}) {
   };
 }
 
+function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defaultWindowsHomeImpl = defaultWindowsHome) {
+  const port = cleanupPort('headroom', role, cfg);
+  if (port == null) return null;
+  const winHome = defaultWindowsHomeImpl(home);
+  const id = `headroom-${role}`;
+  const stateDir = role === 'primary'
+    ? pathWin32.join(winHome, '.myelin', 'services', 'myelin-headroom')
+    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+  return {
+    engine: 'headroom',
+    role,
+    id,
+    legacy: true,
+    port,
+    stateDir,
+    logPath: pathWin32.join(winHome, '.myelin', `${id}.log`),
+    healthUrl: `http://127.0.0.1:${port}/health`,
+  };
+}
+
 export async function removeObsoleteOwnedInstances({
   selectedEngine,
   cfg = {},
@@ -288,8 +314,39 @@ export async function removeObsoleteOwnedInstances({
       manager: winManager,
       home,
       warn: warnFn,
+      includeLegacy: false,
     });
   }
+
+}
+
+async function removeSelectedLegacyWindowsInstances({
+  os,
+  cfg = {},
+  home,
+  warn: warnFn,
+  removeEngineInstanceImpl = removeEngineInstance,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+} = {}) {
+  if (os !== 'windows') return false;
+  for (const role of ['primary', 'copilot']) {
+    const instance = legacyWindowsEngineRoleInstance(role, home, cfg, defaultWindowsHomeImpl);
+    if (!instance) {
+      warnFn?.(`  ⚠ skipped legacy ${role} cleanup: configured port is invalid`);
+      continue;
+    }
+    // The selected manager can differ from the manager that created a legacy
+    // registration, so verify and remove each legacy registration type first.
+    for (const manager of ['registry', 'winsw']) {
+      await removeEngineInstanceImpl(instance, {
+        manager,
+        home,
+        warn: warnFn,
+        includeLegacy: false,
+      });
+    }
+  }
+  return true;
 }
 
 async function removeDisabledOwnedCopilotInstance({
@@ -310,6 +367,7 @@ async function removeDisabledOwnedCopilotInstance({
     manager: winManager,
     home,
     warn: warnFn,
+    includeLegacy: false,
   });
   return true;
 }
@@ -330,6 +388,7 @@ function engineInstanceServiceEnv(instance, envVars = {}) {
 export async function applyServiceEngineInstallPlan({
   enginePlan,
   cfg = {},
+  os,
   winManager = cfg?.proxy?.windows_service?.manager ?? 'registry',
   home,
   headroomBin,
@@ -338,11 +397,54 @@ export async function applyServiceEngineInstallPlan({
   installEngineInstanceImpl = installEngineInstance,
   removeEngineInstanceImpl = removeEngineInstance,
   detectToolImpl,
+  isWslImpl = isWsl,
+  defaultWindowsHomeImpl = defaultWindowsHome,
+  resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
 } = {}) {
-  const resolvedPlan = enginePlan ?? buildEngineInstancePlan(cfg);
+  const wsl = os === 'windows' && isWslImpl();
+  const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
+  const resolvedPlan = enginePlan ?? buildEngineInstancePlan(cfg, {
+    home: serviceHome,
+    os,
+    defaultWindowsHomeImpl,
+  });
   const primary = resolvedPlan.instances?.find(({ role }) => role === 'primary');
   if (!primary) throw new Error('Engine instance plan must include a primary descriptor');
 
+  const platformOptions = { manager: winManager, home, envVars };
+  if (resolvedPlan.engine === 'headroom') {
+    platformOptions.headroomBin = resolveWindowsServiceExecutableImpl({
+      engine: resolvedPlan.engine,
+      candidate: headroomBin,
+      serviceHome,
+      servicePlatform: os,
+      wsl,
+    });
+  } else if (resolvedPlan.engine === 'headroom_lite') {
+    const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+    const headroomLite = await detectTool('headroom-lite', '--version');
+    if (!headroomLite.installed || !headroomLite.path) {
+      throw new Error('headroom-lite selected but not installed');
+    }
+    platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({
+      engine: resolvedPlan.engine,
+      candidate: headroomLite.path,
+      serviceHome,
+      servicePlatform: os,
+      wsl,
+    });
+  } else {
+    throw new Error(`Unsupported engine: ${resolvedPlan.engine}`);
+  }
+
+  await removeSelectedLegacyWindowsInstances({
+    os,
+    cfg,
+    home,
+    warn: warnFn,
+    removeEngineInstanceImpl,
+    defaultWindowsHomeImpl,
+  });
   await removeObsoleteOwnedInstances({
     selectedEngine: resolvedPlan.engine,
     cfg,
@@ -359,20 +461,6 @@ export async function applyServiceEngineInstallPlan({
     warn: warnFn,
     removeEngineInstanceImpl,
   });
-
-  const platformOptions = { manager: winManager, home, envVars };
-  if (resolvedPlan.engine === 'headroom') {
-    platformOptions.headroomBin = headroomBin;
-  } else if (resolvedPlan.engine === 'headroom_lite') {
-    const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
-    const headroomLite = await detectTool('headroom-lite', '--version');
-    if (!headroomLite.installed || !headroomLite.path) {
-      throw new Error('headroom-lite selected but not installed');
-    }
-    platformOptions.headroomLiteBin = headroomLite.path;
-  } else {
-    throw new Error(`Unsupported engine: ${resolvedPlan.engine}`);
-  }
 
   for (const instance of resolvedPlan.instances) {
     await installEngineInstanceImpl(instance, {
@@ -1509,6 +1597,7 @@ async function main() {
     const installPlan = await applyServiceEngineInstallPlan({
       enginePlan,
       cfg,
+      os,
       winManager,
       home,
       headroomBin: binPath,

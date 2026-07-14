@@ -214,6 +214,158 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(installCalls[0].options.headroomLiteBin, '/usr/local/bin/headroom-lite');
   });
 
+  it('migrates selected Windows legacy roles before installing descriptor identities', async () => {
+    const events = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+          copilot_headroom: { enabled: true, port: 9787 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      installEngineInstanceImpl: async (instance) => events.push(`install:${instance.id}`),
+      removeEngineInstanceImpl: async (instance, options) => {
+        events.push(`remove:${instance.legacy ? 'legacy:' : ''}${instance.id}:${options.manager}`);
+      },
+    });
+
+    assert.deepEqual(events, [
+      'remove:legacy:headroom-primary:registry',
+      'remove:legacy:headroom-primary:winsw',
+      'remove:legacy:headroom-copilot:registry',
+      'remove:legacy:headroom-copilot:winsw',
+      'remove:headroom_lite-primary:registry',
+      'remove:headroom_lite-copilot:registry',
+      'install:headroom-primary',
+      'install:headroom-copilot',
+    ]);
+  });
+
+  it('uses one resolved Windows executable for both selected WSL engine roles', async () => {
+    const installed = [];
+    const resolverCalls = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 9787 },
+        },
+      },
+      os: 'windows',
+      home: '/home/alice',
+      headroomBin: '/home/alice/.myelin/venv/bin/headroom',
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      resolveWindowsServiceExecutableImpl: (options) => {
+        resolverCalls.push(options);
+        return 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe';
+      },
+      installEngineInstanceImpl: async (instance, options) => installed.push({ instance, options }),
+      removeEngineInstanceImpl: async () => {},
+    });
+
+    assert.deepEqual(resolverCalls, [{
+      engine: 'headroom',
+      candidate: '/home/alice/.myelin/venv/bin/headroom',
+      serviceHome: 'C:\\Users\\alice',
+      servicePlatform: 'windows',
+      wsl: true,
+    }]);
+    assert.deepEqual(
+      installed.map(({ instance, options }) => [instance.id, options.headroomBin]),
+      [
+        ['headroom-primary', 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe'],
+        ['headroom-copilot', 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe'],
+      ],
+    );
+  });
+
+  it('builds fallback WSL Windows descriptors from the resolved Windows home', async () => {
+    const installed = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+          copilot_headroom: { enabled: true, port: 9787 },
+        },
+      },
+      os: 'windows',
+      home: '/home/alice',
+      headroomBin: '/home/alice/.myelin/venv/bin/headroom',
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      resolveWindowsServiceExecutableImpl: () => 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      installEngineInstanceImpl: async (instance) => installed.push(instance),
+      removeEngineInstanceImpl: async () => {},
+    });
+
+    assert.deepEqual(
+      installed.map(({ stateDir, logPath }) => ({ stateDir, logPath })),
+      [
+        {
+          stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+          logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+        },
+        {
+          stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-copilot',
+          logPath: 'C:\\Users\\alice\\.myelin\\headroom-copilot.log',
+        },
+      ],
+    );
+  });
+
+  it('uses one resolved Windows Lite shim for both selected WSL engine roles', async () => {
+    const installed = [];
+    const resolverCalls = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { port: 8790 },
+          copilot_headroom: { enabled: true, port: 9790 },
+        },
+      },
+      os: 'windows',
+      home: '/home/alice',
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      detectToolImpl: async () => ({ installed: true, path: '/home/alice/.local/bin/headroom-lite' }),
+      resolveWindowsServiceExecutableImpl: (options) => {
+        resolverCalls.push(options);
+        return 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd';
+      },
+      installEngineInstanceImpl: async (instance, options) => installed.push({ instance, options }),
+      removeEngineInstanceImpl: async () => {},
+    });
+
+    assert.deepEqual(resolverCalls, [{
+      engine: 'headroom_lite',
+      candidate: '/home/alice/.local/bin/headroom-lite',
+      serviceHome: 'C:\\Users\\alice',
+      servicePlatform: 'windows',
+      wsl: true,
+    }]);
+    assert.deepEqual(
+      installed.map(({ instance, options }) => [instance.id, options.headroomLiteBin]),
+      [
+        ['headroom_lite-primary', 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd'],
+        ['headroom_lite-copilot', 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd'],
+      ],
+    );
+  });
+
   it('keeps shared Python provider settings out of the Lite Copilot descriptor', async () => {
     const installCalls = [];
     const pythonPrimaryEnv = {
@@ -294,7 +446,7 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(installCalls[0].options.headroomLiteBin, undefined);
   });
 
-  it('fails explicitly for missing Lite after disabling only owned Python descriptors', async () => {
+  it('fails explicitly for missing Lite before removing owned Python descriptors', async () => {
     const removed = [];
     const installed = [];
 
@@ -312,10 +464,33 @@ describe('applyServiceEngineInstallPlan', () => {
       /headroom-lite selected but not installed/,
     );
 
-    assert.deepEqual(removed.map(({ engine, role }) => `${engine}:${role}`), [
-      'headroom:primary', 'headroom:copilot',
-    ]);
+    assert.deepEqual(removed, []);
     assert.deepEqual(installed, []);
+  });
+
+  it('preflights selected Windows Lite before migrating legacy roles', async () => {
+    const removed = [];
+
+    await assert.rejects(
+      applyServiceEngineInstallPlan({
+        cfg: {
+          proxy: {
+            engine: 'headroom_lite',
+            headroom: { port: 8787 },
+            headroom_lite: { port: 8790 },
+            windows_service: { manager: 'registry' },
+          },
+        },
+        os: 'windows',
+        home: 'C:\\Users\\alice',
+        installEngineInstanceImpl: () => assert.fail('an unavailable engine must not be installed'),
+        removeEngineInstanceImpl: async (instance) => removed.push(instance),
+        detectToolImpl: async () => ({ installed: false, path: null }),
+      }),
+      /headroom-lite selected but not installed/,
+    );
+
+    assert.deepEqual(removed, []);
   });
 
   it('surfaces a Lite registration failure without falling back to Python', async () => {
@@ -368,7 +543,9 @@ describe('applyServiceEngineInstallPlan', () => {
         });
 
         const obsoletePort = obsoleteEngine === 'headroom' ? 8787 : 8790;
-        assert.deepEqual(removed.map(({ id, port, healthUrl }) => ({ id, port, healthUrl })), [
+        assert.deepEqual(removed
+          .filter(({ legacy }) => !legacy)
+          .map(({ id, port, healthUrl }) => ({ id, port, healthUrl })), [
           {
             id: `${obsoleteEngine}-primary`,
             port: obsoletePort,

@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, win32 as pathWin32 } from 'node:path';
@@ -13,6 +13,7 @@ const HEADROOM_KEY = 'MyelinHeadroom';
 const MITM_KEY = 'MyelinMitmproxy';
 const COPILOT_HEADROOM_KEY = 'MyelinCopilotHeadroom';
 const WSL_SYSTEM_PROFILE_NAMES = new Set(['public', 'all users', 'default', 'default user', 'windows', 'wpsystem']);
+const nodeExecFileSync = execFileSync;
 const nodeExecSync = execSync;
 const nodeExistsSync = existsSync;
 const nodeReaddirSync = readdirSync;
@@ -72,6 +73,7 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
       env: {},
     };
   }
+
   if (instance.engine === 'headroom_lite') {
     if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
     return {
@@ -81,6 +83,26 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
     };
   }
   throw new Error(`Unsupported engine instance engine: ${instance.engine}`);
+}
+
+function commandForWindowsExecutable(executable, commandArguments = '') {
+  const target = String(executable ?? '');
+  const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(target);
+  if (!isBatchLauncher) {
+    return {
+      executable: target,
+      arguments: commandArguments,
+      isBatchLauncher: false,
+      batchTarget: '',
+    };
+  }
+  const quotedTarget = `"${target.replace(/"/g, '""')}"`;
+  return {
+    executable: 'cmd.exe',
+    arguments: `/d /s /c "${quotedTarget}${commandArguments ? ` ${commandArguments}` : ''}"`,
+    isBatchLauncher: true,
+    batchTarget: target,
+  };
 }
 
 function legacyEngineInstance({
@@ -178,6 +200,145 @@ function wslMountToWindowsPath(value = '') {
   if (!match) return value;
   const [, drive, rest = ''] = match;
   return rest ? `${drive.toUpperCase()}:/${rest}` : `${drive.toUpperCase()}:/`;
+}
+
+function isNativeWindowsPath(value = '') {
+  const path = String(value ?? '').trim();
+  return /^[a-zA-Z]:[\\/]/u.test(path)
+    || /^[/\\]{2}[^/\\]+[/\\][^/\\]+/u.test(path);
+}
+
+function isWslUncPath(value = '') {
+  return /^[/\\]{2}wsl(?:\.localhost|\$)?[/\\]/iu.test(String(value ?? '').trim());
+}
+
+function isRunnableWindowsExecutable(engine, value = '') {
+  const path = String(value ?? '').trim();
+  return engine === 'headroom'
+    ? /\.exe$/iu.test(path)
+    : /\.(?:cmd|exe)$/iu.test(path);
+}
+
+function runWindowsExecutableProbe(execFileSyncImpl, executable, args) {
+  return trimPowershellOutput(execFileSyncImpl(executable, args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    windowsHide: true,
+  }));
+}
+
+function probeWindowsExecutable(path, execFileSyncImpl) {
+  const script = `$path = ${psQuote(path)}
+if (Test-Path -LiteralPath $path -PathType Leaf) {
+  [Console]::Out.Write($path)
+  exit 0
+}
+exit 1`;
+  return runWindowsExecutableProbe(
+    execFileSyncImpl,
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+  );
+}
+
+function findWindowsHeadroomLite(execFileSyncImpl) {
+  const script = `$names = @('headroom-lite.cmd', 'headroom-lite.exe')
+foreach ($name in $names) {
+  $command = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($null -eq $command) { continue }
+  $path = if ($command.Source) { $command.Source } else { $command.Path }
+  if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+    [Console]::Out.Write($path)
+    exit 0
+  }
+}
+exit 1`;
+  return runWindowsExecutableProbe(
+    execFileSyncImpl,
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+  );
+}
+
+function findWindowsHeadroom(serviceHome, execFileSyncImpl) {
+  const expectedPath = isNativeWindowsPath(serviceHome)
+    ? pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')
+    : null;
+  const script = expectedPath
+    ? `$path = ${psQuote(expectedPath)}
+if (Test-Path -LiteralPath $path -PathType Leaf) {
+  [Console]::Out.Write($path)
+  exit 0
+}
+exit 1`
+    : `$home = [Environment]::GetFolderPath('UserProfile')
+$path = Join-Path $home '.myelin\\venv\\Scripts\\headroom.exe'
+if (Test-Path -LiteralPath $path -PathType Leaf) {
+  [Console]::Out.Write($path)
+  exit 0
+}
+exit 1`;
+  return runWindowsExecutableProbe(
+    execFileSyncImpl,
+    'powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', script],
+  );
+}
+
+export function resolveWindowsServiceExecutable({
+  engine,
+  candidate,
+  serviceHome,
+  servicePlatform,
+  wsl,
+} = {}, {
+  execFileSyncImpl = nodeExecFileSync,
+} = {}) {
+  if (servicePlatform !== 'windows' || !wsl) return candidate;
+  if (!['headroom', 'headroom_lite'].includes(engine)) {
+    throw new Error(`Unknown selected engine: ${engine}`);
+  }
+
+  const rawCandidate = String(candidate ?? '').trim();
+  if (!isWslUncPath(rawCandidate) &&
+      isNativeWindowsPath(rawCandidate) &&
+      isRunnableWindowsExecutable(engine, rawCandidate)) {
+    return normalizeWindowsFilesystemPath(rawCandidate);
+  }
+
+  if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(rawCandidate)) {
+    try {
+      const converted = runWindowsExecutableProbe(
+        execFileSyncImpl,
+        'wslpath',
+        ['-w', rawCandidate],
+      );
+      if (!isWslUncPath(converted) &&
+          isNativeWindowsPath(converted) &&
+          isRunnableWindowsExecutable(engine, converted)) {
+        const verified = probeWindowsExecutable(converted, execFileSyncImpl);
+        if (verified) return normalizeWindowsFilesystemPath(verified);
+      }
+    } catch {}
+  }
+
+  try {
+    const resolved = engine === 'headroom_lite'
+      ? findWindowsHeadroomLite(execFileSyncImpl)
+      : findWindowsHeadroom(serviceHome, execFileSyncImpl);
+    if (isNativeWindowsPath(resolved) && isRunnableWindowsExecutable(engine, resolved)) {
+      return normalizeWindowsFilesystemPath(resolved);
+    }
+  } catch {}
+
+  const detail = engine === 'headroom_lite'
+    ? 'Install headroom-lite.cmd or headroom-lite.exe in the Windows user PATH.'
+    : `Install headroom-ai in the Windows Myelin venv${
+      isNativeWindowsPath(serviceHome)
+        ? ` at ${pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')}`
+        : ''
+    }.`;
+  throw new Error(`Unable to resolve a Windows-service executable for ${engine} from WSL. ${detail}`);
 }
 
 function xmlEscape(value = '') {
@@ -459,10 +620,12 @@ function readWindowsScriptText(scriptPath, opts = {}) {
 }
 
 function parseLauncherStartProcess(script = '') {
-  const match = String(script ?? '').match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])*)'/m);
+  const content = String(script ?? '');
+  const match = content.match(/Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])*)'/m);
   if (!match) return null;
+  const batchTarget = content.match(/\$myelinBatchTarget = '((?:''|[^'])+)'/m);
   return {
-    executablePath: match[1].replace(/''/g, "'"),
+    executablePath: (batchTarget?.[1] ?? match[1]).replace(/''/g, "'"),
     argStr: match[2].replace(/''/g, "'"),
   };
 }
@@ -865,8 +1028,9 @@ export function generateEngineInstanceRunScript({ instance, envVars = {}, ...opt
   const executable = normalizeWindowsFilesystemPath(command.executable);
   const logPath = normalizeWindowsFilesystemPath(instance.logPath);
   const args = command.arguments;
+  const launch = commandForWindowsExecutable(executable, args);
   const launcherRegex = escapePs(escapePsRegex(paths.launcherPath));
-  const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(executable);
+  const isBatchLauncher = launch.isBatchLauncher;
   const listenerPort = Number(instance.port);
   if (isBatchLauncher && (!Number.isInteger(listenerPort) || listenerPort < 1 || listenerPort > 65535)) {
     throw new Error('Batch engine instance launchers require a valid listener port');
@@ -917,7 +1081,8 @@ $ErrorActionPreference = 'Stop'
 ${buildServiceEnvUnsetLines({ os: 'windows' })}
 ${envLines}
 try { Remove-Item -Path '${escapePs(paths.pidPath)}' -ErrorAction SilentlyContinue } catch {}
-$proc = Start-Process -FilePath '${escapePs(executable)}' -ArgumentList '${escapePs(args)}' -WorkingDirectory '${escapePs(paths.stateDir)}' -RedirectStandardOutput '${escapePs(logPath)}' -WindowStyle Hidden -PassThru
+${isBatchLauncher ? `$myelinBatchTarget = '${escapePs(launch.batchTarget)}'` : ''}
+$proc = Start-Process -FilePath '${escapePs(launch.executable)}' -ArgumentList '${escapePs(launch.arguments)}' -WorkingDirectory '${escapePs(paths.stateDir)}' -RedirectStandardOutput '${escapePs(logPath)}' -WindowStyle Hidden -PassThru
 ${childListenerTracking}
 Set-Content -Path '${escapePs(paths.pidPath)}' -Value ${isBatchLauncher ? '$managedProcess.ProcessId' : '$proc.Id'} -Encoding ASCII
 Wait-Process -Id ${isBatchLauncher ? '$managedProcess.ProcessId' : '$proc.Id'}
@@ -937,9 +1102,10 @@ if (Test-Path '${escapePs(paths.pidPath)}') {
         $previousLauncherPort = $candidatePort
       }
     }
-    $previousLauncherExecutable = [regex]::Match($previousLauncherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+    $previousBatchTarget = [regex]::Match($previousLauncherContent, "\\$myelinBatchTarget = '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+    $previousLauncherExecutable = if ($previousBatchTarget) { $previousBatchTarget } else { [regex]::Match($previousLauncherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'") }
     $previousLauncherArguments = [regex]::Match($previousLauncherContent, "Start-Process -FilePath '(?:''|[^'])+' -ArgumentList '((?:''|[^'])*)'").Groups[1].Value.Replace("''", "'")
-    $previousIsBatch = $previousLauncherExecutable -match '\\.(?:cmd|bat)$'
+    $previousIsBatch = $previousLauncherExecutable -match '\\.(?:cmd|bat)$' -or [bool]$previousBatchTarget
     $previousTrackedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $previousPid" -ErrorAction SilentlyContinue
     $previousProcess = $null
     $previousTrackedMatches = $false
@@ -1004,12 +1170,16 @@ Write-Host "[myelin] ${paths.name} started (hidden)"
 export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, ...options }) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
+  const launch = commandForWindowsExecutable(
+    normalizeWindowsFilesystemPath(command.executable),
+    command.arguments,
+  );
   return generateWinswConfigXml({
     id: identity.id,
     name: identity.name,
     description: identity.description,
-    executable: normalizeWindowsFilesystemPath(command.executable),
-    arguments: command.arguments,
+    executable: normalizeWindowsFilesystemPath(launch.executable),
+    arguments: launch.arguments,
     logPath: normalizeWindowsFilesystemPath(instance.logPath),
     workingDirectory: normalizeWindowsFilesystemPath(instance.stateDir),
     envVars: defaultServiceEnv({
@@ -1022,6 +1192,10 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
 export async function installEngineInstance(instance, { manager = 'registry', envVars = {}, home, ...options } = {}) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
+  const launch = commandForWindowsExecutable(
+    normalizeWindowsFilesystemPath(command.executable),
+    command.arguments,
+  );
   const mergedEnv = { ...command.env, ...envVars, ...instance.env };
   if (manager !== 'winsw') {
     runPs(generateEngineInstanceRunScript({ instance, envVars, ...options }));
@@ -1031,8 +1205,8 @@ export async function installEngineInstance(instance, { manager = 'registry', en
     id: identity.id,
     name: identity.name,
     description: identity.description,
-    executable: command.executable,
-    arguments: command.arguments,
+    executable: launch.executable,
+    arguments: launch.arguments,
     envVars: mergedEnv,
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
@@ -1165,6 +1339,10 @@ function ownedWinswEngineInstance(instance, paths, {
   const expectedExecutable = instance.engine === 'headroom_lite'
     ? /(?:^|[\\/])headroom-lite(?:\.(?:exe|cmd|bat))?$/iu
     : /(?:^|[\\/])headroom(?:\.exe)?$/iu;
+  const argumentsValue = config.match(/<arguments>([\s\S]*?)<\/arguments>/iu)?.[1] ?? '';
+  const usesOwnedCmdShim = instance.engine === 'headroom_lite'
+    && /^cmd\.exe$/iu.test(executable)
+    && /\/d\s+\/s\s+\/c\s+&quot;&quot;[^<]*headroom-lite(?:\.(?:cmd|bat))?&quot;&quot;/iu.test(argumentsValue);
   const configuredPort = instance.engine === 'headroom_lite'
     ? config.match(/<env name="HEADROOM_LITE_PORT" value="(\d+)"\/>/iu)?.[1]
     : config.match(/<arguments>proxy --port (\d+)(?:\s|<)/iu)?.[1];
@@ -1174,7 +1352,7 @@ function ownedWinswEngineInstance(instance, paths, {
   return config.includes(`<id>${paths.id}</id>`) &&
     config.includes(`<workingdirectory>${xmlEscape(paths.stateDir)}</workingdirectory>`) &&
     hasValidConfiguredPort &&
-    expectedExecutable.test(executable);
+    (expectedExecutable.test(executable) || usesOwnedCmdShim);
 }
 
 export function generateEngineInstanceRemovalScript({ instance, home } = {}) {
@@ -1184,11 +1362,13 @@ $pidPath = '${escapePs(paths.pidPath)}'
 $launcherPath = '${escapePs(paths.launcherPath)}'
 $runKey = '${escapePs(paths.runKey)}'
 $stateDir = '${escapePs(paths.stateDir)}'
+$legacyRunKeyValue = (Get-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue).$runKey
 $managedPid = if (Test-Path $pidPath) { Get-Content -Path $pidPath -ErrorAction SilentlyContinue | Select-Object -First 1 } else { $null }
 if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
   $managedProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $managedPid" -ErrorAction SilentlyContinue
   $launcherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
-  $launcherExecutable = [regex]::Match($launcherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+  $myelinBatchTarget = [regex]::Match($launcherContent, "\\$myelinBatchTarget = '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'")
+  $launcherExecutable = if ($myelinBatchTarget) { $myelinBatchTarget } else { [regex]::Match($launcherContent, "Start-Process -FilePath '((?:''|[^'])+)'").Groups[1].Value.Replace("''", "'") }
   $portMatch = [regex]::Match($launcherContent, "(?m)(?:proxy\\s+--port\\s+|HEADROOM_LITE_PORT\\s*=\\s*')(\\d+)")
   $launcherPort = $null
   if ($portMatch.Success) {
@@ -1218,7 +1398,7 @@ if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
   $ownsPort = $ownedProcess -ne $null
   $roleMatches = $launcherContent -match [regex]::Escape($stateDir)
   $portMatches = $launcherPort -ne $null
-  $cmdLauncher = $launcherExecutable -match '\\.(?:cmd|bat)$'
+  $cmdLauncher = $launcherExecutable -match '\\.(?:cmd|bat)$' -or [bool]$myelinBatchTarget
   $launcherMatches = $false
   $commandMatches = $false
   $ancestor = $ownedProcess
@@ -1239,8 +1419,42 @@ if ($managedPid -match '^[0-9]+$' -and (Test-Path $launcherPath)) {
   }
   Remove-Item -Path $pidPath -ErrorAction SilentlyContinue
 }
-$registeredLauncher = (Get-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue).$runKey
-if ($registeredLauncher -and $registeredLauncher -match [regex]::Escape($launcherPath)) {
+$legacyExecutable = $null
+$legacyArguments = $null
+$legacyArgumentsPattern = $null
+$legacyPort = $null
+$legacyDirectMatch = [regex]::Match([string]$legacyRunKeyValue, '^\\s*(?:"(?<executable>[^"]+headroom(?:\\.exe)?)"|(?<executable>\\S+headroom(?:\\.exe)?))\\s+(?<arguments>proxy\\b.*)\\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$legacyLauncherMatch = [regex]::Match([string]$legacyRunKeyValue, '(?i)(?:^|\\s)-File\\s+"(?<launcher>[^"]+)"')
+$legacyLauncherMatches = $legacyLauncherMatch.Success -and $legacyLauncherMatch.Groups['launcher'].Value -ieq $launcherPath
+if ($legacyDirectMatch.Success) {
+  $legacyExecutable = if ($legacyDirectMatch.Groups['executable'].Value) { $legacyDirectMatch.Groups['executable'].Value } else { $null }
+  $legacyArguments = $legacyDirectMatch.Groups['arguments'].Value.Trim()
+} elseif ($legacyLauncherMatches -and (Test-Path $launcherPath)) {
+  $legacyLauncherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
+  $legacyStartMatch = [regex]::Match($legacyLauncherContent, "Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])*)'")
+  if ($legacyStartMatch.Success) {
+    $legacyExecutable = $legacyStartMatch.Groups[1].Value.Replace("''", "'")
+    $legacyArguments = $legacyStartMatch.Groups[2].Value.Replace("''", "'").Trim()
+  }
+}
+if ($legacyExecutable -and $legacyArguments -match '^proxy\\b') {
+  $legacyArgumentsPattern = [regex]::Escape($legacyArguments) + '\\s*$'
+  $legacyPortMatch = [regex]::Match($legacyArguments, '(?:^|\\s)--port\\s+(\\d+)(?:\\s|$)')
+  if ($legacyPortMatch.Success) {
+    $candidatePort = [int]$legacyPortMatch.Groups[1].Value
+    if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $legacyPort = $candidatePort }
+  }
+}
+if ($legacyExecutable -and $legacyArguments -and $legacyPort) {
+  foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $legacyPort -ErrorAction SilentlyContinue)) {
+    $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
+    if ($candidate -and $candidate.ExecutablePath -eq $legacyExecutable -and $candidate.CommandLine -match $legacyArgumentsPattern -and $candidate.CommandLine -match "(^|\\s)--port\\s+$legacyPort(\\s|$)") {
+      Stop-Process -Id $candidate.ProcessId -Force -ErrorAction SilentlyContinue
+      break
+    }
+  }
+}
+if ($legacyDirectMatch.Success -or $legacyLauncherMatches) {
   Remove-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue
 }
 `;
@@ -1249,6 +1463,7 @@ if ($registeredLauncher -and $registeredLauncher -match [regex]::Escape($launche
 export function removeEngineInstance(instance, {
   manager = 'registry',
   home,
+  includeLegacy = true,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   execSyncImpl = execSync,
@@ -1258,7 +1473,7 @@ export function removeEngineInstance(instance, {
   runPsFn = runPs,
 } = {}) {
   const paths = engineInstancePaths(instance);
-  const legacyInstance = instance.legacy
+  const legacyInstance = !includeLegacy || instance.legacy
     ? instance
     : legacyEngineInstance({
         engine: 'headroom',

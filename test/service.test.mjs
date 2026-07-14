@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as windowsService from '../src/service/windows.mjs';
 import {
   generatePlist,
   generateGenericPlist,
@@ -247,7 +248,7 @@ describe('Windows registry engine-instance ownership', () => {
       headroomLiteBin: 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd',
     });
 
-    assert.match(script, /Start-Process -FilePath 'C:\\Users\\alice\\\.myelin\\bin\\headroom-lite\.cmd'/);
+    assert.match(script, /Start-Process -FilePath 'cmd\.exe' -ArgumentList '\/d \/s \/c ""C:\\Users\\alice\\\.myelin\\bin\\headroom-lite\.cmd""'/);
     assert.match(script, /Get-NetTCPConnection -State Listen -LocalPort 8790/);
     assert.match(script, /\$ancestor\.ProcessId -eq \$proc\.Id/);
     assert.match(script, /Set-Content -Path .* -Value \$managedProcess\.ProcessId/);
@@ -256,6 +257,17 @@ describe('Windows registry engine-instance ownership', () => {
     assert.match(script, /\$proc\.Refresh\(\)/);
     assert.match(script, /while \(-not \$managedProcess -and -not \$proc\.HasExited\)/);
     assert.doesNotMatch(script, /\$deadline/);
+  });
+
+  it('keeps cmd-shim ownership checks on the target shim during status and removal', () => {
+    const script = generateEngineInstanceRemovalScript({
+      instance: LITE_INSTANCE,
+      home: 'C:\\Users\\alice',
+    });
+
+    assert.match(script, /\$myelinBatchTarget/);
+    assert.match(script, /Name -ieq 'cmd\.exe'/);
+    assert.match(script, /CommandLine -match \[regex\]::Escape\(\$launcherExecutable\)/);
   });
 
   it('proves a previous descriptor using its recorded executable type before replacing it', () => {
@@ -402,7 +414,8 @@ describe('Windows engine descriptor migration ownership', () => {
     const cmdConfig = [
       '<service>',
       '  <id>headroom_lite-copilot</id>',
-      '  <executable>C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd</executable>',
+      '  <executable>cmd.exe</executable>',
+      '  <arguments>/d /s /c &quot;&quot;C:\\Users\\alice\\.myelin\\bin\\headroom-lite.cmd&quot;&quot;</arguments>',
       '  <env name="HEADROOM_LITE_PORT" value="8788"/>',
       '  <workingdirectory>C:\\Users\\alice\\.myelin\\state\\headroom_lite-copilot</workingdirectory>',
       '</service>',
@@ -421,6 +434,71 @@ describe('Windows engine descriptor migration ownership', () => {
     });
 
     assert.deepEqual(uninstalled, ['headroom_lite-copilot']);
+  });
+
+  it('removes a direct legacy Run-key listener only after matching its stored executable, command, and port', () => {
+    const scripts = [];
+
+    removeWindowsEngineInstance({
+      engine: 'headroom',
+      role: 'primary',
+      port: 8787,
+      id: 'headroom-primary',
+      legacy: true,
+      stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom',
+      logPath: 'C:\\Users\\alice\\.myelin\\headroom.log',
+      healthUrl: 'http://127.0.0.1:8787/health',
+    }, {
+      manager: 'registry',
+      home: HOME,
+      runPsFn: (script) => scripts.push(script),
+      uninstallWindowsWatchdogTaskImpl: () => {},
+    });
+
+    assert.equal(scripts.length, 1);
+    assert.match(scripts[0], /\$legacyRunKeyValue =/);
+    assert.match(scripts[0], /\$legacyExecutable/);
+    assert.match(scripts[0], /\$legacyArguments/);
+    assert.match(scripts[0], /Get-NetTCPConnection -State Listen -LocalPort \$legacyPort/);
+    assert.match(scripts[0], /ExecutablePath -eq \$legacyExecutable/);
+    assert.match(scripts[0], /CommandLine -match \$legacyArgumentsPattern/);
+    assert.match(scripts[0], /Remove-ItemProperty -Path .* -Name \$runKey/);
+  });
+
+  it('requires an exact stored command tail before stopping a direct legacy Run-key listener', () => {
+    const script = generateEngineInstanceRemovalScript({
+      instance: {
+        engine: 'headroom',
+        role: 'primary',
+        port: 8787,
+        id: 'headroom-primary',
+        legacy: true,
+        stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+        healthUrl: 'http://127.0.0.1:8787/health',
+      },
+      home: HOME,
+    });
+
+    assert.ok(script.includes("$legacyArgumentsPattern = [regex]::Escape($legacyArguments) + '\\s*$'"));
+    assert.ok(script.includes('$candidate.CommandLine -match $legacyArgumentsPattern'));
+  });
+
+  it('recognizes only its exact old Copilot launcher path while stopping the owned listener', () => {
+    const script = generateEngineInstanceRemovalScript({
+      instance: {
+        ...COPILOT_INSTANCE,
+        legacy: true,
+        stateDir: 'C:\\Users\\alice\\.myelin\\copilot-headroom',
+      },
+      home: HOME,
+    });
+
+    assert.match(script, /\$legacyLauncherMatch = \[regex\]::Match\(\[string\]\$legacyRunKeyValue/);
+    assert.match(script, /start-copilot-headroom\.ps1/);
+    assert.match(script, /\$legacyLauncherMatch\.Groups\['launcher'\]\.Value -ieq \$launcherPath/);
+    assert.match(script, /Get-Content -Path \$launcherPath -Raw/);
+    assert.match(script, /Remove-ItemProperty -Path .* -Name \$runKey/);
   });
 });
 
@@ -957,6 +1035,115 @@ describe('WinSW XML generator', () => {
     });
     assert.ok(xml.includes('Proxy &lt;watchdog&gt; &amp; &quot;health&quot;'));
     assert.ok(xml.includes('value="A&amp;B&lt;&quot;&apos;"'));
+  });
+
+  it('runs a .cmd engine shim through cmd.exe with safe /d /s /c quoting', () => {
+    const xml = generateEngineInstanceWinswConfig({
+      instance: {
+        ...engineInstance('headroom_lite', 'primary'),
+        stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+      },
+      headroomLiteBin: 'C:\\Program Files\\Myelin\\headroom-lite.cmd',
+    });
+
+    assert.match(xml, /<executable>cmd\.exe<\/executable>/);
+    assert.match(xml, /<arguments>\/d \/s \/c &quot;&quot;C:\\Program Files\\Myelin\\headroom-lite\.cmd&quot;&quot;<\/arguments>/);
+  });
+
+  it('normalizes a mounted Windows Lite shim before embedding it in cmd.exe arguments', () => {
+    const xml = generateEngineInstanceWinswConfig({
+      instance: {
+        ...engineInstance('headroom_lite', 'primary'),
+        stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary',
+        logPath: 'C:\\Users\\alice\\.myelin\\headroom_lite-primary.log',
+      },
+      headroomLiteBin: '/mnt/c/Users/alice/AppData/Roaming/npm/headroom-lite.cmd',
+    });
+
+    assert.match(xml, /<arguments>\/d \/s \/c &quot;&quot;C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite\.cmd&quot;&quot;<\/arguments>/);
+    assert.doesNotMatch(xml, /\/mnt\/c\//);
+  });
+});
+
+describe('WSL Windows-service executable resolution', () => {
+  it('rejects Linux-only shims and resolves a usable Windows selected-engine executable', () => {
+    assert.equal(typeof windowsService.resolveWindowsServiceExecutable, 'function');
+
+    const resolved = windowsService.resolveWindowsServiceExecutable({
+      engine: 'headroom_lite',
+      candidate: '/home/alice/.local/bin/headroom-lite.cmd',
+      servicePlatform: 'windows',
+      wsl: true,
+    }, {
+      execFileSyncImpl: (file, args) => {
+        if (file === 'wslpath') return Buffer.from('\\\\wsl.localhost\\Ubuntu\\home\\alice\\.local\\bin\\headroom-lite\n');
+        if (file === 'powershell.exe' && args.at(-1).includes('Get-Command')) {
+          return Buffer.from('C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd\n');
+        }
+        throw new Error('Linux shim is not a Windows executable');
+      },
+    });
+
+    assert.equal(resolved, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd');
+  });
+
+  it('does not accept an existing WSL UNC path for a Linux-selected Lite shim', () => {
+    const resolved = windowsService.resolveWindowsServiceExecutable({
+      engine: 'headroom_lite',
+      candidate: '/home/alice/.local/bin/headroom-lite',
+      servicePlatform: 'windows',
+      wsl: true,
+    }, {
+      execFileSyncImpl: (file, args) => {
+        if (file === 'wslpath') return Buffer.from('\\\\wsl.localhost\\Ubuntu\\home\\alice\\.local\\bin\\headroom-lite.cmd\n');
+        if (file === 'powershell.exe' && args.at(-1).includes('Get-Command')) {
+          return Buffer.from('C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd\n');
+        }
+        if (file === 'powershell.exe' && args.at(-1).includes('Test-Path')) {
+          return Buffer.from('\\\\wsl.localhost\\Ubuntu\\home\\alice\\.local\\bin\\headroom-lite.cmd\n');
+        }
+        throw new Error('unexpected executable probe');
+      },
+    });
+
+    assert.equal(resolved, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd');
+  });
+
+  it('does not accept a legacy WSL $ UNC path for a Linux-selected Lite shim', () => {
+    const resolved = windowsService.resolveWindowsServiceExecutable({
+      engine: 'headroom_lite',
+      candidate: String.raw`\\wsl$\Ubuntu\home\alice\.local\bin\headroom-lite.cmd`,
+      servicePlatform: 'windows',
+      wsl: true,
+    }, {
+      execFileSyncImpl: (file, args) => {
+        if (file === 'powershell.exe' && args.at(-1).includes('Get-Command')) {
+          return Buffer.from('C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd\n');
+        }
+        throw new Error('unexpected executable probe');
+      },
+    });
+
+    assert.equal(resolved, 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd');
+  });
+
+  it('fails instead of emitting a Windows service with an unresolvable Linux-only executable', () => {
+    assert.equal(typeof windowsService.resolveWindowsServiceExecutable, 'function');
+    assert.throws(
+      () => windowsService.resolveWindowsServiceExecutable({
+        engine: 'headroom',
+        candidate: '/home/alice/.myelin/venv/bin/headroom',
+        serviceHome: 'C:\\Users\\alice',
+        servicePlatform: 'windows',
+        wsl: true,
+      }, {
+        execFileSyncImpl: () => {
+          throw new Error('not found');
+        },
+      }),
+      /Unable to resolve a Windows-service executable for headroom from WSL/,
+    );
   });
 });
 
