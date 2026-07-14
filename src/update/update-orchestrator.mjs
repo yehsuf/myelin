@@ -2248,7 +2248,12 @@ async function defaultRunStagedApply({
       action();
     };
 
-    async function onAbort() {
+    // Shared by any failure path that must not let the child outlive the
+    // settlement: confirms quiescence (SIGTERM->SIGKILL) before rejecting, so
+    // the caller never restores a rollback snapshot while this child might
+    // still be rewriting the same files. `onQuiesced`/`onUnquiesced` build the
+    // rejection error for their respective outcome.
+    async function quiesceThenSettle(onQuiesced, onUnquiesced) {
       if (settled || aborting) return;
       // Own the settlement so the child's own exit/error handlers stand down
       // while we confirm quiescence.
@@ -2260,15 +2265,9 @@ async function defaultRunStagedApply({
       });
       settle(() => {
         if (quiesced) {
-          reject(updateError(
-            'Staged apply aborted by a terminal transaction failure.',
-            'ERR_UPDATE_ABORTED',
-          ));
+          reject(onQuiesced());
         } else {
-          const unquiesced = updateError(
-            'Staged apply could not be confirmed terminated after abort; failing closed to avoid racing rollback.',
-            'ERR_UPDATE_ABORT_UNQUIESCED',
-          );
+          const unquiesced = onUnquiesced();
           // Carry the child pid so the caller can persist a durable liveness
           // marker; a later recovery must confirm this process is gone before it
           // dares restore the snapshot.
@@ -2276,6 +2275,19 @@ async function defaultRunStagedApply({
           reject(unquiesced);
         }
       });
+    }
+
+    async function onAbort() {
+      await quiesceThenSettle(
+        () => updateError(
+          'Staged apply aborted by a terminal transaction failure.',
+          'ERR_UPDATE_ABORTED',
+        ),
+        () => updateError(
+          'Staged apply could not be confirmed terminated after abort; failing closed to avoid racing rollback.',
+          'ERR_UPDATE_ABORT_UNQUIESCED',
+        ),
+      );
     }
 
     child.once('error', error => {
@@ -2302,7 +2314,22 @@ async function defaultRunStagedApply({
     if (typeof onChildSpawn === 'function') {
       Promise.resolve()
         .then(() => onChildSpawn({ pid: child?.pid ?? null }))
-        .catch(error => settle(() => reject(error)));
+        .catch(async journalWriteError => {
+          // The durable liveness marker failed to persist while the child is
+          // still alive. Rejecting immediately here would let the caller's
+          // generic-error rollback path restore snapshot files while this
+          // child is still rewriting them -- the exact clobber class this
+          // journal exists to prevent. Quiesce (or fence) the child first, as
+          // an abort would, before letting any rollback proceed.
+          await quiesceThenSettle(
+            () => journalWriteError,
+            () => updateError(
+              'Staged apply child could not be confirmed terminated after a post-spawn '
+                + 'journal-write failure; failing closed to avoid racing rollback.',
+              'ERR_UPDATE_ABORT_UNQUIESCED',
+            ),
+          );
+        });
     }
   });
 }

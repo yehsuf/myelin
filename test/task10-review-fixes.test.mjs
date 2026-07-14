@@ -1244,6 +1244,83 @@ describe('Task 10 finding 16: abort waits for staged-child quiescence before rol
   });
 });
 
+describe('PR #23 finding 6: post-spawn journal-write failure must not race rollback against a live child', () => {
+  const syncScheduler = {
+    setTimeout: cb => { cb(); return { unref() {} }; },
+    clearTimeout: () => {},
+  };
+
+  function abortableChild({ exitOnTerm }) {
+    const child = new EventEmitter();
+    child.killed = [];
+    child.kill = signal => {
+      child.killed.push(signal);
+      if (exitOnTerm && signal === 'SIGTERM') child.emit('exit', null, 'SIGTERM');
+    };
+    return child;
+  }
+
+  it('quiesces a cooperative child before rejecting when onChildSpawn (journal write) throws', async () => {
+    // The child exits cleanly once SIGTERM'd, so once quiesced it is safe to
+    // reject with the original journal-write error and let rollback proceed.
+    const child = abortableChild({ exitOnTerm: true });
+    const deps = createUpdateDependencies({
+      home: makeRoot(),
+      platform: 'linux',
+      stagedApplySpawn: () => child,
+      stagedAbortScheduler: syncScheduler,
+    });
+
+    const pending = deps.runStagedApply({
+      plan: { config: { proxy: { compression: { enabled: false } } } },
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+      lockToken: { token: 'transaction-token' },
+      onChildSpawn: async () => {
+        throw new Error('failed to persist child pid to the journal');
+      },
+    });
+
+    await assert.rejects(() => pending);
+    assert.deepEqual(
+      child.killed,
+      ['SIGTERM'],
+      'a post-spawn journal-write failure must terminate the child before the handler settles',
+    );
+  });
+
+  it('fails closed with ERR_UPDATE_ABORT_UNQUIESCED carrying the child pid when the child will not quiesce', async () => {
+    const child = abortableChild({ exitOnTerm: false });
+    child.pid = 4242;
+    const deps = createUpdateDependencies({
+      home: makeRoot(),
+      platform: 'linux',
+      stagedApplySpawn: () => child,
+      stagedAbortScheduler: syncScheduler,
+    });
+
+    const pending = deps.runStagedApply({
+      plan: { config: { proxy: { compression: { enabled: false } } } },
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+      lockToken: { token: 'transaction-token' },
+      onChildSpawn: async () => {
+        throw new Error('failed to persist child pid to the journal');
+      },
+    });
+
+    await assert.rejects(
+      () => pending,
+      error => error?.code === 'ERR_UPDATE_ABORT_UNQUIESCED'
+        && error?.unquiescedChild?.pid === 4242,
+    );
+    assert.deepEqual(
+      child.killed,
+      ['SIGTERM', 'SIGKILL'],
+      'an unresponsive child must still be escalated to SIGKILL before failing closed',
+    );
+  });
+
+});
+
 import { recoverUpdateJournal } from '../src/update/update-orchestrator.mjs';
 
 describe('Task 10 finding 17: recovery refuses to restore while the staged child may be live', () => {
