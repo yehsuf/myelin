@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { join, win32 } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { ensureToolPath } from '../src/detect/tool-path.mjs';
 
 describe('ensureToolPath', () => {
@@ -8,8 +8,8 @@ describe('ensureToolPath', () => {
     const env = { PATH: '/usr/bin:/bin' };
     ensureToolPath({ home: '/home/u', platform: 'linux', env });
     const parts = env.PATH.split(':');
-    assert.ok(parts.includes(join('/home/u', '.myelin', 'bin')), env.PATH);
-    assert.ok(parts.includes(join('/home/u', '.local', 'bin')), env.PATH);
+    assert.ok(parts.includes(posix.join('/home/u', '.myelin', 'bin')), env.PATH);
+    assert.ok(parts.includes(posix.join('/home/u', '.local', 'bin')), env.PATH);
     // original entries preserved
     assert.ok(parts.includes('/usr/bin') && parts.includes('/bin'));
   });
@@ -17,7 +17,7 @@ describe('ensureToolPath', () => {
   it('adds them on macOS too, with the POSIX `:` delimiter', () => {
     const env = { PATH: '/usr/bin' };
     ensureToolPath({ home: '/Users/u', platform: 'darwin', env });
-    assert.ok(env.PATH.split(':').includes(join('/Users/u', '.myelin', 'bin')), env.PATH);
+    assert.ok(env.PATH.split(':').includes(posix.join('/Users/u', '.myelin', 'bin')), env.PATH);
     assert.ok(!env.PATH.includes(';'), 'must not use the Windows separator');
   });
 
@@ -41,7 +41,7 @@ describe('ensureToolPath', () => {
   it('handles an empty/absent PATH', () => {
     const env = {};
     ensureToolPath({ home: '/home/u', platform: 'linux', env });
-    assert.ok(env.PATH.split(':').includes(join('/home/u', '.myelin', 'bin')));
+    assert.ok(env.PATH.split(':').includes(posix.join('/home/u', '.myelin', 'bin')));
   });
 
   it('picks up nvm4w node dir from env on Windows', () => {

@@ -2,7 +2,7 @@ import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
 import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
@@ -218,12 +218,13 @@ describe('linkGlobalBin managed launcher', () => {
     const prefix = join(home, 'global-prefix');
     try {
       const result = linkGlobalBin({ home, os: 'darwin', prefix });
-      const linkedLauncher = join(prefix, 'bin', 'myelin');
+      const expectedBinDir = posix.join(prefix, 'bin');
+      const linkedLauncher = join(expectedBinDir, 'myelin');
       const launcherText = readFileSync(linkedLauncher, 'utf8');
       const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
 
       assert.equal(result.linked, true);
-      assert.equal(result.binDir, join(prefix, 'bin'));
+      assert.equal(result.binDir, expectedBinDir);
       assert.equal(result.commandPath, linkedLauncher);
       assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
       assert.ok(launcherText.includes('myelin-launcher.mjs'));

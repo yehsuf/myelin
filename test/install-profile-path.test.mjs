@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { join } from 'node:path';
+import { posix } from 'node:path';
 import { managedProfilePathBlock } from '../src/install.mjs';
 
 describe('managedProfilePathBlock — managed bin root in shell profile', () => {
@@ -20,7 +20,7 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
       home: '/home/alice',
       env: { MYELIN_DIR: '/custom/mroot' },
     });
-    const expectedBin = join('/custom/mroot', 'bin');
+    const expectedBin = posix.join('/custom/mroot', 'bin');
     // The relocated bin is spliced in as a single-quoted literal.
     assert.ok(posixExport.includes(`:"'${expectedBin}'":$PATH`), posixExport);
     assert.ok(!posixExport.includes('.myelin/bin'), posixExport);

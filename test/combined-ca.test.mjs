@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { buildCombinedCaCert, base64ToPem } from '../src/detect/combined-ca.mjs';
 
 const HOME = '/home/testuser';
@@ -255,7 +255,7 @@ describe('buildCombinedCaCert — honors MYELIN_DIR', () => {
         readFileSyncImpl: () => 'ROOT',
       });
       const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
-      const expected = join('/custom/managed-root', 'ca-bundle.pem');
+      const expected = posix.join('/custom/managed-root', 'ca-bundle.pem');
       assert.equal(calls.writeFileSync[0].p, expected);
       assert.equal(result, expected);
     } finally {
@@ -293,7 +293,7 @@ describe('buildCombinedCaCert — honors MYELIN_DIR', () => {
         readFileSyncImpl: () => 'ROOT',
       });
       const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
-      const expected = join('/injected/managed-root', 'ca-bundle.pem');
+      const expected = posix.join('/injected/managed-root', 'ca-bundle.pem');
       assert.equal(calls.writeFileSync[0].p, expected);
       assert.equal(result, expected);
       // Injected env must not leak into the ambient process env.
@@ -315,7 +315,7 @@ describe('buildCombinedCaCert — honors MYELIN_DIR', () => {
         readFileSyncImpl: () => 'ROOT',
       });
       const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
-      const expected = join('/injected/wins', 'ca-bundle.pem');
+      const expected = posix.join('/injected/wins', 'ca-bundle.pem');
       assert.equal(calls.writeFileSync[0].p, expected);
       assert.equal(result, expected);
     } finally {

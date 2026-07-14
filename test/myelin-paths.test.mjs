@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import {
   resolveMyelinRoot,
   managedPaths,
@@ -56,8 +56,8 @@ describe('resolveMyelinRoot precedence', () => {
   it('managedPaths derives every path from the resolved root (MYELIN_DIR-aware)', () => {
     const p = managedPaths({ home, env: { MYELIN_DIR: '/env-root' } });
     assert.equal(p.root, '/env-root');
-    assert.equal(p.configPath, join('/env-root', 'config.yaml'));
-    assert.equal(p.venvPath, join('/env-root', 'venv'));
+    assert.equal(p.configPath, posix.join('/env-root', 'config.yaml'));
+    assert.equal(p.venvPath, posix.join('/env-root', 'venv'));
   });
 });
 
