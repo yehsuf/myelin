@@ -162,7 +162,7 @@ git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree remove ~/myelin-ag
 git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree prune
 ```
 
-> Note: `myelin worktree …` is NOT a real command — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.
+> Note: the old `myelin`-branded helper command is NOT real — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.
 ````
 
 - [ ] **Step 2: Validate the bootstrap commands with a throwaway smoke test**
