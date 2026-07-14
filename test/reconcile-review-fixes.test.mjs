@@ -256,6 +256,83 @@ describe('finding 6: release preserves a concurrently reclaimed lock', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Finding 6 (critical follow-up): the ownership-preserving release must never
+// RESTORE its moved-aside record over a lock a third process acquired while the
+// path was momentarily free. Deterministic three-process interleaving:
+//   P1 owns the lock and begins release (ownership check passes).
+//   P2 reclaims P1's (now stale) lock, so the path holds P2's record.
+//   P1 moves the path aside (capturing P2's record) — the path is now free.
+//   P3 acquires the momentarily free path.
+//   P1 finds the moved record is not its own and attempts to restore it; this
+//   restore must NOT clobber P3's freshly acquired lock.
+// ---------------------------------------------------------------------------
+describe('finding 6 (critical): release never restores over an intervening acquisition', () => {
+  it("preserves a third process's lock acquired while ours was moved aside", () => {
+    const root = makeRoot('lock6c');
+    const lockPath = join(root, 'update.lock');
+
+    const owner = createUpdateLock({ isPidAlive: () => true }).acquire(lockPath);
+
+    const reclaimer = {
+      schemaVersion: UPDATE_LOCK_SCHEMA_VERSION,
+      token: '22222222-2222-4222-8222-222222222222',
+      pid: owner.pid + 2000,
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    };
+    const intruder = {
+      schemaVersion: UPDATE_LOCK_SCHEMA_VERSION,
+      token: '33333333-3333-4333-8333-333333333333',
+      pid: owner.pid + 3000,
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    };
+
+    // Interleave all three processes deterministically at P1's move-aside
+    // rename (path -> release-scoped path).
+    let injected = false;
+    const racyFs = { ...nodeFs };
+    racyFs.renameSync = (from, to, ...rest) => {
+      if (!injected && from === lockPath) {
+        injected = true;
+        // P2 reclaimed P1's stale lock: the path now holds the reclaimer.
+        nodeFs.writeFileSync(lockPath, JSON.stringify(reclaimer));
+        // P1 performs the move-aside (capturing P2's record); path is now free.
+        const result = nodeFs.renameSync(lockPath, to, ...rest);
+        // P3 acquires the momentarily free path.
+        nodeFs.writeFileSync(lockPath, JSON.stringify(intruder));
+        return result;
+      }
+      return nodeFs.renameSync(from, to, ...rest);
+    };
+
+    const racyLock = createUpdateLock({ fs: racyFs, isPidAlive: () => true });
+
+    assert.throws(
+      () => racyLock.release(owner, lockPath),
+      (error) => {
+        assert.equal(error.code, 'ERR_UPDATE_FENCED');
+        return true;
+      },
+    );
+
+    // P3's freshly acquired lock must survive — release must not restore the
+    // moved-aside reclaimer record over it.
+    assert.equal(nodeFs.existsSync(lockPath), true, 'the intervening lock must remain');
+    const survivor = JSON.parse(nodeFs.readFileSync(lockPath, 'utf8'));
+    assert.equal(survivor.token, intruder.token, 'must not clobber the third process lock');
+    assert.equal(survivor.pid, intruder.pid);
+
+    // The moved-aside record must not be left orphaned as a live lock file.
+    assert.equal(
+      nodeFs.existsSync(`${lockPath}.release-${owner.token}`),
+      false,
+      'the aside copy must be cleaned up, not left behind',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Finding 5: on WSL, detectOS() reports 'windows' to bridge Windows service
 // management, but the filesystem is POSIX. Component/release/lock/journal
 // storage must therefore use POSIX path semantics, while service management

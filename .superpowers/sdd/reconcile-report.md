@@ -205,3 +205,39 @@ the pinned SHA.
 2. Ordinary `myelin install` now acquires the shared update lock for its whole
    run (matching the feature's design). Concurrent `install` + `update` now
    mutually exclude — intended, but a behavior change vs. the reconcile tip.
+
+---
+
+## Critical follow-up fix — release must not restore over an intervening acquisition
+
+**Status:** ✅ FIXED (RED→GREEN). Full suite `node --test test/*.test.mjs` =
+**956 pass / 0 fail** under isolated HOME. Not pushed.
+
+**Finding:** the finding-6 ownership-preserving `release()` still had a
+third-process clobber. Its mismatch branch restored the moved-aside record with
+an unconditional `fs.renameSync(releasePath, path)`. In a three-process
+interleaving — P1 releasing, P2 having reclaimed P1's stale lock, P1 moving the
+path aside (freeing it), P3 acquiring the now-free path — that blind restore
+overwrote P3's freshly acquired lock with the defunct reclaimer record.
+
+**Regression test (fails against ae5115f):**
+`test/reconcile-review-fixes.test.mjs` → "finding 6 (critical): release never
+restores over an intervening acquisition". Deterministically interleaves all
+three processes at P1's move-aside rename via an injected `renameSync`, then
+asserts the path still holds P3's token (not the reclaimer) and the aside copy
+is cleaned up.
+
+**Fix:** `restorePreservingIntervening(fromPath, toPath)` replaces the blind
+restore. It restores via `fs.linkSync` (atomic, fails `EEXIST` if a third
+process has acquired `toPath`) then unlinks the source — so a restore can never
+overwrite an intervening acquisition. On hard-link-unsupported filesystems it
+falls back to a read-guarded rename. When the path is already taken, the
+moved-aside copy is discarded (never left as a live lock) and the caller fences
+with `ERR_UPDATE_FENCED`. All prior fencing/recovery semantics are preserved:
+the clean self-owned release and the concurrent-reclaim (no-P3) restore both
+still pass.
+
+### Concern
+The hard-link-unsupported fallback (read-then-rename) retains a narrow TOCTOU
+window; it only applies on filesystems lacking `link()` for the lock directory
+(uncommon for `~/.myelin`). The primary POSIX/NTFS path is atomic.

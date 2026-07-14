@@ -92,6 +92,16 @@ function isAlreadyExists(error) {
   return error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY';
 }
 
+function isLinkUnsupported(error) {
+  return (
+    error?.code === 'ENOSYS'
+    || error?.code === 'EPERM'
+    || error?.code === 'EXDEV'
+    || error?.code === 'EOPNOTSUPP'
+    || error?.code === 'EMLINK'
+  );
+}
+
 function isWindows(platform = process.platform) {
   return platform === 'win32' || platform === 'windows';
 }
@@ -493,8 +503,8 @@ export function createUpdateLock({
     // token-scoped name, then re-verify the moved record still identifies us.
     // If a concurrent reclaim replaced the lock in the race window between the
     // ownership check above and this rename, the moved record will not match
-    // our token/pid; restore it and fence rather than unlink a lock we no
-    // longer own.
+    // our token/pid; in that case we must restore it WITHOUT overwriting a lock
+    // a third process may have acquired while the path was momentarily free.
     const releasePath = `${path}.release-${owner.token}`;
     try {
       fs.renameSync(path, releasePath);
@@ -511,16 +521,70 @@ export function createUpdateLock({
       moved = null;
     }
     if (moved === null || moved.token !== owner.token || moved.pid !== owner.pid) {
-      try {
-        fs.renameSync(releasePath, path);
-        durable.fsyncDirectory(dirname(path));
-      } catch {}
+      // The record we moved aside is not ours — a concurrent reclaim replaced
+      // our lock. Restore it only if the path is still free; never clobber an
+      // intervening acquisition by a third process.
+      restorePreservingIntervening(releasePath, path);
       throw lockFenced(path);
     }
 
     fs.unlinkSync(releasePath);
     removeHeartbeat(path, owner);
     durable.fsyncDirectory(dirname(path));
+  }
+
+  // Move `fromPath` back to `toPath`, but only if `toPath` is still free. Uses a
+  // hard link (fails with EEXIST when a third process has acquired the lock in
+  // the interim) so a restore can never overwrite an intervening acquisition. On
+  // filesystems without hard-link support, falls back to a read-guarded rename.
+  // The moved-aside copy is always cleaned up so it is never left as a live lock.
+  function restorePreservingIntervening(fromPath, toPath) {
+    const discardAside = () => {
+      try {
+        fs.unlinkSync(fromPath);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+      durable.fsyncDirectory(dirname(toPath));
+    };
+
+    try {
+      fs.linkSync(fromPath, toPath);
+    } catch (error) {
+      if (isAlreadyExists(error)) {
+        // A third process holds `toPath` — preserve it and drop our aside copy.
+        discardAside();
+        return false;
+      }
+      if (isMissing(error)) {
+        // Nothing to restore (source vanished); leave any intervening lock intact.
+        return false;
+      }
+      if (isLinkUnsupported(error)) {
+        if (read(toPath, { allowMissing: true }) !== null) {
+          discardAside();
+          return false;
+        }
+        try {
+          fs.renameSync(fromPath, toPath);
+        } catch (renameError) {
+          if (isMissing(renameError)) return false;
+          throw renameError;
+        }
+        durable.fsyncDirectory(dirname(toPath));
+        return true;
+      }
+      throw error;
+    }
+
+    // Link succeeded: `toPath` now references our aside record. Drop the source.
+    try {
+      fs.unlinkSync(fromPath);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+    durable.fsyncDirectory(dirname(toPath));
+    return true;
   }
 
   function inspect(path) {
