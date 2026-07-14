@@ -232,6 +232,8 @@ describe('WSL PowerShell registration paths', () => {
       existsSyncImpl: () => false,
       copyFileSyncImpl: () => {},
       writeFileSyncImpl: () => {},
+      renameSyncImpl: () => {},
+      unlinkSyncImpl: () => {},
       runPsFn: (script, options) => winswCalls.push({ script, options }),
     });
     windowsService.installWindowsWatchdogTask({
@@ -1605,6 +1607,8 @@ describe('WinSW WSL filesystem split', () => {
       },
       copyFileSyncImpl: (source, target) => filesystemOps.push({ op: 'copy', source, target }),
       writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      renameSyncImpl: (source, target) => filesystemOps.push({ op: 'rename', source, target }),
+      unlinkSyncImpl: (path) => filesystemOps.push({ op: 'unlink', path }),
       runPsFn: (script) => powerShellScripts.push(script),
     });
 

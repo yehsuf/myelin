@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
@@ -947,6 +947,40 @@ export function uninstallWindowsWatchdogTask({
   return { taskName, scriptPath, logPath };
 }
 
+export function isWindowsSharingViolation(err) {
+  if (!err) return false;
+  const code = err.code;
+  if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') return true;
+  const numeric = [err.winError, err.errno].filter((v) => typeof v === 'number');
+  if (numeric.some((v) => v === 32 || v === 5 || v === -32 || v === -5 || v === -4082)) return true;
+  const msg = String(err.message ?? '');
+  return /(?:error|err)\s*(?:32|5)\b|sharing violation|being used by another process|access is denied|resource busy/i.test(msg);
+}
+
+async function replaceFileWithRetry({
+  from,
+  to,
+  renameSyncImpl,
+  sleepImpl,
+  attempts = 6,
+  backoffMs = 200,
+}) {
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      renameSyncImpl(from, to);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // Only a Windows sharing violation (the old service still holding the exe
+      // handle) is worth polling for — anything else is a hard failure.
+      if (!isWindowsSharingViolation(err) || attempt === attempts - 1) throw err;
+      await sleepImpl(backoffMs * (attempt + 1));
+    }
+  }
+  throw lastErr;
+}
+
 export async function installWinswService({
   id,
   name,
@@ -966,6 +1000,11 @@ export async function installWinswService({
   existsSyncImpl = existsSync,
   copyFileSyncImpl = copyFileSync,
   writeFileSyncImpl = writeFileSync,
+  renameSyncImpl = renameSync,
+  unlinkSyncImpl = unlinkSync,
+  sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  replaceAttempts = 6,
+  replaceBackoffMs = 200,
   runPsFn = runPs,
 }) {
   const winHome = defaultWindowsHome(home);
@@ -979,20 +1018,20 @@ export async function installWinswService({
   const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
   const logFilesystemDir = winswFilesystemPathFor(logDir, { isWslImpl });
 
+  const stagedExePath = `${serviceFilesystemExePath}.new`;
+  const stagedConfigPath = `${configFilesystemPath}.new`;
+  const backupExePath = `${serviceFilesystemExePath}.bak`;
+  const backupConfigPath = `${configFilesystemPath}.bak`;
+
   mkdirSyncImpl(serviceFilesystemDir, { recursive: true });
   mkdirSyncImpl(logFilesystemDir, { recursive: true });
 
-  if (existsSyncImpl(serviceFilesystemExePath)) {
-    try {
-      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
-    } catch {}
-  }
-
+  // 1. Fetch WinSW and stage the new exe + config ALONGSIDE the (possibly still
+  //    running) service. Never touch the live files while the old service may
+  //    still hold an open handle on <id>.exe.
   const winsw = await installWinswImpl({ home: winHome, env, wsl: isWslImpl() });
-  copyFileSyncImpl(
-    winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl }),
-    serviceFilesystemExePath,
-  );
+  const winswSource = winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl });
+  copyFileSyncImpl(winswSource, stagedExePath);
 
   const xml = generateWinswConfigXml({
     id,
@@ -1006,8 +1045,66 @@ export async function installWinswService({
     onFailureDelays,
     resetFailure,
   });
-  writeFileSyncImpl(configFilesystemPath, xml, 'utf8');
+  writeFileSyncImpl(stagedConfigPath, xml, 'utf8');
+
+  // 2. Back up and stop/uninstall any previous service so it releases the exe
+  //    handle. The backup lets us restore the host on failure — never leave it
+  //    serviceless.
+  const hadPrevious = existsSyncImpl(serviceFilesystemExePath);
+  let backedUpExe = false;
+  let backedUpConfig = false;
+  if (hadPrevious) {
+    try { copyFileSyncImpl(serviceFilesystemExePath, backupExePath); backedUpExe = true; } catch {}
+    if (existsSyncImpl(configFilesystemPath)) {
+      try { copyFileSyncImpl(configFilesystemPath, backupConfigPath); backedUpConfig = true; } catch {}
+    }
+    try {
+      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+    } catch {}
+  }
+
+  // 3. Promote the staged files onto the live paths. Retry the rename on a
+  //    sharing violation (errors 32/5) with backoff while the old process
+  //    finishes releasing the handle.
+  try {
+    await replaceFileWithRetry({
+      from: stagedExePath,
+      to: serviceFilesystemExePath,
+      renameSyncImpl,
+      sleepImpl,
+      attempts: replaceAttempts,
+      backoffMs: replaceBackoffMs,
+    });
+    await replaceFileWithRetry({
+      from: stagedConfigPath,
+      to: configFilesystemPath,
+      renameSyncImpl,
+      sleepImpl,
+      attempts: replaceAttempts,
+      backoffMs: replaceBackoffMs,
+    });
+  } catch (err) {
+    // Restore the previous service so the host is never left serviceless.
+    if (backedUpExe) {
+      try { renameSyncImpl(backupExePath, serviceFilesystemExePath); } catch {}
+    }
+    if (backedUpConfig) {
+      try { renameSyncImpl(backupConfigPath, configFilesystemPath); } catch {}
+    }
+    if (hadPrevious) {
+      try {
+        runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+      } catch {}
+    }
+    try { unlinkSyncImpl(stagedExePath); } catch {}
+    try { unlinkSyncImpl(stagedConfigPath); } catch {}
+    throw err;
+  }
+
+  // 4. Install + start the new service, then discard the backups.
   runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+  if (backedUpExe) { try { unlinkSyncImpl(backupExePath); } catch {} }
+  if (backedUpConfig) { try { unlinkSyncImpl(backupConfigPath); } catch {} }
   return { id, serviceExePath, configPath, logDir };
 }
 
