@@ -157,6 +157,36 @@ describe('defaultRestartCopilotHeadroom', () => {
     });
   });
 
+  it('writes a PowerShell here-string with a valid closing delimiter', async () => {
+    const commands = [];
+
+    await defaultRestartCopilotHeadroom({
+      os: 'windows',
+      cfg: {
+        proxy: {
+          mitm: { egress_port: 8889 },
+          copilot_headroom: { enabled: true, port: 8788, mode: 'cache' },
+        },
+      },
+      winManager: 'registry',
+      log: () => {},
+      warn: () => {},
+      execSyncImpl: (command) => {
+        commands.push(command);
+        return Buffer.from('');
+      },
+      homedirImpl: () => 'C:\\Users\\alice',
+      headroomBinPathImpl: () => 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe',
+      waitImpl: async () => {},
+      spawnDetachedServiceImpl: () => {},
+    });
+
+    const persistCommand = commands.find((command) => command.includes("Set-Content -Path 'C:\\Users\\alice\\.myelin\\headroom-copilot-8788\\start-copilot-headroom.ps1'"));
+    assert.ok(persistCommand);
+    assert.match(persistCommand, /-Value @'\n[\s\S]*\n'@ -Encoding UTF8/);
+    assert.doesNotMatch(persistCommand, /\n@' -Encoding UTF8/);
+  });
+
   it('resolves a WSL home to the Windows launcher path before rebuilding the registry launcher', async () => {
     const actions = [];
     await defaultRestartCopilotHeadroom({
@@ -585,6 +615,53 @@ describe('runRestart descriptor plan', () => {
     assert.equal(installed[0].options.envVars.HEADROOM_PORT, undefined);
     assert.equal(installed[0].options.envVars.OPENAI_TARGET_API_URL, undefined);
     assert.deepEqual(installed[0].installedInstance.env, instance.env);
+  });
+
+  it('passes only connection env to a primary Lite descriptor restart', async () => {
+    const installed = [];
+    const originalCa = process.env.SSL_CERT_FILE;
+    process.env.SSL_CERT_FILE = 'C:\\ProgramData\\Corp\\ca.pem';
+    try {
+      const restarted = await restartEngineInstance({
+        engine: 'headroom_lite',
+        role: 'primary',
+        id: 'headroom_lite-primary',
+        port: 8790,
+        stateDir: '/Users/alice/.myelin/state/headroom_lite-primary',
+        logPath: '/Users/alice/.myelin/headroom_lite-primary.log',
+        healthUrl: 'http://127.0.0.1:8790/health',
+        env: {},
+      }, {
+        os: 'linux',
+        cfg: {
+          proxy: {
+            headroom: {
+              port: 8787,
+              openai_target_url: 'https://api.githubcopilot.com',
+              mode: 'cache',
+              corporate_proxy: 'http://corp-proxy:8080',
+            },
+          },
+        },
+        home: '/Users/alice',
+        detectToolImpl: async () => ({ installed: true, path: '/opt/myelin/headroom-lite' }),
+        removeEngineInstanceImpl: async () => {},
+        installEngineInstanceImpl: async (_instance, options) => installed.push(options),
+        waitForHealthUrlImpl: async () => true,
+        log: () => {},
+        warn: () => {},
+      });
+
+      assert.equal(restarted, true);
+      assert.equal(installed[0].envVars.HTTPS_PROXY, 'http://corp-proxy:8080');
+      assert.equal(installed[0].envVars.SSL_CERT_FILE, 'C:\\ProgramData\\Corp\\ca.pem');
+      assert.equal(installed[0].envVars.HEADROOM_PORT, undefined);
+      assert.equal(installed[0].envVars.OPENAI_TARGET_API_URL, undefined);
+      assert.equal(installed[0].envVars.HEADROOM_MODE, undefined);
+    } finally {
+      if (originalCa === undefined) delete process.env.SSL_CERT_FILE;
+      else process.env.SSL_CERT_FILE = originalCa;
+    }
   });
 
   it('removes the disabled same-engine Copilot role through the generic owner', async () => {
@@ -1449,6 +1526,8 @@ describe('restartHeadroomLite WSL Windows paths', () => {
     assert.ok(persistCommand);
     assert.ok(persistCommand.includes("Remove-Item -Path 'C:\\Users\\alice\\.myelin\\state\\headroom-lite\\headroom-lite.pid'"));
     assert.ok(persistCommand.includes('C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe'));
+    assert.match(persistCommand, /-Value @'\n[\s\S]*\n'@ -Encoding UTF8/);
+    assert.doesNotMatch(persistCommand, /\n@' -Encoding UTF8/);
     assert.ok(!persistCommand.includes('/mnt/c/Users/alice'));
     assert.ok(!persistCommand.includes('\\mnt\\'));
     assert.deepEqual(spawns, [{

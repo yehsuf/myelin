@@ -1752,6 +1752,17 @@ describe('windows mitm run-script generator — egress dual-listener', () => {
       assert.doesNotMatch(script, /Stop-Process -Name mitmdump/);
     });
 
+    it('removes a direct legacy MITM registration without treating its listener as owned', () => {
+      const script = generateManagedMitmRemovalScript({ home });
+
+      assert.match(script, /\$legacyDirectMatch/);
+      assert.match(script, /mitmdump/);
+      assert.match(script, /copilot_addon\\\.py/);
+      assert.match(script, /\$legacyDirectOwned =/);
+      assert.match(script, /if \(\$launcherMatches -or \$legacyDirectOwned\)/);
+      assert.ok(script.lastIndexOf('Stop-Process') < script.indexOf('$legacyDirectMatch'));
+    });
+
     it('does not uninstall a WinSW configuration that is not Myelin MITM', () => {
       const uninstalls = [];
       const registryScripts = [];
@@ -2044,6 +2055,37 @@ describe('mitmServiceStatus', () => {
     });
 
     assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+  });
+
+  it('recognizes an exact direct legacy Run-key MITM listener without a managed launcher', () => {
+    const commands = [];
+    const status = mitmServiceStatus({
+      manager: 'registry',
+      home: 'C:\\Users\\alice\\custom-home',
+      powershellExe: 'powershell.exe',
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => {
+        throw new Error('custom Windows paths must be read through PowerShell');
+      },
+      execSyncImpl: (command) => {
+        commands.push(command);
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\custom-home\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
+          return Buffer.from('');
+        }
+        if (command.includes("Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinMitmproxy'")) {
+          return Buffer.from('"C:\\Users\\alice\\custom-home\\.myelin\\venv\\Scripts\\mitmdump.exe" --listen-port 8888 -s "C:\\Users\\alice\\custom-home\\.myelin\\repo\\src\\mitm\\copilot_addon.py"\n');
+        }
+        return Buffer.from('Running\n');
+      },
+    });
+
+    assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
+    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+    assert.ok(commands.some((command) => command.includes('$legacyPort = 8888')));
+    assert.ok(commands.some((command) => command.includes('Get-NetTCPConnection -State Listen -LocalPort $legacyPort')));
+    assert.ok(commands.some((command) => command.includes("ExecutablePath -eq 'C:\\Users\\alice\\custom-home\\.myelin\\venv\\Scripts\\mitmdump.exe'")));
+    assert.ok(commands.some((command) => command.includes('copilot_addon\\.py')));
+    assert.ok(commands.some((command) => command.includes("CommandLine -match '^\\s*")));
   });
 });
 

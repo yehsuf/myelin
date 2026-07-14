@@ -1721,6 +1721,22 @@ export function parseManagedMitmLauncherScript(script = '') {
   };
 }
 
+export function parseLegacyMitmRunKeyValue(runKeyValue = '') {
+  const value = String(runKeyValue ?? '').trim();
+  const match = value.match(/^\s*(?:"(?<quotedExecutable>(?:[A-Za-z]:|\\\\)[^"]*\\mitmdump(?:\.exe)?)"|(?<bareExecutable>(?:[A-Za-z]:|\\\\)\S*\\mitmdump(?:\.exe)?))\s+(?<argStr>.+?)\s*$/iu);
+  if (!match?.groups) return null;
+  const executablePath = match.groups.quotedExecutable ?? match.groups.bareExecutable;
+  const argStr = match.groups.argStr?.trim() ?? '';
+  const portMatch = argStr.match(/(?:^|\s)(?:--listen-port\s+|--mode\s+regular@)(?<port>\d{1,5})(?=\s|$)/u);
+  const addonMatch = argStr.match(/(?:^|\s)-s\s+(?:"(?<quotedAddon>[^"]+)"|(?<bareAddon>\S+))(?=\s|$)/u);
+  const port = Number(portMatch?.groups?.port);
+  const addonPath = addonMatch?.groups?.quotedAddon ?? addonMatch?.groups?.bareAddon ?? '';
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || !/copilot_addon\.py$/iu.test(addonPath)) {
+    return null;
+  }
+  return { executablePath, argStr, port };
+}
+
 function readManagedMitmIdentity({
   home,
   execSyncImpl = execSync,
@@ -1755,6 +1771,28 @@ export function buildManagedMitmStatusScript({ pid, executablePath, argStr, laun
     `  }`,
     `}`,
     `'Stopped'`,
+  ].join('\n');
+}
+
+export function buildLegacyMitmStatusScript({ port, executablePath, argStr } = {}) {
+  const validPort = Number(port);
+  if (!Number.isInteger(validPort) || validPort < 1 || validPort > 65535 || !executablePath || !argStr) {
+    return `'Stopped'`;
+  }
+  const exeName = windowsPath(executablePath).split('\\').pop();
+  const executablePattern = escapePsRegex(windowsPath(executablePath));
+  const commandPattern = escapePs(`^\\s*(?:"${executablePattern}"|${executablePattern})\\s+${escapePsRegex(argStr)}\\s*$`);
+  return [
+    `$legacyPort = ${validPort}`,
+    `$legacyProcess = $null`,
+    `foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $legacyPort -ErrorAction SilentlyContinue)) {`,
+    `  $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue`,
+    `  if ($candidate -and $candidate.Name -ieq '${escapePs(exeName)}' -and $candidate.ExecutablePath -eq '${escapePs(windowsPath(executablePath))}' -and $candidate.CommandLine -match '${commandPattern}') {`,
+    `    $legacyProcess = $candidate`,
+    `    break`,
+    `  }`,
+    `}`,
+    `if ($legacyProcess) { 'Running' } else { 'Stopped' }`,
   ].join('\n');
 }
 
@@ -2145,6 +2183,13 @@ if ($launcherMatches) {
       Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
     }
   }
+}
+$legacyDirectMatch = [regex]::Match([string]$runKeyValue, '^\\s*(?:"(?<executable>(?:[A-Za-z]:|\\\\\\\\)[^"]*\\\\mitmdump(?:\\.exe)?)"|(?<executable>(?:[A-Za-z]:|\\\\\\\\)\\S*\\\\mitmdump(?:\\.exe)?))\\s+(?<arguments>.*)\\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$legacyPortMatch = if ($legacyDirectMatch.Success) { [regex]::Match($legacyDirectMatch.Groups['arguments'].Value, '(?:^|\\s)(?:--listen-port\\s+|--mode\\s+regular@)(?<port>\\d+)(?=\\s|$)') } else { $null }
+$legacyAddonMatches = $legacyDirectMatch.Success -and $legacyDirectMatch.Groups['arguments'].Value -match '(?:^|\\s)-s\\s+(?:"[^"]*copilot_addon\\.py"|[^\\s]*copilot_addon\\.py)(?=\\s|$)'
+$legacyPort = if ($legacyPortMatch.Success) { [int]$legacyPortMatch.Groups['port'].Value } else { $null }
+$legacyDirectOwned = $legacyDirectMatch.Success -and $legacyAddonMatches -and $legacyPort -ge 1 -and $legacyPort -le 65535
+if ($launcherMatches -or $legacyDirectOwned) {
   Remove-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -ErrorAction SilentlyContinue
 }
 `;
@@ -2224,15 +2269,20 @@ export function mitmServiceStatus({
             powershellExe,
           }))
         : '';
-      if (!identity || !pidText || !/^[0-9]+$/u.test(pidText)) {
-        return { running: false, state: 'Stopped', raw: '' };
+      if (identity && pidText && /^[0-9]+$/u.test(pidText)) {
+        const script = buildManagedMitmStatusScript({
+          pid: pidText,
+          executablePath: identity.executablePath,
+          argStr: identity.argumentList,
+          launcherPath: identity.launcherPath,
+        }).replace(/"/g, '\\"');
+        const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
+        return parseManagedMitmStatus(raw);
       }
-      const script = buildManagedMitmStatusScript({
-        pid: pidText,
-        executablePath: identity.executablePath,
-        argStr: identity.argumentList,
-        launcherPath: identity.launcherPath,
-      }).replace(/"/g, '\\"');
+      const runKeyStatus = mitmRunKeyStatus({ execSyncImpl, powershellExe });
+      const legacyIdentity = parseLegacyMitmRunKeyValue(runKeyStatus.raw);
+      if (!legacyIdentity) return { running: false, state: 'Stopped', raw: '' };
+      const script = buildLegacyMitmStatusScript(legacyIdentity).replace(/"/g, '\\"');
       const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
       return parseManagedMitmStatus(raw);
     } catch {
@@ -2261,6 +2311,18 @@ export function headroomRunKeyStatus({ execSyncImpl = execSync, powershellExe = 
   try {
     const raw = trimPowershellOutput(execSyncImpl(
       withPowerShell(`-NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${HEADROOM_KEY}' -ErrorAction SilentlyContinue).'${HEADROOM_KEY}'"`, powershellExe),
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    ).toString());
+    return { registered: !!raw, raw };
+  } catch {
+    return { registered: false, raw: '' };
+  }
+}
+
+function mitmRunKeyStatus({ execSyncImpl = execSync, powershellExe = powerShellExecutable() } = {}) {
+  try {
+    const raw = trimPowershellOutput(execSyncImpl(
+      withPowerShell(`-NoProfile -Command "(Get-ItemProperty -Path '${REG_RUN}' -Name '${MITM_KEY}' -ErrorAction SilentlyContinue).'${MITM_KEY}'"`, powershellExe),
       { stdio: ['ignore', 'pipe', 'pipe'] },
     ).toString());
     return { registered: !!raw, raw };

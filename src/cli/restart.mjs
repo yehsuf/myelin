@@ -344,7 +344,7 @@ function persistWindowsHeadroomLiteLauncher({
     `New-Item -ItemType Directory -Force -Path '${escapePs(launcherDir)}' | Out-Null`,
     `Set-Content -Path '${escapePs(managedLauncherPath)}' -Value @'`,
     launcherScript,
-    `@' -Encoding UTF8`,
+    `'@ -Encoding UTF8`,
   ].join('\n');
   execSyncImpl(
     withPowerShell(`-NoProfile -Command "& { ${script.replace(/"/g, '\\"')} }"`, powershellExe),
@@ -596,7 +596,7 @@ function persistCopilotHeadroomLauncher({ headroomBin, argStr, taskEnv, execSync
     `New-Item -ItemType Directory -Force -Path '${escapePs(workingDirectory)}' | Out-Null`,
     `Set-Content -Path '${escapePs(launcherPath)}' -Value @'`,
     launcherScript,
-    `@' -Encoding UTF8`,
+    `'@ -Encoding UTF8`,
     `Set-ItemProperty -Path '${REG_RUN}' -Name '${COPILOT_HEADROOM_RUN_KEY}' -Value '${escapePs(runValue)}'`,
   ].join('\n');
   execSyncImpl(
@@ -1072,6 +1072,19 @@ export async function waitForHealthUrl(healthUrl, timeoutMs = 20000) {
   return false;
 }
 
+function engineInstanceServiceEnv(instance, envVars = {}) {
+  if (instance.role !== 'primary') return {};
+  if (instance.engine === 'headroom') return envVars;
+  const {
+    HEADROOM_PORT: _headroomPort,
+    ANTHROPIC_TARGET_API_URL: _anthropicTarget,
+    OPENAI_TARGET_API_URL: _openaiTarget,
+    HEADROOM_MODE: _headroomMode,
+    ...connectionEnv
+  } = envVars;
+  return connectionEnv;
+}
+
 export async function restartEngineInstance(instance, {
   os,
   cfg,
@@ -1105,7 +1118,6 @@ export async function restartEngineInstance(instance, {
         servicePlatform: os,
         wsl,
       });
-      options.envVars = instance.role === 'primary' ? buildManagedHeadroomEnv(cfg) : {};
     } else if (instance.engine === 'headroom_lite') {
       const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
       const headroomLite = await detectTool('headroom-lite', '--version');
@@ -1122,6 +1134,7 @@ export async function restartEngineInstance(instance, {
     } else {
       throw new Error(`Unsupported engine: ${instance.engine}`);
     }
+    options.envVars = engineInstanceServiceEnv(instance, buildManagedHeadroomEnv(cfg));
 
     await installEngineInstanceImpl(instance, options);
     const healthy = await waitForHealthUrlImpl(instance.healthUrl);
