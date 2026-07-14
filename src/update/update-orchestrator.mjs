@@ -561,17 +561,34 @@ export function createUpdateLock({
         return false;
       }
       if (isLinkUnsupported(error)) {
-        if (read(toPath, { allowMissing: true }) !== null) {
+        // Hard links are unavailable on this filesystem. Restore via an
+        // exclusive create (`wx`) so the write lands only while `toPath` remains
+        // absent: an intervening acquisition surfaces as EEXIST and is treated
+        // as an intervening lock (never overwritten). This closes the
+        // read-then-rename TOCTOU window a plain rename fallback would leave.
+        let record;
+        try {
+          record = read(fromPath, { allowMissing: true });
+        } catch {
+          record = null;
+        }
+        if (record === null) {
+          // Nothing valid to restore; drop the aside copy and leave `toPath`.
           discardAside();
           return false;
         }
         try {
-          fs.renameSync(fromPath, toPath);
-        } catch (renameError) {
-          if (isMissing(renameError)) return false;
-          throw renameError;
+          writeExclusive(toPath, record);
+        } catch (writeError) {
+          if (isAlreadyExists(writeError)) {
+            // A third process acquired `toPath` in the interim — preserve it.
+            discardAside();
+            return false;
+          }
+          throw writeError;
         }
-        durable.fsyncDirectory(dirname(toPath));
+        // `toPath` now holds the restored record; remove the aside copy.
+        discardAside();
         return true;
       }
       throw error;

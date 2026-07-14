@@ -241,3 +241,33 @@ still pass.
 The hard-link-unsupported fallback (read-then-rename) retains a narrow TOCTOU
 window; it only applies on filesystems lacking `link()` for the lock directory
 (uncommon for `~/.myelin`). The primary POSIX/NTFS path is atomic.
+
+---
+
+## Critical follow-up #2 — remove the read-then-rename TOCTOU in the restore fallback
+
+**Status:** ✅ FIXED (RED→GREEN). Full suite = **957 pass / 0 fail** under
+isolated HOME. Not pushed.
+
+**Finding:** the `restorePreservingIntervening` hard-link-unsupported fallback in
+`579ce0b` used `read(toPath)`-then-`renameSync(fromPath, toPath)`. That check and
+the destructive rename are not atomic: a third process can acquire `toPath` in
+the window between them, and the rename then clobbers the intervening lock.
+
+**Regression test (fails against 579ce0b):**
+`test/reconcile-review-fixes.test.mjs` → "fails closed on a
+hard-link-unsupported filesystem instead of restoring over an acquisition". It
+forces `linkSync` to throw `ENOSYS`, drives the release into the fallback, and
+injects the third-process acquisition inside the fallback's write window (before
+the rename for the old path; before the exclusive create for the new path).
+Asserts `toPath` still holds P3's token and the aside copy is cleaned up.
+
+**Fix:** the fallback no longer reads-then-renames. It reads the aside record and
+restores it with an exclusive create (`writeExclusive` → `openSync(path, 'wx')`),
+which lands the write only while `toPath` is still absent. An intervening
+acquisition surfaces as `EEXIST`, is treated as an intervening lock (the aside
+copy is discarded, never overwriting it), and the caller fences with
+`ERR_UPDATE_FENCED`. No read-then-write window remains: both the primary
+hard-link path and the fallback are now atomic fail-closed operations. All prior
+lock fencing/recovery semantics preserved (all four finding-6 tests pass, full
+suite green).

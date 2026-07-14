@@ -330,6 +330,90 @@ describe('finding 6 (critical): release never restores over an intervening acqui
       'the aside copy must be cleaned up, not left behind',
     );
   });
+
+  it('fails closed on a hard-link-unsupported filesystem instead of restoring over an acquisition', () => {
+    const root = makeRoot('lock6d');
+    const lockPath = join(root, 'update.lock');
+    const releasePathOf = (token) => `${lockPath}.release-${token}`;
+
+    const owner = createUpdateLock({ isPidAlive: () => true }).acquire(lockPath);
+
+    const reclaimer = {
+      schemaVersion: UPDATE_LOCK_SCHEMA_VERSION,
+      token: '44444444-4444-4444-8444-444444444444',
+      pid: owner.pid + 4000,
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    };
+    const intruder = {
+      schemaVersion: UPDATE_LOCK_SCHEMA_VERSION,
+      token: '55555555-5555-4555-8555-555555555555',
+      pid: owner.pid + 5000,
+      startedAt: Date.now(),
+      heartbeatAt: Date.now(),
+    };
+    const releasePath = releasePathOf(owner.token);
+
+    let movedAside = false;
+    let intruderPlaced = false;
+    const placeIntruder = () => {
+      if (!intruderPlaced) {
+        intruderPlaced = true;
+        nodeFs.writeFileSync(lockPath, JSON.stringify(intruder));
+      }
+    };
+
+    const racyFs = { ...nodeFs };
+    // Hard links are unavailable on this filesystem.
+    racyFs.linkSync = () => {
+      const error = new Error('link() not supported');
+      error.code = 'ENOSYS';
+      throw error;
+    };
+    racyFs.renameSync = (from, to, ...rest) => {
+      if (!movedAside && from === lockPath) {
+        movedAside = true;
+        // P2 reclaimed P1's stale lock: the path now holds the reclaimer.
+        nodeFs.writeFileSync(lockPath, JSON.stringify(reclaimer));
+        // P1 moves the reclaimer aside; the path is now free.
+        return nodeFs.renameSync(lockPath, to, ...rest);
+      }
+      if (from === releasePath && to === lockPath) {
+        // Read-then-rename fallback window: P3 acquires just before the rename.
+        placeIntruder();
+        return nodeFs.renameSync(from, to, ...rest);
+      }
+      return nodeFs.renameSync(from, to, ...rest);
+    };
+    racyFs.openSync = (p, flags, ...rest) => {
+      if (p === lockPath && flags === 'wx') {
+        // Exclusive-create restore window: P3 acquires just before the create.
+        placeIntruder();
+      }
+      return nodeFs.openSync(p, flags, ...rest);
+    };
+
+    const racyLock = createUpdateLock({ fs: racyFs, isPidAlive: () => true });
+
+    assert.throws(
+      () => racyLock.release(owner, lockPath),
+      (error) => {
+        assert.equal(error.code, 'ERR_UPDATE_FENCED');
+        return true;
+      },
+    );
+
+    // Regardless of the fallback mechanism, P3's lock must survive.
+    assert.equal(nodeFs.existsSync(lockPath), true, 'the intervening lock must remain');
+    const survivor = JSON.parse(nodeFs.readFileSync(lockPath, 'utf8'));
+    assert.equal(survivor.token, intruder.token, 'must not clobber the third process lock');
+    assert.equal(survivor.pid, intruder.pid);
+    assert.equal(
+      nodeFs.existsSync(releasePath),
+      false,
+      'the aside copy must be cleaned up, not left behind',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
