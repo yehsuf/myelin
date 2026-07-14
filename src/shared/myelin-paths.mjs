@@ -112,6 +112,36 @@ export function resolveMyelinRoot({ home, env = process.env, rootDir, platform =
   return pathModuleForPlatform(platform).join(home, '.myelin');
 }
 
+/**
+ * The explicit (caller/env-supplied) managed root BEFORE defaulting, or
+ * `undefined` when no non-blank `rootDir`/`MYELIN_DIR` was provided. This is the
+ * "relocated" signal source: a default install has no explicit root at all, so
+ * the mere fact that {@link resolveMyelinRoot} always returns a concrete path
+ * (never blank) must NOT be read as a relocation.
+ */
+export function explicitManagedRoot({ env = process.env, rootDir } = {}) {
+  const nonBlank = (value) =>
+    typeof value === 'string' && value.trim() ? value : undefined;
+  return nonBlank(rootDir) ?? nonBlank(env?.MYELIN_DIR);
+}
+
+/**
+ * Is the managed root RELOCATED away from the default `<home>/.myelin`? True
+ * only when an explicit `rootDir`/`MYELIN_DIR` is set AND resolves to a path
+ * other than the default. A default install — or an explicit root that points
+ * AT the default location (e.g. `myelin update` forwarding the resolved default
+ * root) — is NOT relocated, so callers keep the portable `$HOME`-relative
+ * profile form and emit no absolute `MYELIN_DIR` export. Trailing separators are
+ * ignored in the comparison.
+ */
+export function isManagedRootRelocated({ home, env = process.env, rootDir, platform = process.platform } = {}) {
+  if (explicitManagedRoot({ env, rootDir }) === undefined) return false;
+  const stripTrailing = (p) => String(p).replace(/[\\/]+$/u, '');
+  const resolved = resolveMyelinRoot({ home, env, rootDir, platform });
+  const defaultRoot = pathModuleForPlatform(platform).join(home, '.myelin');
+  return stripTrailing(resolved) !== stripTrailing(defaultRoot);
+}
+
 /** Pure path helpers derived from the single resolved managed root. */
 export function managedPaths({ home, env, rootDir, platform = process.platform } = {}) {
   const root = resolveMyelinRoot({ home, env, rootDir, platform });

@@ -7,6 +7,8 @@ import {
   pathModuleForPlatform,
   isWindowsStylePath,
   joinManaged,
+  explicitManagedRoot,
+  isManagedRootRelocated,
 } from '../src/shared/myelin-paths.mjs';
 
 const home = '/home/alice';
@@ -249,5 +251,88 @@ describe('joinManaged — extends a resolved root in its own separator style', (
     assert.equal(joinManaged('/custom/mroot', 'token-optimizer'), '/custom/mroot/token-optimizer');
     assert.equal(joinManaged('D:\\managed', 'x', 'y'), 'D:\\managed\\x\\y');
     assert.equal(joinManaged('C:\\Users\\u\\.myelin', 'headroom-copilot-8788'), 'C:\\Users\\u\\.myelin\\headroom-copilot-8788');
+  });
+});
+
+// ── I1: the "relocated" signal must come from an explicit rootDir/MYELIN_DIR
+// that resolves to a NON-DEFAULT path — never from mere non-blankness. A
+// default install (or an explicit root that points AT <home>/.myelin) is NOT
+// relocated, so the portable $HOME-relative profile form is preserved and no
+// absolute MYELIN_DIR export is emitted. `myelin update` forwarding the resolved
+// default root must therefore NOT be mistaken for a relocation.
+describe('explicitManagedRoot — the raw configured root before defaulting', () => {
+  it('returns undefined when neither rootDir nor MYELIN_DIR is set', () => {
+    assert.equal(explicitManagedRoot({ env: {} }), undefined);
+  });
+
+  it('treats a blank/whitespace MYELIN_DIR as absent', () => {
+    assert.equal(explicitManagedRoot({ env: { MYELIN_DIR: '   ' } }), undefined);
+  });
+
+  it('returns a non-blank MYELIN_DIR verbatim', () => {
+    assert.equal(explicitManagedRoot({ env: { MYELIN_DIR: '/custom/mroot' } }), '/custom/mroot');
+  });
+
+  it('prefers an explicit rootDir over MYELIN_DIR', () => {
+    assert.equal(
+      explicitManagedRoot({ env: { MYELIN_DIR: '/env-root' }, rootDir: '/explicit' }),
+      '/explicit',
+    );
+  });
+});
+
+describe('isManagedRootRelocated — non-default explicit root only (I1)', () => {
+  it('is false for a default install (no rootDir/MYELIN_DIR)', () => {
+    assert.equal(isManagedRootRelocated({ home, env: {}, platform: 'linux' }), false);
+  });
+
+  it('is false when MYELIN_DIR is explicitly set to the default <home>/.myelin', () => {
+    assert.equal(
+      isManagedRootRelocated({ home, env: { MYELIN_DIR: '/home/alice/.myelin' }, platform: 'linux' }),
+      false,
+    );
+  });
+
+  it('is false when MYELIN_DIR is the default with a trailing slash', () => {
+    assert.equal(
+      isManagedRootRelocated({ home, env: { MYELIN_DIR: '/home/alice/.myelin/' }, platform: 'linux' }),
+      false,
+    );
+  });
+
+  it('is true when MYELIN_DIR resolves somewhere other than the default', () => {
+    assert.equal(
+      isManagedRootRelocated({ home, env: { MYELIN_DIR: '/custom/mroot' }, platform: 'linux' }),
+      true,
+    );
+  });
+
+  it('is true when an explicit rootDir relocates the root', () => {
+    assert.equal(
+      isManagedRootRelocated({ home, env: {}, rootDir: '/custom/mroot', platform: 'linux' }),
+      true,
+    );
+  });
+
+  it('is false when the Windows MYELIN_DIR equals the default Windows root', () => {
+    assert.equal(
+      isManagedRootRelocated({
+        home: 'C:\\Users\\alice',
+        env: { MYELIN_DIR: 'C:\\Users\\alice\\.myelin' },
+        platform: 'windows',
+      }),
+      false,
+    );
+  });
+
+  it('is true for a relocated Windows drive root', () => {
+    assert.equal(
+      isManagedRootRelocated({
+        home: 'C:\\Users\\alice',
+        env: { MYELIN_DIR: 'D:\\managed' },
+        platform: 'windows',
+      }),
+      true,
+    );
   });
 });

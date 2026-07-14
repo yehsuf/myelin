@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
 import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
-import { managedPaths, joinManaged } from './shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, isManagedRootRelocated } from './shared/myelin-paths.mjs';
 import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
 
 // helpers
@@ -809,19 +809,29 @@ export function managedMyelinCommandLine({ os, commandPath }) {
 /**
  * Build the shell-profile PATH additions, rooting the managed bin dir in the
  * managed root so a relocated MYELIN_DIR is honored. The default (MYELIN_DIR
- * unset) keeps the shell-portable `$HOME`/`$env:USERPROFILE` form; when the
- * managed root is relocated the entries point at the resolved managed bin dir.
+ * unset — or set to the default `<home>/.myelin`) keeps the shell-portable
+ * `$HOME`/`$env:USERPROFILE` form; only a *genuinely relocated* managed root
+ * (an explicit rootDir/MYELIN_DIR resolving somewhere other than the default)
+ * points the entries at the resolved managed bin dir.
+ *
+ * "Relocated" is decided by {@link isManagedRootRelocated} (explicit root that
+ * resolves to a NON-default path), never by mere non-blankness of MYELIN_DIR —
+ * `myelin update` forwards the resolved default root (resolveMyelinRoot never
+ * returns blank), so treating any non-blank value as relocated would rewrite a
+ * default install's portable `$HOME` PATH into a hardcoded absolute path on
+ * every update, breaking synced dotfiles / home moves.
  *
  * When the root is relocated, the POSIX block additionally persists an
- * `export MYELIN_DIR=<quoted root>` so a freshly-sourced shell resolves the same
- * managed root the baked-in PATH points at — otherwise `myelin`/`_copilot`/
- * `_claude` would fall back to `~/.myelin` while PATH aimed at the relocated bin
- * dir. The value is single-quoted to stay safe for paths with spaces or shell
- * metacharacters. Returned via `posixMyelinDirExport` (empty when not relocated).
+ * `export MYELIN_DIR=<quoted root>` (via `posixMyelinDirExport`) and the Windows
+ * block a `$env:MYELIN_DIR = '<native root>'` (via `windowsMyelinDirExport`,
+ * carrying the NATIVE Windows form of the root) so a freshly-sourced shell
+ * resolves the same managed root the baked-in PATH points at. Values are
+ * single-quoted (POSIX / PowerShell literal rules) to stay safe for paths with
+ * spaces or shell metacharacters. Both exports are empty when not relocated.
  */
 export function managedProfilePathBlock({ os, home = homedir(), env = process.env } = {}) {
-  const relocated = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim();
-  const managed = managedPaths({ home, env });
+  const relocated = isManagedRootRelocated({ home, env, platform: os });
+  const managed = managedPaths({ home, env, platform: os });
   const managedBinDir = managed.binDir;
   if (os === 'windows') {
     const myelinBin = relocated
@@ -830,6 +840,9 @@ export function managedProfilePathBlock({ os, home = homedir(), env = process.en
     return {
       posixExport: '',
       posixMyelinDirExport: '',
+      windowsMyelinDirExport: relocated
+        ? `$env:MYELIN_DIR = ${powershellSingleQuote(normalizeWindowsFilesystemPath(managed.root, { rejectPosix: true }))}`
+        : '',
       windowsPathDirs: [
         '$env:USERPROFILE\\.local\\bin',
         myelinBin,
@@ -852,8 +865,24 @@ export function managedProfilePathBlock({ os, home = homedir(), env = process.en
     posixMyelinDirExport: relocated
       ? `\nexport MYELIN_DIR=${posixSingleQuote(managed.root)}`
       : '',
+    windowsMyelinDirExport: '',
     windowsPathDirs: [],
   };
+}
+
+/**
+ * The Windows registry (HKCU\Environment) MYELIN_DIR entry, as a spreadable map.
+ * Returns `{ MYELIN_DIR: <native Windows root> }` ONLY when the managed root is
+ * genuinely relocated; a default install returns `{}` so no absolute MYELIN_DIR
+ * is persisted and services fall back to `~/.myelin`. The value is the NATIVE
+ * Windows form of the resolved root — a mounted `/mnt/<drive>/…` WSL path is
+ * converted to `<Drive>:\…` so Explorer-spawned Windows processes (which never
+ * see the WSL mount namespace) resolve the real root.
+ */
+export function managedRegistryMyelinDirVar({ os, home = homedir(), env = process.env } = {}) {
+  if (!isManagedRootRelocated({ home, env, platform: os })) return {};
+  const { root } = managedPaths({ home, env, platform: os });
+  return { MYELIN_DIR: normalizeWindowsFilesystemPath(root, { rejectPosix: true }) };
 }
 
 export function resolveManagedRuntime({
@@ -2380,10 +2409,16 @@ ${initSkillBody}`);
       // deliberately NOT set in $PROFILE — they live only inside the _copilot
       // and _claude wrappers so they can't cross-contaminate each other.
       const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
+      // Only a genuinely relocated root persists $env:MYELIN_DIR (escaped,
+      // native Windows form) so a new PowerShell session resolves the same
+      // managed root the baked-in PATH points at. A default install emits none.
+      const psMyelinDir = profilePathBlock.windowsMyelinDirExport
+        ? `${profilePathBlock.windowsMyelinDirExport}\n`
+        : '';
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
       const psPaths = profilePathBlock.windowsPathDirs
         .map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
-      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
       block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
@@ -2457,9 +2492,13 @@ ${initSkillBody}`);
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
-      ...(typeof process.env.MYELIN_DIR === 'string' && process.env.MYELIN_DIR.trim()
-        ? { MYELIN_DIR: process.env.MYELIN_DIR }
-        : {}),
+      // Persist the NATIVE Windows form of a relocated MYELIN_DIR so new
+      // Explorer-spawned windows resolve the same managed root. Under WSL the
+      // running process sees a mounted `/mnt/<drive>/…` path; the registry (a
+      // Windows-native store) must carry `<Drive>:\…`, never the raw POSIX mount
+      // path. Only a genuinely relocated root is persisted — a default install
+      // leaves MYELIN_DIR unset so services fall back to `~/.myelin`.
+      ...managedRegistryMyelinDirVar({ os, home, env: process.env }),
       ...sslEnv,
     };
     if (setUserEnvVars(registryVars)) {

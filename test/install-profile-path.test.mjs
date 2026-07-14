@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { posix } from 'node:path';
-import { managedProfilePathBlock, managedMyelinCommandLine } from '../src/install.mjs';
+import { managedProfilePathBlock, managedMyelinCommandLine, managedRegistryMyelinDirVar } from '../src/install.mjs';
 
 describe('managedProfilePathBlock — managed bin root in shell profile', () => {
   it('posix default keeps shell-portable $HOME/.myelin/bin', () => {
@@ -181,6 +181,151 @@ describe('managedProfilePathBlock — managed bin root in shell profile', () => 
 
     assert.ok(windowsPathDirs.includes('C:\\Users\\alice\\myelin\\bin'), windowsPathDirs.join(','));
     assert.ok(!windowsPathDirs.some((path) => path.startsWith('/mnt/c/')), windowsPathDirs.join(','));
+  });
+});
+
+// ── I1: `myelin update` forwards the resolved managed root to the staged
+// installer as MYELIN_DIR, and resolveMyelinRoot NEVER returns blank — so a
+// DEFAULT install has MYELIN_DIR set to exactly <home>/.myelin during update.
+// The profile block must recognize that as the default (NOT a relocation) and
+// keep the portable $HOME-relative PATH form with no absolute MYELIN_DIR export,
+// so repeated updates never rewrite ~/.zshrc to a hardcoded absolute path.
+describe('managedProfilePathBlock — default install is never treated as relocated (I1)', () => {
+  it('an explicit MYELIN_DIR equal to the default keeps the portable $HOME form', () => {
+    const { posixExport, posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'darwin',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/home/alice/.myelin' },
+    });
+    assert.equal(posixExport, '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"');
+    assert.equal(posixMyelinDirExport, '');
+  });
+
+  it('re-running update (forwarded default MYELIN_DIR) does not rewrite to an absolute path', () => {
+    const env = { MYELIN_DIR: '/home/alice/.myelin' };
+    const first = managedProfilePathBlock({ os: 'linux', home: '/home/alice', env });
+    const second = managedProfilePathBlock({ os: 'linux', home: '/home/alice', env });
+    // Idempotent + portable: both runs keep the $HOME form and never emit an
+    // absolute MYELIN_DIR export.
+    assert.equal(first.posixExport, '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"');
+    assert.equal(second.posixExport, first.posixExport);
+    assert.equal(first.posixMyelinDirExport, '');
+    assert.ok(!first.posixExport.includes('/home/alice/.myelin/bin'), first.posixExport);
+  });
+
+  it('a genuinely relocated MYELIN_DIR still emits the absolute form + escaped export', () => {
+    const { posixExport, posixMyelinDirExport } = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/custom/mroot' },
+    });
+    assert.ok(posixExport.includes(":\"'/custom/mroot/bin'\":$PATH"), posixExport);
+    assert.equal(posixMyelinDirExport, "\nexport MYELIN_DIR='/custom/mroot'");
+  });
+});
+
+// ── I10: a relocated Windows root must persist $env:MYELIN_DIR in the managed
+// PowerShell profile block (only when relocated), using PowerShell single-quote
+// escaping, and carrying the NATIVE Windows form of the root (so a mounted
+// /mnt/<drive>/… WSL root becomes <Drive>:\…). A default install emits nothing.
+describe('managedProfilePathBlock — Windows MYELIN_DIR export (I10)', () => {
+  it('emits no windowsMyelinDirExport for a default install', () => {
+    const { windowsMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      env: {},
+    });
+    assert.equal(windowsMyelinDirExport, '');
+  });
+
+  it('emits no windowsMyelinDirExport when MYELIN_DIR equals the default root', () => {
+    const { windowsMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: 'C:\\Users\\alice\\.myelin' },
+    });
+    assert.equal(windowsMyelinDirExport, '');
+  });
+
+  it('emits an escaped $env:MYELIN_DIR for a relocated Windows drive root', () => {
+    const { windowsMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: 'D:\\managed' },
+    });
+    assert.equal(windowsMyelinDirExport, "$env:MYELIN_DIR = 'D:\\managed'");
+  });
+
+  it('persists the NATIVE Windows form of a mounted WSL root in the PS export', () => {
+    const { windowsMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/mnt/d/managed/myelin' },
+    });
+    assert.equal(windowsMyelinDirExport, "$env:MYELIN_DIR = 'D:\\managed\\myelin'");
+  });
+
+  it('doubles an embedded single quote per PowerShell literal rules', () => {
+    const { windowsMyelinDirExport } = managedProfilePathBlock({
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: "D:\\o'brien\\managed" },
+    });
+    assert.equal(windowsMyelinDirExport, "$env:MYELIN_DIR = 'D:\\o''brien\\managed'");
+  });
+
+  it('posix branch never emits a windowsMyelinDirExport', () => {
+    const relocated = managedProfilePathBlock({
+      os: 'linux',
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/custom/mroot' },
+    });
+    assert.equal(relocated.windowsMyelinDirExport, '');
+  });
+});
+
+// ── I10: the registry (HKCU\Environment) persistence must carry the NATIVE
+// Windows form of a relocated root — a mounted WSL `/mnt/<drive>/…` becomes
+// `<Drive>:\…`. A default install persists nothing.
+describe('managedRegistryMyelinDirVar — native-form registry persistence (I10)', () => {
+  it('persists nothing for a default install', () => {
+    assert.deepEqual(
+      managedRegistryMyelinDirVar({ os: 'windows', home: 'C:\\Users\\alice', env: {} }),
+      {},
+    );
+  });
+
+  it('persists nothing when MYELIN_DIR equals the default root', () => {
+    assert.deepEqual(
+      managedRegistryMyelinDirVar({
+        os: 'windows',
+        home: 'C:\\Users\\alice',
+        env: { MYELIN_DIR: 'C:\\Users\\alice\\.myelin' },
+      }),
+      {},
+    );
+  });
+
+  it('persists a relocated Windows drive root verbatim', () => {
+    assert.deepEqual(
+      managedRegistryMyelinDirVar({
+        os: 'windows',
+        home: 'C:\\Users\\alice',
+        env: { MYELIN_DIR: 'D:\\managed' },
+      }),
+      { MYELIN_DIR: 'D:\\managed' },
+    );
+  });
+
+  it('converts a mounted WSL root to its native <Drive>:\\ form', () => {
+    assert.deepEqual(
+      managedRegistryMyelinDirVar({
+        os: 'windows',
+        home: '/home/alice',
+        env: { MYELIN_DIR: '/mnt/d/managed/myelin' },
+      }),
+      { MYELIN_DIR: 'D:\\managed\\myelin' },
+    );
   });
 });
 

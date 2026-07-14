@@ -86,6 +86,16 @@ describe('CLI update commands', () => {
     assert.ok(!updateHelp.stdout.includes('--force'));
   });
 
+  it('exits nonzero and clearly errors when --check and --download-only are combined (M2)', () => {
+    const result = spawnSync(process.execPath, [binPath, 'update', '--check', '--download-only'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /mutually exclusive/i);
+  });
+
   it('exits nonzero with the migration message for update --self', () => {
     const result = spawnSync(process.execPath, [binPath, 'update', '--self'], {
       cwd: repoRoot,
@@ -236,6 +246,61 @@ describe('runManagedUpdate', () => {
     assert.equal(result.status, 'failed');
     assert.equal(result.installerStatus, 7);
     assert.equal(result.releaseId, 'main-abcdef123456');
+  });
+
+  // I1: a DEFAULT install must NOT forward MYELIN_DIR to the staged installer.
+  // resolveMyelinRoot never returns blank, so unconditionally forwarding it made
+  // the child installer see MYELIN_DIR=<home>/.myelin and mistake a default
+  // install for a relocation — rewriting ~/.zshrc to a hardcoded absolute path
+  // on every update. With no rootDir/MYELIN_DIR, the child env carries none.
+  it('does not forward MYELIN_DIR to the installer on a default install', async () => {
+    const calls = [];
+    let installerEnv;
+
+    await runManagedUpdate({}, orchestrationDeps(calls, {
+      env: { PATH: '/usr/bin' },
+      runInstallerFn(options) {
+        calls.push(['installer', options.args]);
+        installerEnv = options.env;
+        return { status: 0 };
+      },
+    }));
+
+    assert.equal('MYELIN_DIR' in installerEnv, false);
+    assert.equal(installerEnv.PATH, '/usr/bin');
+  });
+
+  it('does not forward MYELIN_DIR when MYELIN_DIR is set to the default root', async () => {
+    const calls = [];
+    let installerEnv;
+
+    await runManagedUpdate({}, orchestrationDeps(calls, {
+      env: { MYELIN_DIR: '/home/alice/.myelin', PATH: '/usr/bin' },
+      runInstallerFn(options) {
+        calls.push(['installer', options.args]);
+        installerEnv = options.env;
+        return { status: 0 };
+      },
+    }));
+
+    // env is spread verbatim (so the ambient MYELIN_DIR still passes through),
+    // but the update MUST NOT inject/normalize a default root as a relocation.
+    assert.equal(installerEnv.MYELIN_DIR, '/home/alice/.myelin');
+    assert.equal(installerEnv.PATH, '/usr/bin');
+  });
+
+  // M2: `--check` and `--download-only` are mutually exclusive — `--check` only
+  // previews external-tool updates (no staging) while `--download-only` stages a
+  // candidate, so combining them is a clear error rather than a silent override.
+  it('rejects --check combined with --download-only as mutually exclusive', async () => {
+    const calls = [];
+
+    await assert.rejects(
+      runManagedUpdate({ check: true, downloadOnly: true }, orchestrationDeps(calls)),
+      /mutually exclusive/i,
+    );
+    // Nothing ran: not the tool preview, not staging.
+    assert.deepEqual(calls, []);
   });
 });
 

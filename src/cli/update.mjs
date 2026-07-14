@@ -9,7 +9,7 @@ import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
 import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
 import { stageMainRuntime } from '../runtime/stage-main.mjs';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
-import { managedPaths, joinManaged, resolveMyelinRoot } from '../shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, resolveMyelinRoot, isManagedRootRelocated } from '../shared/myelin-paths.mjs';
 
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
 
@@ -172,6 +172,18 @@ export async function runManagedUpdate({ downloadOnly = false, check = false } =
     return runRestart();
   });
 
+  // M2: `--check` and `--download-only` are mutually exclusive. `--check` is a
+  // non-mutating external-tool preview that never stages a candidate, while
+  // `--download-only` stages (but does not activate) one — combining them would
+  // silently drop `--download-only`. Fail loudly instead of silently overriding.
+  if (check && downloadOnly) {
+    throw new Error(
+      '`--check` and `--download-only` are mutually exclusive: `--check` only previews '
+      + 'external-tool updates (no staging), while `--download-only` stages a candidate. '
+      + 'Run one at a time.',
+    );
+  }
+
   if (check) {
     // Non-mutating preview of external-tool updates; never stages or activates.
     await runToolUpdatesFn({ check: true });
@@ -200,7 +212,14 @@ export async function runManagedUpdate({ downloadOnly = false, check = false } =
   const installer = await runInstallerFn({
     runtimeRoot: staged.runtimeRoot,
     args: ['--yes'],
-    env: { ...env, MYELIN_DIR: resolveMyelinRoot({ home, env, rootDir }) },
+    // I1: only forward MYELIN_DIR when the managed root is GENUINELY relocated.
+    // resolveMyelinRoot never returns blank, so unconditionally injecting it made
+    // the child installer read MYELIN_DIR=<home>/.myelin and mistake a default
+    // install for a relocation — rewriting the shell profile to a hardcoded
+    // absolute path on every update. A default install forwards no MYELIN_DIR.
+    env: isManagedRootRelocated({ home, env, rootDir })
+      ? { ...env, MYELIN_DIR: resolveMyelinRoot({ home, env, rootDir }) }
+      : { ...env },
   });
   if (installer && installer.status !== 0) {
     warn(`  ✗ Installer integration failed (exit ${installer.status}). The active runtime already points at ${staged.releaseId}.\n`);

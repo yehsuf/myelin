@@ -32,8 +32,13 @@ program.command('update')
       const result = runDeprecatedSelfUpdate();
       process.exit(result.exitCode);
     }
-    const result = await runManagedUpdate({ check: opts.check, downloadOnly: opts.downloadOnly });
-    process.exit(result.status === 'failed' ? 1 : 0);
+    try {
+      const result = await runManagedUpdate({ check: opts.check, downloadOnly: opts.downloadOnly });
+      process.exit(result.status === 'failed' ? 1 : 0);
+    } catch (err) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
   });
 
 program.command('self')
