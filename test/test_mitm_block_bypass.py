@@ -404,6 +404,30 @@ def test_request_hook_ignores_non_sticky_host(monkeypatch):
     assert flow.response is None
 
 
+def test_request_hook_does_not_preempt_post(monkeypatch):
+    # POST bodies are compressed / RAG-injected further down the request hook.
+    # Pre-empting a POST here would relay the RAW body and skip the whole
+    # token-efficiency pipeline, and could duplicate a non-idempotent send.
+    # Only bodyless idempotent methods (the blocked GET SSE stream) are
+    # pre-empted; a sticky POST must fall through to the normal path (where the
+    # response-hook bypass relays the already-compressed body if it 418s).
+    _reset_breaker()
+    sticky = copilot_addon._StickyBlockCache(ttl=8.0, clock=_Clock())
+    sticky.mark('api.business.githubcopilot.com')
+    monkeypatch.setattr(copilot_addon, '_STICKY', sticky)
+    monkeypatch.setattr(copilot_addon, '_detect_provider', lambda *a, **k: None)
+
+    def _relay(*a, **k):
+        raise AssertionError('a POST must not be pre-emptively relayed')
+
+    monkeypatch.setattr(copilot_addon, '_socks5_relay', _relay)
+    flow = _ReqFlow('api.business.githubcopilot.com', method='POST',
+                    path='/v1/messages', body=b'{"x":1}')
+    asyncio.run(MyelinAddon().request(flow))
+    assert flow.response is None
+    assert flow.metadata.get('myelin_via_override') is not True
+
+
 if __name__ == '__main__':
     import pytest
     raise SystemExit(pytest.main([__file__, '-v']))

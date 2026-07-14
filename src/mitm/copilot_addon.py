@@ -173,6 +173,12 @@ SOCKS_RELAY_TIMEOUT   = _float_env('MYELIN_SOCKS_RELAY_TIMEOUT', 110.0, 1.0, 600
 # disables the sticky fast-path.
 BLOCK_STICKY_TTL = _float_env('MYELIN_BLOCK_STICKY_TTL', 8.0, 0.0, 300.0)
 
+# Methods eligible for the pre-emptive (sticky) block bypass in the request
+# hook: bodyless + idempotent only. This is the recurring blocked traffic (the
+# GET /responses SSE stream) and is safe to relay/duplicate. POST bodies must
+# stay on the normal path so they're still compressed / RAG-injected.
+_PREEMPTIVE_METHODS = frozenset({'GET', 'HEAD', 'OPTIONS'})
+
 _BLOCK_MARKER_RAW = os.environ.get('MYELIN_BLOCK_MARKER', 'netfree')
 BLOCK_MARKER: Optional[bytes] = _BLOCK_MARKER_RAW.lower().encode() if _BLOCK_MARKER_RAW else None
 
@@ -1018,10 +1024,14 @@ class MyelinAddon:
         # Pre-emptive block bypass: a host CONFIRMED blocked (418) very recently
         # is relayed through the override proxy immediately, skipping another
         # direct 418 round-trip (the round-trip is what the CLI surfaces as a
-        # "transient API error, retrying"). Applies to ANY method — the blocked
-        # stream is a GET /responses. Fail-open: a miss leaves the request on the
-        # normal path so the response-hook bypass still gets its chance.
+        # "transient API error, retrying"). Scoped to bodyless idempotent methods
+        # — the recurring block is the GET /responses SSE stream. POSTs are left
+        # to the normal path so their body is still compressed / RAG-injected and
+        # the response-hook bypass relays the ALREADY-compressed body if it 418s;
+        # this also avoids duplicating a non-idempotent send. Fail-open: a miss
+        # leaves the request on the normal path.
         if (BLOCK_BYPASS and OVERRIDE_PROXY
+                and flow.request.method in _PREEMPTIVE_METHODS
                 and not flow.metadata.get('myelin_via_override')
                 and _STICKY.is_blocked(host)):
             result = await _relay_via_socks5(flow, host)
