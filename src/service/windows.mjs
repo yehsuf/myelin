@@ -1217,6 +1217,64 @@ function engineInstanceLauncherPath(runKeyValue, fallbackPath) {
   return String(runKeyValue ?? '').match(/-File\s+"([^"]+)"/i)?.[1] ?? fallbackPath;
 }
 
+/**
+ * Extract the launcher/executable a Windows Run-key command line actually
+ * invokes. Handles both managed forms:
+ *   - `powershell.exe ... -File "<launcher>.ps1"` (current launcher form), and
+ *   - `"<...>headroom.exe" proxy --port N` / bare `<...>headroom.exe proxy ...`
+ *     (legacy direct-exe form).
+ * `-File` is matched first so the powershell host exe is never mistaken for the
+ * launcher. Returns null when nothing path-like can be extracted.
+ */
+export function runKeyLauncherPath(runKeyValue = '') {
+  const value = String(runKeyValue ?? '');
+  const fileMatch = value.match(/-File\s+"([^"]+)"/i) ?? value.match(/-File\s+'([^']+)'/i);
+  if (fileMatch) return fileMatch[1];
+  const trimmed = value.trim();
+  const quoted = trimmed.match(/^"([^"]+)"/);
+  if (quoted) return quoted[1];
+  const bare = trimmed.match(/^([^"\s]+)/);
+  return bare ? bare[1] : null;
+}
+
+/**
+ * Does a discovered Run-key command line invoke a launcher/executable that lives
+ * UNDER the current managed root? A stale Run key left over from an earlier
+ * default `~/.myelin` install (or a different relocated root) points at a
+ * launcher outside the current root and must NOT be trusted as "registered".
+ * Comparison is case-insensitive on native Windows form with collapsed
+ * separators and no trailing slash.
+ */
+export function launcherOwnedByManagedRoot({
+  runKeyValue = '',
+  launcherPath,
+  managedRoot,
+  home,
+  env = process.env,
+} = {}) {
+  const root = managedRoot
+    ?? resolveMyelinRoot({ home: defaultWindowsHome(home), env, platform: 'windows' });
+  const candidate = launcherPath ?? runKeyLauncherPath(runKeyValue);
+  if (!candidate || !root) return false;
+  const nativeRoot = collapseRedundantBackslashes(normalizeWindowsFilesystemPath(root, { rejectPosix: false }))
+    .replace(/[\\/]+$/u, '')
+    .toLowerCase();
+  const nativeCandidate = collapseRedundantBackslashes(normalizeWindowsFilesystemPath(candidate, { rejectPosix: false }))
+    .toLowerCase();
+  if (!nativeRoot || !nativeCandidate) return false;
+  return nativeCandidate === nativeRoot || nativeCandidate.startsWith(`${nativeRoot}\\`);
+}
+
+/**
+ * Ownership decision for a discovered Run key: 'absent' (nothing registered),
+ * 'keep' (launcher belongs to the current managed root), or 'reregister' (a
+ * foreign/stale launcher — re-register against the current root).
+ */
+export function runKeyOwnershipDecision({ runKeyValue = '', managedRoot, home, env = process.env } = {}) {
+  if (!String(runKeyValue ?? '').trim()) return 'absent';
+  return launcherOwnedByManagedRoot({ runKeyValue, managedRoot, home, env }) ? 'keep' : 'reregister';
+}
+
 export function generateEngineInstanceRunScript({ instance, envVars = {}, ...options }) {
   const paths = engineInstancePaths(instance);
   const command = engineInstanceCommand(instance, options);

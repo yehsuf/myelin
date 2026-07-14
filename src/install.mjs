@@ -53,7 +53,7 @@ import { fileURLToPath } from 'node:url';
 import { execSync, spawn } from 'node:child_process';
 import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
 import { stageMainRuntime } from './runtime/stage-main.mjs';
-import { managedPaths, joinManaged, isManagedRootRelocated } from './shared/myelin-paths.mjs';
+import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
 import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
 
 // helpers
@@ -173,7 +173,7 @@ export async function removeManagedHeadroomRegistration({
   }
 }
 
-export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787 } = {}) {
+export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787, env = process.env, runKeyStatusImpl } = {}) {
   if (os === 'darwin') {
     const { plistPath } = await import('./service/launchd.mjs');
     return { registered: existsSync(plistPath()) };
@@ -193,13 +193,63 @@ export async function managedHeadroomRegistrationStatus({ os, winManager, home, 
     };
   }
 
-  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue } = await import('./service/windows.mjs');
-  const status = headroomRunKeyStatus();
+  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue, launcherOwnedByManagedRoot } = await import('./service/windows.mjs');
+  const status = (runKeyStatusImpl ?? headroomRunKeyStatus)();
+  const legacy = isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw });
+  // A Run key is only "registered" if its launcher belongs to the CURRENT
+  // managed root. A stale key from an earlier default ~/.myelin (or a different
+  // relocated root) must be re-registered, never trusted.
+  const ownsCurrentRoot = status.registered && !legacy
+    ? launcherOwnedByManagedRoot({ runKeyValue: status.raw, home, env })
+    : false;
   return {
     ...status,
-    registered: status.registered && !isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
-    needsMigration: isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+    registered: status.registered && !legacy && ownsCurrentRoot,
+    needsMigration: legacy,
+    foreignRoot: status.registered && !legacy && !ownsCurrentRoot,
   };
+}
+
+/**
+ * Pure detection + decision for the one-time relocation migration: when the user
+ * relocates the managed root via MYELIN_DIR but the default `<home>/.myelin`
+ * still holds the managed state (releases/current.json/config) and the relocated
+ * root does not yet exist, that state should be migrated so the relocated install
+ * keeps its release history and config. This helper makes NO filesystem changes;
+ * it only reports whether a migration is warranted and which sources to move.
+ *
+ * @returns {{ relocated: boolean, shouldMigrate: boolean, from: string, to: string,
+ *   sources: string[], reason: string }}
+ */
+export function planManagedRelocationMigration({
+  home,
+  env = process.env,
+  platform = detectOS(),
+  existsSyncImpl = existsSync,
+} = {}) {
+  const relocatedRoot = resolveMyelinRoot({ home, env, platform });
+  const defaultRoot = resolveMyelinRoot({ home, env: {}, platform });
+  const stripTrailing = (p) => String(p).replace(/[\\/]+$/u, '');
+  const sameAsDefault =
+    stripTrailing(relocatedRoot).toLowerCase() === stripTrailing(defaultRoot).toLowerCase();
+
+  if (!isManagedRootRelocated({ home, env, platform }) || sameAsDefault) {
+    return { relocated: false, shouldMigrate: false, from: defaultRoot, to: relocatedRoot, sources: [], reason: 'not-relocated' };
+  }
+
+  const defaultExists = existsSyncImpl(defaultRoot);
+  const relocatedExists = existsSyncImpl(relocatedRoot);
+  // Migrate only when the default install still holds state AND the relocated
+  // root is empty/absent — otherwise there is nothing to move (relocated root
+  // already populated) or nothing to move from (no default state).
+  const shouldMigrate = defaultExists && !relocatedExists;
+  const sources = shouldMigrate
+    ? ['releases', 'current.json', 'config.yaml'].map((name) => joinManaged(defaultRoot, name))
+    : [];
+  const reason = shouldMigrate
+    ? 'migrate-default-to-relocated'
+    : (relocatedExists ? 'relocated-root-populated' : 'no-default-state');
+  return { relocated: true, shouldMigrate, from: defaultRoot, to: relocatedRoot, sources, reason };
 }
 
 export async function ensureManagedHeadroomService({
@@ -1579,6 +1629,17 @@ async function main() {
   const copilot  = !flags['claude-only'];
 
   console.log('\n🧬 Myelin Installer — ' + os + '\n');
+
+  // Relocation-migration decision (detection only): if the user moved the
+  // managed root via MYELIN_DIR but the default ~/.myelin still holds the
+  // release/config state and the new root is empty, surface that so its history
+  // and config can be carried over.
+  try {
+    const relocation = planManagedRelocationMigration({ home, env: process.env, platform: os });
+    if (relocation.shouldMigrate) {
+      warn(`relocated MYELIN_DIR (${relocation.to}) is empty but ${relocation.from} holds managed state — migrate releases/current.json/config to preserve history`);
+    }
+  } catch {}
 
   // Migrate ~/.tokenstack → ~/.myelin (one-time)
   const oldDir = join(home, '.tokenstack');
