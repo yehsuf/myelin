@@ -3,6 +3,7 @@ import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
+import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
@@ -32,12 +33,20 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
   if (instance.engine === 'headroom_lite') {
     if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
     return {
-      executable: headroomLiteBin,
-      args: [],
+      executable: process.execPath,
+      args: [resolveHeadroomLiteEntrypoint(headroomLiteBin)],
       env: { HEADROOM_LITE_PORT: String(instance.port) },
     };
   }
   throw new Error(`Unsupported engine instance engine: ${instance.engine}`);
+}
+
+function systemdArgument(value) {
+  return `"${String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, '$$$$')
+    .replace(/%/g, '%%')}"`;
 }
 
 function legacyEngineInstance({
@@ -111,7 +120,9 @@ Description=${description} (${serviceId})
 After=network.target
 
 [Service]
-ExecStart=${command.executable}${command.args.length ? ` ${command.args.join(' ')}` : ''}
+ExecStart=${instance.engine === 'headroom_lite'
+    ? [command.executable, ...command.args].map(systemdArgument).join(' ')
+    : `${command.executable}${command.args.length ? ` ${command.args.join(' ')}` : ''}`}
 WorkingDirectory=${instance.stateDir}
 StandardOutput=append:${instance.logPath}
 StandardError=append:${instance.logPath}

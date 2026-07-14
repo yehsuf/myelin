@@ -1,8 +1,8 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import * as windowsService from '../src/service/windows.mjs';
 import {
   generatePlist,
@@ -64,10 +64,66 @@ const OPTS = {
   user: 'testuser',
 };
 
+const HEADROOM_LITE_FIXTURE = createHeadroomLiteFixture();
+const EXTENSIONLESS_HEADROOM_LITE_FIXTURE = createHeadroomLiteFixture({ extensionlessEntrypoint: true });
+const AMBIGUOUS_HEADROOM_LITE_FIXTURE = createAmbiguousHeadroomLiteFixture();
+
 const ENGINE_BINS = {
   headroomBin: '/opt/myelin/bin/headroom',
-  headroomLiteBin: '/opt/myelin/bin/headroom-lite',
+  headroomLiteBin: HEADROOM_LITE_FIXTURE.bin,
 };
+
+function createHeadroomLiteFixture({ extensionlessEntrypoint = false } = {}) {
+  const root = mkdtempSync(join(process.cwd(), '.service test $headroom-lite-'));
+  const packageDir = join(root, 'linked-packages', '@fixture', 'headroom-lite');
+  const globalPackageLink = join(root, 'lib', 'node_modules', '@fixture', 'headroom-lite');
+  const unrelatedPackageDir = join(root, 'lib', 'node_modules', '@aaa', 'cli');
+  const entrypoint = join(packageDir, 'src', extensionlessEntrypoint ? 'index' : 'index.mjs');
+  const rawShim = join(root, 'shims', 'headroom-lite');
+  const bin = join(root, 'bin', 'headroom-lite');
+
+  mkdirSync(join(unrelatedPackageDir, 'src'), { recursive: true });
+  mkdirSync(join(packageDir, 'src'), { recursive: true });
+  mkdirSync(dirname(globalPackageLink), { recursive: true });
+  mkdirSync(join(root, 'shims'), { recursive: true });
+  mkdirSync(join(root, 'bin'), { recursive: true });
+  writeFileSync(join(unrelatedPackageDir, 'package.json'), JSON.stringify({
+    name: '@aaa/cli',
+    bin: { 'headroom-lite': './src/index.mjs' },
+  }));
+  writeFileSync(join(unrelatedPackageDir, 'src', 'index.mjs'), 'export {};\n');
+  writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+    name: '@fixture/headroom-lite',
+    bin: { 'headroom-lite': extensionlessEntrypoint ? './src/index' : './src/index.mjs' },
+  }));
+  writeFileSync(entrypoint, `${extensionlessEntrypoint ? '#!/usr/bin/env node\n' : ''}export {};\n`);
+  writeFileSync(rawShim, '#!/usr/bin/env node\nthrow new Error("shim must not run");\n');
+  symlinkSync(packageDir, globalPackageLink, 'dir');
+  symlinkSync(rawShim, bin);
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+  return { bin, entrypoint, rawShim };
+}
+
+function createAmbiguousHeadroomLiteFixture() {
+  const root = mkdtempSync(join(process.cwd(), '.service test ambiguous-headroom-lite-'));
+  const bin = join(root, 'bin', 'headroom-lite');
+
+  mkdirSync(join(root, 'bin'), { recursive: true });
+  writeFileSync(bin, '#!/usr/bin/env node\nthrow new Error("shim must not run");\n');
+  for (const scope of ['@first', '@second']) {
+    const packageDir = join(root, 'lib', 'node_modules', scope, 'headroom-lite');
+    mkdirSync(join(packageDir, 'src'), { recursive: true });
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: `${scope}/headroom-lite`,
+      bin: { 'headroom-lite': './src/index.mjs' },
+    }));
+    writeFileSync(join(packageDir, 'src', 'index.mjs'), 'export {};\n');
+  }
+
+  after(() => rmSync(root, { recursive: true, force: true }));
+  return bin;
+}
 
 describe('runPs WSL script path', () => {
   it('writes the transient script through the Windows mount and invokes PowerShell with its native path', () => {
@@ -181,10 +237,53 @@ function engineInstance(engine, role) {
 }
 
 describe('engine instance service generators', () => {
+  it('runs Lite launchd and systemd services with Node and a resolved JavaScript entrypoint', () => {
+    const instance = engineInstance('headroom_lite', 'primary');
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS });
+    const expectedLaunchdCommand = `exec '${process.execPath}' '${HEADROOM_LITE_FIXTURE.entrypoint}'`;
+    const escapedSystemdEntrypoint = HEADROOM_LITE_FIXTURE.entrypoint.replace(/\$/g, () => '$$');
+    const expectedSystemdCommand = `ExecStart="${process.execPath}" "${escapedSystemdEntrypoint}"`;
+
+    assert.ok(plist.includes(expectedLaunchdCommand));
+    assert.ok(unit.includes(expectedSystemdCommand));
+    assert.ok(!plist.includes(`exec '${HEADROOM_LITE_FIXTURE.rawShim}'`));
+    assert.ok(!plist.includes('/usr/bin/env node'));
+    assert.ok(!plist.includes('PATH='));
+    assert.ok(!unit.includes(HEADROOM_LITE_FIXTURE.rawShim));
+  });
+
+  it('runs a metadata-declared extensionless Node CLI through absolute Node', () => {
+    const instance = engineInstance('headroom_lite', 'primary');
+    const unit = generateEngineInstanceUnit({
+      instance,
+      headroomBin: ENGINE_BINS.headroomBin,
+      headroomLiteBin: EXTENSIONLESS_HEADROOM_LITE_FIXTURE.bin,
+    });
+    const escapedEntrypoint = EXTENSIONLESS_HEADROOM_LITE_FIXTURE.entrypoint.replace(/\$/g, () => '$$');
+
+    assert.ok(unit.includes(`ExecStart="${process.execPath}" "${escapedEntrypoint}"`));
+    assert.ok(!unit.includes(EXTENSIONLESS_HEADROOM_LITE_FIXTURE.rawShim));
+  });
+
+  it('rejects ambiguous global Lite package metadata instead of choosing an arbitrary CLI', () => {
+    const instance = engineInstance('headroom_lite', 'primary');
+
+    assert.throws(
+      () => generateEngineInstanceUnit({
+        instance,
+        headroomBin: ENGINE_BINS.headroomBin,
+        headroomLiteBin: AMBIGUOUS_HEADROOM_LITE_FIXTURE,
+      }),
+      /multiple global headroom-lite package candidates/i,
+    );
+  });
+
   for (const engine of ['headroom', 'headroom_lite']) {
     for (const role of ['primary', 'copilot']) {
       const instance = engineInstance(engine, role);
-      const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
+      const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : HEADROOM_LITE_FIXTURE.entrypoint;
+      const expectedWindowsBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
       const expectedLabel = role === 'primary' ? 'com.myelin.headroom' : 'com.myelin.copilot-headroom';
       const expectedServiceId = role === 'primary' ? 'myelin-headroom' : 'myelin-copilot-headroom';
       const expectedWindowsServiceId = instance.id;
@@ -194,7 +293,11 @@ describe('engine instance service generators', () => {
 
       it(`generates a ${engine} ${role} launchd service from its descriptor`, () => {
         const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS });
-        assert.match(plist, new RegExp(expectedBinary));
+        if (engine === 'headroom_lite') {
+          assert.ok(plist.includes(expectedBinary));
+        } else {
+          assert.match(plist, new RegExp(expectedBinary));
+        }
         assert.match(plist, new RegExp(expectedLabel));
         assert.match(plist, new RegExp(instance.stateDir));
         assert.match(plist, new RegExp(instance.logPath));
@@ -208,7 +311,11 @@ describe('engine instance service generators', () => {
 
       it(`generates a ${engine} ${role} systemd service from its descriptor`, () => {
         const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS });
-        assert.match(unit, new RegExp(expectedBinary));
+        if (engine === 'headroom_lite') {
+          assert.ok(unit.includes(expectedBinary.replace(/\$/g, () => '$$')));
+        } else {
+          assert.match(unit, new RegExp(expectedBinary));
+        }
         assert.match(unit, new RegExp(expectedServiceId));
         assert.match(unit, new RegExp(`WorkingDirectory=${instance.stateDir}`));
         assert.match(unit, new RegExp(instance.logPath));
@@ -235,7 +342,7 @@ describe('engine instance service generators', () => {
       it(`generates a ${engine} ${role} WinSW service from its descriptor`, () => {
         const xml = generateEngineInstanceWinswConfig({ instance, ...ENGINE_BINS });
         assert.match(xml, new RegExp(`<id>${expectedWindowsServiceId}</id>`));
-        assert.ok(xml.includes(expectedBinary.replace(/\//g, '\\')));
+        assert.ok(xml.includes(expectedWindowsBinary.replace(/\//g, '\\')));
         assert.ok(xml.includes(instance.stateDir.replace(/\//g, '\\')));
         assert.ok(xml.includes(instance.logPath.replace(/\//g, '\\')));
         if (engine === 'headroom_lite') {

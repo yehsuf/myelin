@@ -3,6 +3,7 @@ import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
+import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
@@ -39,8 +40,8 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
   if (instance.engine === 'headroom_lite') {
     if (!headroomLiteBin) throw new Error('headroomLiteBin is required for headroom_lite engine instances');
     return {
-      command: headroomLiteBin,
-      args: [],
+      command: process.execPath,
+      args: [resolveHeadroomLiteEntrypoint(headroomLiteBin)],
       env: { HEADROOM_LITE_PORT: String(instance.port) },
     };
   }
