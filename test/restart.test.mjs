@@ -1008,7 +1008,7 @@ describe('headroom-lite ownership guards', () => {
   it('stops a managed Unix headroom-lite owner when the pid file matches the listener', async () => {
     const killed = [];
     const home = '/Users/alice';
-    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux', platform: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8790,
       osKind: 'linux',
@@ -1066,7 +1066,7 @@ describe('headroom-lite ownership guards', () => {
     const killed = [];
     let unlinked = 0;
     const home = '/Users/alice';
-    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux', platform: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8791,
       osKind: 'linux',
