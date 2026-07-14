@@ -51,6 +51,17 @@ test('publisher requires the triggering run to have succeeded before any privile
   assert.match(condition, /success/);
 });
 
+test('publisher job-level if: independently gates on head_repository, not just base repository', () => {
+  const workflow = loadWorkflow(PUBLISH_WORKFLOW_PATH);
+  const condition = String(workflow.jobs.publish.if ?? '');
+  // `github.event.workflow_run.repository` is always the base (default) repository, even for
+  // a workflow_run triggered by a fork PR -- it does not by itself exclude forks. The job-level
+  // `if:` must also check `head_repository`, so fork-exclusion does not rest solely on the
+  // in-job shell guard step (defense-in-depth: a future edit that drops the shell step must not
+  // silently remove the fork exclusion).
+  assert.match(condition, /workflow_run\.head_repository\.full_name\s*==\s*github\.repository/);
+});
+
 test('the trust-boundary guard is the first publisher step, before checkout and any privileged action', () => {
   const steps = loadPublishSteps();
   assert.equal(

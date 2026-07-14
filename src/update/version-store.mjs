@@ -784,7 +784,22 @@ function validateJournal(options, journal) {
 function readJournal(options) {
   const committedJournal = readJournalFile(options, journalPath(options), 'Transaction journal');
   if (committedJournal !== null) return committedJournal;
-  return readJournalFile(options, journalTemporaryPath(options), 'Transaction journal temporary file');
+
+  const temporary = journalTemporaryPath(options);
+  try {
+    return readJournalFile(options, temporary, 'Transaction journal temporary file');
+  } catch (error) {
+    // No committed journal exists, so the temporary journal is the only record of an
+    // in-flight transaction. An invalid temporary journal in this state is indistinguishable
+    // from a crash mid-write (e.g. truncated JSON from an interrupted writeFileSync) rather
+    // than a durable, meaningful transaction — discard it and proceed as if no transaction
+    // was ever prepared. A malformed *committed* journal above still fails closed.
+    if (error?.code === 'ERR_COMPONENT_JOURNAL_INVALID') {
+      removeRegularFile(options, temporary, 'Transaction journal temporary file');
+      return null;
+    }
+    throw error;
+  }
 }
 
 function removeJournalFiles(options) {

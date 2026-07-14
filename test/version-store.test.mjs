@@ -1322,4 +1322,32 @@ describe('versioned component store', () => {
     assert.ok(events.slice(preparedWrite + 1, firstPointerRename)
       .some((event) => event.startsWith(`fsync-dir:${join(root, 'rtk')}`)));
   });
+
+  it('discards a truncated temporary journal when no committed journal exists', () => {
+    const root = makeRoot();
+    createVersion(root, 'rtk', '0.43.0');
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    // Simulate a crash mid-write-temporary: only the truncated .new file exists,
+    // the committed journal was never created.
+    writeFileSync(join(root, 'rtk', '.pointer-store-journal.json.new'), '{"schemaVersion":1,"na', 'utf8');
+
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
+      current: '0.43.0',
+      previous: null,
+    });
+    assert.equal(existsSync(join(root, 'rtk', '.pointer-store-journal.json.new')), false);
+  });
+
+  it('still fails closed on a malformed committed journal', () => {
+    const root = makeRoot();
+    createVersion(root, 'rtk', '0.43.0');
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    writeFileSync(transactionJournalPath(root, 'rtk'), '{"schemaVersion":1,"na', 'utf8');
+
+    assert.throws(
+      () => readPointers(root, 'rtk', { durability: noOpDurability() }),
+      /malformed/i,
+    );
+    assert.equal(existsSync(transactionJournalPath(root, 'rtk')), true);
+  });
 });
