@@ -614,7 +614,7 @@ describe('Windows engine descriptor migration ownership', () => {
     assert.deepEqual(uninstalled, ['headroom_lite-copilot']);
   });
 
-  it('removes a direct legacy Run-key listener only after matching its stored executable, command, and port', () => {
+  it('removes a stale direct legacy Run-key registration without stopping an ambiguous listener', () => {
     const scripts = [];
 
     removeWindowsEngineInstance({
@@ -635,15 +635,14 @@ describe('Windows engine descriptor migration ownership', () => {
 
     assert.equal(scripts.length, 1);
     assert.match(scripts[0], /\$legacyRunKeyValue =/);
-    assert.match(scripts[0], /\$legacyExecutable/);
-    assert.match(scripts[0], /\$legacyArguments/);
-    assert.match(scripts[0], /Get-NetTCPConnection -State Listen -LocalPort \$legacyPort/);
-    assert.match(scripts[0], /ExecutablePath -eq \$legacyExecutable/);
-    assert.match(scripts[0], /CommandLine -match \$legacyArgumentsPattern/);
+    // Direct Run-key commands predate launcher/PID ownership markers. Migration
+    // deliberately leaves an indistinguishable user-started listener running.
+    assert.doesNotMatch(scripts[0], /if \(\$legacyExecutable -and \$legacyArguments -and \$legacyPort\)/);
+    assert.match(scripts[0], /if \(\$legacyLauncherMatches -and \$legacyExecutable -and \$legacyArguments -and \$legacyPort\)/);
     assert.match(scripts[0], /Remove-ItemProperty -Path .* -Name \$runKey/);
   });
 
-  it('requires an exact stored command tail before stopping a direct legacy Run-key listener', () => {
+  it('requires launcher ancestry before stopping a managed legacy launcher listener', () => {
     const script = generateEngineInstanceRemovalScript({
       instance: {
         engine: 'headroom',
@@ -658,8 +657,9 @@ describe('Windows engine descriptor migration ownership', () => {
       home: HOME,
     });
 
-    assert.ok(script.includes("$legacyArgumentsPattern = [regex]::Escape($legacyArguments) + '\\s*$'"));
-    assert.ok(script.includes('$candidate.CommandLine -match $legacyArgumentsPattern'));
+    assert.ok(script.includes('$legacyLauncherAncestorMatches = $false'));
+    assert.ok(script.includes('$ancestor.CommandLine -match [regex]::Escape($launcherPath)'));
+    assert.ok(script.includes('$candidate -and $legacyLauncherAncestorMatches'));
   });
 
   it('recognizes only its exact old Copilot launcher path while stopping the owned listener', () => {
@@ -913,7 +913,7 @@ describe('windows run-script generator', () => {
     assert.ok(script.includes("$env:MY_VAR = 'it''s here'"), 'single quote escaped');
   });
 
-  it('falls back to the legacy Myelin run-key command when the managed pid file is absent', () => {
+  it('clears a stale direct Myelin Run-key without using it to identify a listener', () => {
     let command = '';
     stopManagedHeadroomProcess({
       port: 8787,
@@ -927,12 +927,13 @@ describe('windows run-script generator', () => {
       }),
     });
     assert.ok(command.includes('ProcessId = $managedPid'));
-    assert.ok(command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
-    assert.ok(command.includes(`Name = 'headroom.exe'`));
-    assert.ok(command.includes(`--port\\s+8787(\\s|$)`));
+    // Direct Run-key commands have no durable process ownership proof, so a
+    // migration removes only their stale registration.
+    assert.doesNotMatch(command, /C:\\Users\\alice\\\.myelin\\bin\\headroom\.exe/);
+    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue`));
   });
 
-  it('stops the exact legacy run-key process even when the configured port has already changed', () => {
+  it('removes a direct legacy registration after a port migration without stopping a matching listener', () => {
     let command = '';
     stopManagedHeadroomProcess({
       port: 9797,
@@ -946,10 +947,8 @@ describe('windows run-script generator', () => {
       }),
     });
     assert.ok(command.includes('ProcessId = $managedPid'));
-    assert.ok(command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
-    assert.ok(command.includes(`--port\\s+8787(\\s|$)`));
     assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue`));
-    assert.ok(!command.includes(`--port\\s+9797(\\s|$)' -and $_.ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`));
+    assert.doesNotMatch(command, /C:\\Users\\alice\\\.myelin\\bin\\headroom\.exe/);
   });
 });
 

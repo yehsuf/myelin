@@ -741,10 +741,9 @@ export function stopManagedHeadroomProcess({
   });
   const legacyRunKey = parseLegacyManagedHeadroomRunKeyValue({ runKeyValue: runKeyStatus?.raw });
   if (legacyRunKey?.executablePath && legacyRunKey?.port) {
-    script += `\n${stopByPortScript(processExeName, legacyRunKey.port, {
-      requiredArgs: ['proxy'],
-      requiredExecutablePath: windowsPath(legacyRunKey.executablePath),
-    })}\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
+    // A direct legacy Run-key command is not a durable ownership marker: the
+    // same executable, arguments, and port may belong to a user process.
+    script += `\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
   }
   script = script.replace(/"/g, '\\"');
   execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
@@ -1551,34 +1550,43 @@ $legacyPort = $null
 $legacyDirectMatch = [regex]::Match([string]$legacyRunKeyValue, '^\\s*(?:"(?<executable>[^"]+headroom(?:\\.exe)?)"|(?<executable>\\S+headroom(?:\\.exe)?))\\s+(?<arguments>proxy\\b.*)\\s*$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 $legacyLauncherMatch = [regex]::Match([string]$legacyRunKeyValue, '(?i)(?:^|\\s)-File\\s+"(?<launcher>[^"]+)"')
 $legacyLauncherMatches = $legacyLauncherMatch.Success -and $legacyLauncherMatch.Groups['launcher'].Value -ieq $launcherPath
-if ($legacyDirectMatch.Success) {
-  $legacyExecutable = if ($legacyDirectMatch.Groups['executable'].Value) { $legacyDirectMatch.Groups['executable'].Value } else { $null }
-  $legacyArguments = $legacyDirectMatch.Groups['arguments'].Value.Trim()
-} elseif ($legacyLauncherMatches -and (Test-Path $launcherPath)) {
+if ($legacyLauncherMatches -and (Test-Path $launcherPath)) {
   $legacyLauncherContent = Get-Content -Path $launcherPath -Raw -ErrorAction SilentlyContinue
   $legacyStartMatch = [regex]::Match($legacyLauncherContent, "Start-Process -FilePath '((?:''|[^'])+)' -ArgumentList '((?:''|[^'])*)'")
   if ($legacyStartMatch.Success) {
     $legacyExecutable = $legacyStartMatch.Groups[1].Value.Replace("''", "'")
     $legacyArguments = $legacyStartMatch.Groups[2].Value.Replace("''", "'").Trim()
   }
-}
-if ($legacyExecutable -and $legacyArguments -match '^proxy\\b') {
-  $legacyArgumentsPattern = [regex]::Escape($legacyArguments) + '\\s*$'
-  $legacyPortMatch = [regex]::Match($legacyArguments, '(?:^|\\s)--port\\s+(\\d+)(?:\\s|$)')
-  if ($legacyPortMatch.Success) {
-    $candidatePort = [int]$legacyPortMatch.Groups[1].Value
-    if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $legacyPort = $candidatePort }
+  if ($legacyExecutable -and $legacyArguments -match '^proxy\\b') {
+    $legacyArgumentsPattern = [regex]::Escape($legacyArguments) + '\\s*$'
+    $legacyPortMatch = [regex]::Match($legacyArguments, '(?:^|\\s)--port\\s+(\\d+)(?:\\s|$)')
+    if ($legacyPortMatch.Success) {
+      $candidatePort = [int]$legacyPortMatch.Groups[1].Value
+      if ($candidatePort -ge 1 -and $candidatePort -le 65535) { $legacyPort = $candidatePort }
+    }
   }
 }
-if ($legacyExecutable -and $legacyArguments -and $legacyPort) {
+if ($legacyLauncherMatches -and $legacyExecutable -and $legacyArguments -and $legacyPort) {
   foreach ($connection in @(Get-NetTCPConnection -State Listen -LocalPort $legacyPort -ErrorAction SilentlyContinue)) {
     $candidate = Get-CimInstance Win32_Process -Filter "ProcessId = $($connection.OwningProcess)" -ErrorAction SilentlyContinue
-    if ($candidate -and $candidate.ExecutablePath -eq $legacyExecutable -and $candidate.CommandLine -match $legacyArgumentsPattern -and $candidate.CommandLine -match "(^|\\s)--port\\s+$legacyPort(\\s|$)") {
+    $legacyLauncherAncestorMatches = $false
+    $ancestor = $candidate
+    for ($depth = 0; $depth -lt 16 -and $ancestor; $depth++) {
+      if ($ancestor.CommandLine -match [regex]::Escape($launcherPath)) {
+        $legacyLauncherAncestorMatches = $true
+        break
+      }
+      if (-not $ancestor.ParentProcessId) { break }
+      $ancestor = Get-CimInstance Win32_Process -Filter "ProcessId = $($ancestor.ParentProcessId)" -ErrorAction SilentlyContinue
+    }
+    if ($candidate -and $legacyLauncherAncestorMatches -and $candidate.ExecutablePath -eq $legacyExecutable -and $candidate.CommandLine -match $legacyArgumentsPattern -and $candidate.CommandLine -match "(^|\\s)--port\\s+$legacyPort(\\s|$)") {
       Stop-Process -Id $candidate.ProcessId -Force -ErrorAction SilentlyContinue
       break
     }
   }
 }
+# Direct legacy Run-key entries have no launcher/PID/state ownership proof.
+# Remove their stale registration but leave an ambiguous listener untouched.
 ${liteListenerFallback}
 if ($legacyDirectMatch.Success -or $legacyLauncherMatches) {
   Remove-ItemProperty -Path '${REG_RUN}' -Name $runKey -ErrorAction SilentlyContinue
