@@ -33,36 +33,49 @@ ssh muc-lhvsuz          # uses ~/.ssh/config entry (ysufrin, internal key)
 
 ---
 
-## Feature development workflow (worktrees)
+## Feature development workflow (per-agent workspaces)
 
-**Every feature must use a git worktree + feature branch. Never edit `main` directly.**
+**Every agent works inside its OWN workspace `~/myelin-agents/<agent>/`. Never edit `main` directly, never work in the bare canonical, never work in another agent's directory.**
 
-### Start a feature
+Layout (see `docs/superpowers/specs/2026-07-14-agent-workspace-model-design.md`):
+
+```
+~/myelin-agents/
+├── .bare/myelin.git/          # bare canonical (no working tree — cannot be clobbered)
+├── .bare/headroom-lite.git/
+├── <agent>/                   # e.g. architect, reviewer, task-runner
+│   ├── myelin/                # git worktree of .bare/myelin.git
+│   ├── headroom-lite/         # git worktree of .bare/headroom-lite.git (on demand)
+│   └── scratch/               # scratch/tmp — SIBLING of the repos, never inside them
+```
+
+### One-time: create a bare canonical (per repo)
 
 ```bash
-# 1. Create worktree + branch + register with Copilot/Serena in one command:
-myelin worktree add feat/my-feature
-
-# This does:
-#   git worktree add ~/tokenstack-wt-feat-my-feature -b feat/my-feature
-#   myelin init --yes   (creates .serena/project.yml + writes .claude/settings.local.json hooks)
-
-# 2. Enter the worktree — start Copilot/Claude Code session FROM this directory
-cd ~/tokenstack-wt-feat-my-feature
-# The serena-mcp wrapper auto-detects this worktree as the active project
+mkdir -p ~/myelin-agents/.bare
+git clone --bare git@github.com:yehsuf/myelin.git ~/myelin-agents/.bare/myelin.git
+git --git-dir=~/myelin-agents/.bare/myelin.git config remote.origin.fetch \
+    '+refs/heads/*:refs/remotes/origin/*'
+git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
 ```
+
+### Start a feature (per agent)
+
+```bash
+git --git-dir=~/myelin-agents/.bare/myelin.git fetch origin
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree add \
+    ~/myelin-agents/<agent>/myelin -b <branch> origin/main
+cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
+```
+
+Reuse the same worktree path across branches where practical (keeps Serena's path-baked cache warm). Put ALL scratch in `~/myelin-agents/<agent>/scratch/` — never in the worktree.
 
 ### Test on all 3 platforms before merging
 
 ```bash
-# Mac (local)
-npm test
-
-# Windows — checkout branch + test
-ssh yeh-legion "cd %USERPROFILE%\\.myelin\\repo && git fetch origin && git checkout feat/my-feature && npm test"
-
-# Linux — checkout branch + test
-ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout feat/my-feature && npm test'
+npm test                                   # Mac (local)
+ssh yeh-legion "cd %USERPROFILE%\.myelin\repo && git fetch origin && git checkout <branch> && npm test"
+ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout <branch> && npm test'
 ```
 
 > **⚠️ MANDATORY — always reset the install machines back to `main` when done (test pass OR fail).**
@@ -79,32 +92,23 @@ ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout feat/my-fe
 > first repair it:
 > `git config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && git fetch origin`.
 
-### Merge + cleanup
+### Finish (rebase → PR → ask before merge)
 
 ```bash
-# From main repo (not the worktree)
-cd ~/tokenstack
-git merge --squash feat/my-feature   # or: git merge --ff-only
-git commit -m "feat: ..."
-git push origin main
-
-# Remove worktree + delete branch
-myelin worktree remove feat/my-feature
+git -C ~/myelin-agents/<agent>/myelin fetch origin
+git -C ~/myelin-agents/<agent>/myelin rebase origin/main
+git -C ~/myelin-agents/<agent>/myelin push -u origin <branch>
+gh pr create --base main --head <branch>   # then ASK the human to approve the merge
 ```
 
-### Other worktree commands
+### Remove a worktree when done
+
 ```bash
-myelin worktree list                          # list all active worktrees
-myelin worktree remove feat/x --keep-branch  # remove worktree but keep the branch
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree remove ~/myelin-agents/<agent>/myelin
+git --git-dir=~/myelin-agents/.bare/myelin.git worktree prune
 ```
 
-### How session registration works
-`myelin init` in the worktree calls `serena project create --index <worktree-path>` which:
-1. Creates `.serena/project.yml` in the worktree (gitignored — machine-local)
-2. Registers the path in `~/.serena/serena_config.yml`
-
-The `serena-mcp.sh` wrapper detects the project by walking up from CWD at spawn time.
-Starting Copilot/Claude Code from the worktree directory = session is registered to that worktree.
+> Note: the old helper command is NOT real — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.
 
 ---
 
