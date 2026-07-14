@@ -19,7 +19,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import {
   activateComponent,
   componentVersionDir,
@@ -108,6 +108,29 @@ describe('versioned component store', () => {
     assert.equal(
       componentVersionDir('/components', 'rtk', '0.44.0'),
       join('/components', 'rtk', '0.44.0'),
+    );
+  });
+
+  it('builds the version directory using an injected platform-specific path module instead of the host path module', () => {
+    // component-installers.mjs threads an explicit `platform` through
+    // buildComponentInstallPlan/pathFor so that callers can target a platform
+    // other than the host (this is exactly what the component-installers.test.mjs
+    // "staging and managed detection" suite simulates by passing
+    // `platform: { os: 'linux' }` while running on Windows CI). componentVersionDir
+    // is the first path-building step in that pipeline, so it must honor the same
+    // platform-specific path module rather than silently defaulting to the host's
+    // node:path module (which is win32 on a real Windows machine and posix
+    // everywhere else). Otherwise a destination built for a non-host platform comes
+    // out in the *host's* separator style, and downstream posix/win32 path
+    // operations on that malformed string silently diverge (e.g. posix.dirname of a
+    // win32-only path collapses to '.').
+    assert.equal(
+      componentVersionDir('/components', 'rtk', '0.44.0', win32),
+      win32.join('/components', 'rtk', '0.44.0'),
+    );
+    assert.equal(
+      componentVersionDir('C:\\components', 'rtk', '0.44.0', posix),
+      posix.join('C:\\components', 'rtk', '0.44.0'),
     );
   });
 

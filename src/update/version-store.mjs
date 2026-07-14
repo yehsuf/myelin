@@ -95,11 +95,11 @@ function resolvedVersionDirectory(root, name, version) {
   return resolve(root, name, version);
 }
 
-export function componentVersionDir(root, name, version) {
+export function componentVersionDir(root, name, version, pathModule = { join }) {
   validateRoot(root);
   validateName(name);
   validateVersion(version);
-  return join(root, name, version);
+  return pathModule.join(root, name, version);
 }
 
 function pointerPath(options, pointer) {

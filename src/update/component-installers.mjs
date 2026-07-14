@@ -1002,8 +1002,9 @@ export function stageComponent({
 } = {}) {
   if (typeof exec !== 'function') throw new TypeError('exec must be a function.');
   if (!fs || typeof fs !== 'object') throw new TypeError('fs must be an object.');
-  const versionDirectory = componentVersionDir(root, name, component?.version);
-  const plan = buildComponentInstallPlan(component, versionDirectory, platform);
+  const normalizedPlatform = normalizePlatform(platform);
+  const versionDirectory = componentVersionDir(root, name, component?.version, pathFor(normalizedPlatform));
+  const plan = buildComponentInstallPlan(component, versionDirectory, normalizedPlatform);
   const destination = plan.destination;
   fs.mkdirSync(pathFor(plan.platform).dirname(destination), { recursive: true });
   prepareStageDestination(destination, fs, plan.platform);
@@ -1054,8 +1055,9 @@ export function detectManagedComponent({
   exec = execFileSync,
 } = {}) {
   if (typeof exec !== 'function') throw new TypeError('exec must be a function.');
-  const destination = componentVersionDir(root, name, component?.version);
-  const plan = buildComponentInstallPlan(component, destination, platform);
+  const normalizedPlatform = normalizePlatform(platform);
+  const destination = componentVersionDir(root, name, component?.version, pathFor(normalizedPlatform));
+  const plan = buildComponentInstallPlan(component, destination, normalizedPlatform);
   const pinnedVersion = component.version;
   if (!plan.binPath) {
     return {
