@@ -123,7 +123,7 @@ function baseDeps(events = []) {
   };
 }
 
-describe('planUpdate', () => {
+describe('planUpdate', { concurrency: false }, () => {
   it('defaults to stable and stages only the selected compression backend', () => {
     const plan = planUpdate({
       config: { proxy: { engine: 'headroom_lite' } },
@@ -190,7 +190,7 @@ describe('planUpdate', () => {
   });
 });
 
-describe('read-only update checks', () => {
+describe('read-only update checks', { concurrency: false }, () => {
   it('does not acquire a lock, write migration output, or mutate state', async () => {
     const events = [];
     const home = makeRoot();
@@ -233,7 +233,7 @@ describe('read-only update checks', () => {
   });
 });
 
-describe('fenced update execution', () => {
+describe('fenced update execution', { concurrency: false }, () => {
   it('checks the global fence immediately before every transaction mutation', async () => {
     const events = [];
     const deps = baseDeps(events);
@@ -305,7 +305,7 @@ describe('fenced update execution', () => {
   });
 });
 
-describe('durable global update lock', () => {
+describe('durable global update lock', { concurrency: false }, () => {
   it('reclaims a stale heartbeat and fences the old owner', () => {
     const root = makeRoot();
     const path = join(root, 'update.lock');
@@ -425,7 +425,7 @@ describe('durable global update lock', () => {
   });
 });
 
-describe('durable global update journal', () => {
+describe('durable global update journal', { concurrency: false }, () => {
   it('fsyncs prepared and committed complete state before cleanup', () => {
     const root = makeRoot();
     const path = join(root, 'update-journal.json');
@@ -479,7 +479,7 @@ describe('durable global update journal', () => {
   });
 });
 
-describe('platform service transaction adapter', () => {
+describe('platform service transaction adapter', { concurrency: false }, () => {
   it('snapshots, quiesces, and restores managed Linux unit definitions through injected boundaries', async () => {
     const root = makeRoot();
     const home = join(root, 'home');
@@ -562,7 +562,7 @@ describe('platform service transaction adapter', () => {
   });
 });
 
-describe('activation and recovery state machine', () => {
+describe('activation and recovery state machine', { concurrency: false }, () => {
   it('persists the prepared journal before quiescing active state', async () => {
     const events = [];
     const result = await activateUpdate(
@@ -759,7 +759,7 @@ describe('activation and recovery state machine', () => {
   });
 });
 
-describe('strict health verification', () => {
+describe('strict health verification', { concurrency: false }, () => {
   it('rejects a wrong backend and respects per-service and total deadlines', async () => {
     const events = [];
     let now = 0;
@@ -794,7 +794,7 @@ describe('strict health verification', () => {
   });
 });
 
-describe('finding 4: staged-apply child identity is durably recorded before spawn', () => {
+describe('finding 4: staged-apply child identity is durably recorded before spawn', { concurrency: false }, () => {
   function activatePlan() {
     return {
       ...planUpdate({

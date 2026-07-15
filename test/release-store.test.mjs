@@ -66,7 +66,7 @@ function makeTempHome() {
   return home;
 }
 
-describe('runtimePaths', () => {
+describe('runtimePaths', { concurrency: false }, () => {
   it('builds the managed runtime paths from home', () => {
     const home = '/home/alice';
     assert.deepEqual(runtimePaths('/home/alice'), {
@@ -89,13 +89,13 @@ describe('runtimePaths', () => {
   });
 });
 
-describe('releaseIdForCommit', () => {
+describe('releaseIdForCommit', { concurrency: false }, () => {
   it('prefixes commits with main-', () => {
     assert.equal(releaseIdForCommit('abcdef123456'), 'main-abcdef123456');
   });
 });
 
-describe('current release pointer', () => {
+describe('current release pointer', { concurrency: false }, () => {
   it('returns null when current.json does not exist', () => {
     const home = makeTempHome();
     try {
@@ -470,7 +470,7 @@ describe('current release pointer', () => {
   });
 });
 
-describe('stageMainRuntime', () => {
+describe('stageMainRuntime', { concurrency: false }, () => {
   const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
   const nodeCommand = process.platform === 'win32' ? 'node.exe' : 'node';
 
@@ -992,7 +992,7 @@ describe('stageMainRuntime', () => {
   });
 });
 
-describe('bootstrap scripts', () => {
+describe('bootstrap scripts', { concurrency: false }, () => {
   it('stages and runs the managed runtime installer from install.sh', () => {
     const script = readFileSync(join(process.cwd(), 'install.sh'), 'utf8');
 
@@ -1317,13 +1317,45 @@ function fullFs(overrides = {}) {
   };
 }
 
+function makeFakePosixFs(dirs = []) {
+  const store = new Map(dirs.map(d => [d, { type: 'dir' }]));
+  const makeStat = (entry) => ({
+    isDirectory: () => entry.type === 'dir',
+    isSymbolicLink: () => entry.type === 'symlink',
+    isFile: () => entry.type === 'file',
+  });
+  const fs = {
+    lstatSync(path) {
+      const entry = store.get(path);
+      if (!entry) { const err = new Error(`ENOENT: no such file or directory, lstat '${path}'`); err.code = 'ENOENT'; throw err; }
+      return makeStat(entry);
+    },
+    readlinkSync(path) {
+      const entry = store.get(path);
+      if (!entry) { const err = new Error(`ENOENT: no such file or directory, readlink '${path}'`); err.code = 'ENOENT'; throw err; }
+      if (entry.type !== 'symlink') { const err = new Error(`EINVAL: invalid argument, readlink '${path}'`); err.code = 'EINVAL'; throw err; }
+      return entry.target;
+    },
+    symlinkSync(target, dest) { store.set(dest, { type: 'symlink', target }); },
+    rmSync(path) { store.delete(path); },
+    renameSync(from, to) {
+      const entry = store.get(from);
+      if (!entry) { const err = new Error(`ENOENT: no such file or directory, rename '${from}'`); err.code = 'ENOENT'; throw err; }
+      store.set(to, entry);
+      store.delete(from);
+    },
+    mkdirSync() {},
+  };
+  return { fs, store };
+}
+
 afterEach(() => {
   for (const root of temporaryRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-describe('managed release store', () => {
+describe('managed release store', { concurrency: false }, () => {
   it('stages a validated release without changing the active pointer', async () => {
     const root = makeRoot();
     const managedHome = join(root, '.myelin');
@@ -1352,7 +1384,9 @@ describe('managed release store', () => {
     assert.equal(readlinkSync(join(managedHome, 'current')), join('releases', '1.0.0'));
     assert.equal(existsSync(join(releasesRoot, '1.1.0', 'package.json')), true);
     assert.deepEqual(commands.map(({ file, args }) => [file, args]), [
-      ['npm', ['ci', '--ignore-scripts=false']],
+      process.platform === 'win32'
+        ? ['cmd.exe', ['/d', '/s', '/c', 'npm "ci" "--ignore-scripts=false"']]
+        : ['npm', ['ci', '--ignore-scripts=false']],
       ['node', ['bin/myelin', '--version']],
       ['node', ['--test', 'test/component-manifest.test.mjs']],
     ]);
@@ -1586,7 +1620,7 @@ describe('managed release store', () => {
     assert.equal(bodyRead, false);
   });
 
-  it('preserves current and previous release pointers and restores them after a failed switch', () => {
+  it('preserves current and previous release pointers and restores them after a failed switch', { skip: process.platform === 'win32' }, () => {
     const root = makeRoot();
     const managedHome = join(root, '.myelin');
     const releasesRoot = join(managedHome, 'releases');
@@ -1628,7 +1662,7 @@ describe('managed release store', () => {
     assert.equal(readlinkSync(join(managedHome, 'previous')), join('releases', '1.0.0'));
   });
 
-  it('restores an exact current and previous release pair', () => {
+  it('restores an exact current and previous release pair', { skip: process.platform === 'win32' }, () => {
     const root = makeRoot();
     const managedHome = join(root, '.myelin');
     const releasesRoot = join(managedHome, 'releases');
@@ -1654,7 +1688,7 @@ describe('managed release store', () => {
     );
   });
 
-  it('recovers interrupted release-pair artifacts before restoring a snapshot', () => {
+  it('recovers interrupted release-pair artifacts before restoring a snapshot', { skip: process.platform === 'win32' }, () => {
     const root = makeRoot();
     const managedHome = join(root, '.myelin');
     const releasesRoot = join(managedHome, 'releases');
@@ -1686,7 +1720,7 @@ describe('managed release store', () => {
     assert.equal(existsSync(join(managedHome, 'current.new')), false);
   });
 
-  it('atomically replaces the POSIX current pointer instead of parking it first', () => {
+  it('atomically replaces the POSIX current pointer instead of parking it first', { skip: process.platform === 'win32' }, () => {
     const root = makeRoot();
     const managedHome = join(root, '.myelin');
     const releasesRoot = join(managedHome, 'releases');
@@ -1711,10 +1745,9 @@ describe('managed release store', () => {
   });
 
   it('uses an injected Windows junction creator instead of symlink privileges', () => {
-    const root = makeRoot();
-    const managedHome = join(root, '.myelin');
-    const releasesRoot = join(managedHome, 'releases');
-    createRelease(releasesRoot, '1.0.0');
+    const releasesRoot = '/fake-test/.myelin/releases';
+    const managedHome = '/fake-test/.myelin';
+    const { fs, store } = makeFakePosixFs(['/fake-test/.myelin/releases/1.0.0']);
     const junctions = [];
 
     const result = activateRelease({
@@ -1722,24 +1755,24 @@ describe('managed release store', () => {
       version: '1.0.0',
       platform: 'win32',
       pathImpl: posix,
+      fs,
       createJunction(pointer, target) {
         junctions.push({ pointer, target });
-        symlinkSync(target, pointer, 'dir');
+        store.set(pointer, { type: 'symlink', target });
       },
     });
 
     assert.deepEqual(result, { current: '1.0.0', previous: null });
     assert.deepEqual(junctions, [{
-      pointer: join(managedHome, 'current.new'),
-      target: join(releasesRoot, '1.0.0'),
+      pointer: posix.join(managedHome, 'current.new'),
+      target: posix.join(releasesRoot, '1.0.0'),
     }]);
   });
 
   it('uses verbatim argv handling for the default Windows junction command', () => {
-    const root = makeRoot();
-    const managedHome = join(root, '.myelin');
-    const releasesRoot = join(managedHome, 'releases');
-    createRelease(releasesRoot, '1.0.0');
+    const releasesRoot = '/fake-test/.myelin/releases';
+    const managedHome = '/fake-test/.myelin';
+    const { fs, store } = makeFakePosixFs(['/fake-test/.myelin/releases/1.0.0']);
     const commands = [];
 
     activateRelease({
@@ -1747,9 +1780,13 @@ describe('managed release store', () => {
       version: '1.0.0',
       platform: 'win32',
       pathImpl: posix,
+      fs,
       runCommand(file, args, options) {
         commands.push({ file, args, options });
-        symlinkSync(join(releasesRoot, '1.0.0'), join(managedHome, 'current.new'), 'dir');
+        store.set(posix.join(managedHome, 'current.new'), {
+          type: 'symlink',
+          target: posix.join(releasesRoot, '1.0.0'),
+        });
       },
     });
 
@@ -1759,10 +1796,9 @@ describe('managed release store', () => {
   });
 
   it('removes a temporary junction if junction creation reports a switch failure', () => {
-    const root = makeRoot();
-    const managedHome = join(root, '.myelin');
-    const releasesRoot = join(managedHome, 'releases');
-    createRelease(releasesRoot, '1.0.0');
+    const releasesRoot = '/fake-test/.myelin/releases';
+    const managedHome = '/fake-test/.myelin';
+    const { fs, store } = makeFakePosixFs(['/fake-test/.myelin/releases/1.0.0']);
 
     assert.throws(
       () => activateRelease({
@@ -1770,14 +1806,15 @@ describe('managed release store', () => {
         version: '1.0.0',
         platform: 'win32',
         pathImpl: posix,
+        fs,
         createJunction(pointer, target) {
-          symlinkSync(target, pointer, 'dir');
+          store.set(pointer, { type: 'symlink', target });
           throw new Error('junction creation reported failure');
         },
       }),
       /junction creation reported failure/,
     );
-    assert.equal(existsSync(join(managedHome, 'current.new')), false);
+    assert.equal(store.has(posix.join(managedHome, 'current.new')), false);
   });
 
   it('writes launchers that resolve the current release at invocation time', () => {

@@ -103,7 +103,7 @@ afterEach(() => {
   }
 });
 
-describe('versioned component store', () => {
+describe('versioned component store', { concurrency: false }, () => {
   it('builds a component version directory below its component root', () => {
     assert.equal(
       componentVersionDir('/components', 'rtk', '0.44.0'),
