@@ -366,6 +366,7 @@ describe('durable global update lock', { concurrency: false }, () => {
       randomToken: () => 'owner-token',
       staleAfterMs: 100,
       useWorkerHeartbeat: false,
+      durability: { fsyncFile: () => {} },
     });
     const token = owner.acquire(path);
     now = 90;
@@ -379,6 +380,7 @@ describe('durable global update lock', { concurrency: false }, () => {
       randomToken: () => 'contender-token',
       staleAfterMs: 100,
       useWorkerHeartbeat: false,
+      durability: { fsyncFile: () => {} },
     });
     assert.throws(() => contender.acquire(path), /already held/i);
     assert.equal(JSON.parse(fs.readFileSync(path, 'utf8')).token, 'owner-token');
@@ -415,6 +417,7 @@ describe('durable global update lock', { concurrency: false }, () => {
       isPidAlive: () => true,
       randomToken: () => 'owner-token',
       useWorkerHeartbeat: false,
+      durability: { fsyncFile: () => {} },
     });
     const token = lock.acquire(path);
     now = 2;
@@ -456,6 +459,7 @@ describe('durable global update journal', { concurrency: false }, () => {
     const store = createUpdateJournalStore({
       path: join(root, 'update-journal.json'),
       fs,
+      durability: { fsyncFile: () => {}, fsyncDirectory: () => {} },
     });
     const journal = preparedJournal();
     journal.snapshot.services = {
@@ -480,7 +484,7 @@ describe('durable global update journal', { concurrency: false }, () => {
 });
 
 describe('platform service transaction adapter', { concurrency: false }, () => {
-  it('snapshots, quiesces, and restores managed Linux unit definitions through injected boundaries', async () => {
+  it('snapshots, quiesces, and restores managed Linux unit definitions through injected boundaries', { skip: process.platform === 'win32' }, async () => {
     const root = makeRoot();
     const home = join(root, 'home');
     const units = join(home, '.config', 'systemd', 'user');

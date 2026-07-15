@@ -1842,7 +1842,7 @@ describe('managed release store', { concurrency: false }, () => {
     assert.doesNotMatch(powerShellLauncher, /Invoke-Expression/);
   });
 
-  it('writes a syntactically valid POSIX launcher for homes containing apostrophes', () => {
+  it('writes a syntactically valid POSIX launcher for homes containing apostrophes', { skip: process.platform === 'win32' }, () => {
     const root = makeRoot();
     const result = installStableLauncher({
       home: join(root, "o'brien"),
