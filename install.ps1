@@ -107,10 +107,13 @@ function Stage-MainRuntime {
 
         Push-Location $stageDir
         try {
-            npm ci --ignore-scripts
+            # Pipe to Write-Host so stdout goes to the terminal (host), not the
+            # PowerShell pipeline — otherwise npm/node output pollutes the
+            # function's implicit return value and $RuntimeRoot gets garbage.
+            npm ci --ignore-scripts 2>&1 | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
-            node --check src/cli/index.mjs
+            node --check src/cli/index.mjs 2>&1 | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "node --check failed" }
         } finally {
             Pop-Location
