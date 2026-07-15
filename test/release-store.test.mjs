@@ -1173,13 +1173,15 @@ describe('bootstrap scripts', { concurrency: false }, () => {
     assert.equal(r.status, 0, r.stderr || 'pwsh harness failed');
     const out = JSON.parse(r.stdout);
 
-    assert.equal(out.tilde, base);
-    assert.equal(out.tildeSlash, `${base}/managed`);
-    assert.equal(out.tildeBack, `${base}/managed`);
-    assert.equal(out.tildeEmpty, base);
-    assert.equal(out.relative, `${base}/managed`);
-    assert.equal(out.reldeep, `${base}/a/b`);
-    // Absolute inputs pass through untouched.
+    // Normalize separators: Windows pwsh Join-Path uses \ even for POSIX-style base paths.
+    const norm = (p) => p.replace(/\\/g, '/');
+    assert.equal(norm(out.tilde), base);
+    assert.equal(norm(out.tildeSlash), `${base}/managed`);
+    assert.equal(norm(out.tildeBack), `${base}/managed`);
+    assert.equal(norm(out.tildeEmpty), base);
+    assert.equal(norm(out.relative), `${base}/managed`);
+    assert.equal(norm(out.reldeep), `${base}/a/b`);
+    // Absolute inputs pass through untouched (already use native separators).
     assert.equal(out.drive, 'D:\\managed\\myelin');
     assert.equal(out.unc, '\\\\server\\share\\m');
     assert.equal(out.abspass, `${base}/.myelin`);
