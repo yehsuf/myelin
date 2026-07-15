@@ -651,12 +651,18 @@ export async function provisionManagedCompressionComponent({
   const componentsRoot = updatePaths(home).componentsRoot;
   const component = componentsImpl.headroomLite;
   try {
-    await stageComponentImpl({
-      name: 'headroomLite',
-      component,
-      root: componentsRoot,
-      platform: storagePlatform,
-    });
+    try {
+      await stageComponentImpl({
+        name: 'headroomLite',
+        component,
+        root: componentsRoot,
+        platform: storagePlatform,
+      });
+    } catch (e) {
+      // A completed immutable stage already exists — re-staging is unnecessary.
+      // Proceed directly to activation so the installer is idempotent on re-run.
+      if (e?.code !== 'ERR_COMPONENT_IMMUTABLE_STAGE_EXISTS') throw e;
+    }
     await activateComponentImpl({
       root: componentsRoot,
       name: 'headroomLite',
