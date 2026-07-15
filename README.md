@@ -144,15 +144,14 @@ myelin stats           # compression statistics
 myelin config show     # view current settings
 ```
 
-Expected output:
+Expected output (rows vary by config — this is the default `proxy.engine: headroom` profile):
 ```
-✓ headroom proxy    :8787  healthy    # or: headroom-lite :8790 if proxy.engine=headroom_lite
-✓ mitmproxy         :8888  healthy
-✓ serena            MCP    ready
-✓ semble            MCP    ready
-✓ rtk               shell  ready
-✓ enforcement hooks        active
-✓ shell profile            configured
+✓ headroom service   :8787  running    # or headroom-lite :8790 if proxy.engine=headroom_lite
+✓ headroom health    :8787  healthy
+✓ mitmproxy service  :8888  running
+✓ rtk                       ready
+✓ ast-grep                  ready
+✓ semble                    ready
 ```
 
 ---
@@ -276,36 +275,27 @@ node src/install.mjs --yes
 
 ## Uninstall
 
+The service name is the same regardless of which engine (`headroom` or `headroom_lite`) is selected — only one primary service and one optional copilot-role service ever exist.
+
 ```bash
-# macOS (Python Headroom)
+# macOS
 launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
 launchctl bootout gui/$(id -u)/com.myelin.headroom 2>/dev/null
+launchctl bootout gui/$(id -u)/com.myelin.copilot-headroom 2>/dev/null   # only if proxy.copilot_headroom.enabled was true
 rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
 rm ~/Library/LaunchAgents/com.myelin.headroom.plist
+rm -f ~/Library/LaunchAgents/com.myelin.copilot-headroom.plist
 
-# macOS (Headroom Lite — if proxy.engine was headroom_lite)
-launchctl bootout gui/$(id -u)/com.myelin.mitmproxy 2>/dev/null
-launchctl bootout gui/$(id -u)/com.myelin.headroom-lite 2>/dev/null
-rm ~/Library/LaunchAgents/com.myelin.mitmproxy.plist
-rm ~/Library/LaunchAgents/com.myelin.headroom-lite.plist
-
-# Linux (Python Headroom)
-systemctl --user disable --now myelin-mitmproxy.service myelin-headroom.service
-rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom.service
+# Linux
+systemctl --user disable --now myelin-mitmproxy.service myelin-headroom.service myelin-copilot-headroom.service 2>/dev/null
+rm -f ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom.service ~/.config/systemd/user/myelin-copilot-headroom.service
 systemctl --user daemon-reload
 
-# Linux (Headroom Lite — if proxy.engine was headroom_lite)
-systemctl --user disable --now myelin-mitmproxy.service myelin-headroom-lite.service
-rm ~/.config/systemd/user/myelin-mitmproxy.service ~/.config/systemd/user/myelin-headroom-lite.service
-systemctl --user daemon-reload
-
-# Windows (Python Headroom)
+# Windows
 Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
 Unregister-ScheduledTask -TaskName "MyelinHeadroom" -Confirm:$false
+Unregister-ScheduledTask -TaskName "MyelinCopilotHeadroom" -Confirm:$false   # only if proxy.copilot_headroom.enabled was true
 
-# Windows (Headroom Lite — if proxy.engine was headroom_lite)
-Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
-Unregister-ScheduledTask -TaskName "MyelinHeadroomLite" -Confirm:$false
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block
 rm -rf ~/.myelin

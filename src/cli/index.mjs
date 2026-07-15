@@ -70,7 +70,7 @@ program.command('init')
   });
 
 program.command('restart')
-  .description('Restart headroom and mitmproxy services')
+  .description('Restart the selected engine (headroom or headroom-lite) and mitmproxy services')
   .action(async () => {
     const { runRestart } = await import('./restart.mjs');
     await runRestart();

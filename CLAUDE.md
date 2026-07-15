@@ -12,7 +12,7 @@ Node.js ESM, Commander.js, TDD (`node --test`), feature-branch → PR git workfl
 ~/tokenstack/          # reference clone ONLY — never edit or run experiments here.
                        # All work happens in a ~/myelin-agents/<agent>/ worktree.
 myelin verify          # health check
-npm test               # 272 tests
+npm test               # 1088 tests
 ```
 
 ### Windows (`yeh-legion.local`)
@@ -174,10 +174,12 @@ Copilot CLI / Claude Code
     │  HTTPS_PROXY=http://127.0.0.1:8888
     ▼
 mitmproxy :8888  (src/mitm/copilot_addon.py)
-    │  POST /v1/compress  →  headroom :8787
+    │  POST /v1/compress  →  selected engine
     │  Tool filter, RAG inject, thrash cache
     ▼
-Headroom proxy :8787  (headroom-ai PyPI)
+Selected engine (set by proxy.engine):
+  headroom     :8787  Python Headroom (headroom-ai PyPI)
+  headroom_lite :8790  Headroom Lite (Node.js, no Python dep)
     │  Compression pipeline (cache-mode, TOIN)
     ▼
 Real API (api.githubcopilot.com / api.anthropic.com)
@@ -206,7 +208,9 @@ Optional: LiteLLM :4000 in front of the chain (budget routing + model fallback).
 
 ## Config keys (important)
 ```yaml
+proxy.engine: headroom             # or headroom_lite (set by proxy.engine)
 proxy.headroom.port: 8787
+proxy.headroom_lite.port: 8790
 proxy.mitm.port: 8888
 proxy.copilot_headroom.enabled: false   # dedicated Copilot-Headroom instance
 code_discovery.serena.enabled: true
