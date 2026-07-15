@@ -10,18 +10,18 @@ import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { managedPaths, joinManaged, resolveMyelinRoot } from '../shared/myelin-paths.mjs';
 
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const HEADROOM_KEY = 'MyelinHeadroom';
+const HEADROOM_KEY = 'MyelinCompression';
 const MITM_KEY = 'MyelinMitmproxy';
-const COPILOT_HEADROOM_KEY = 'MyelinCopilotHeadroom';
+const COPILOT_HEADROOM_KEY = 'MyelinCopilotCompression';
 const WSL_SYSTEM_PROFILE_NAMES = new Set(['public', 'all users', 'default', 'default user', 'windows', 'wpsystem']);
 const nodeExecFileSync = execFileSync;
 const nodeExecSync = execSync;
 const nodeExistsSync = existsSync;
 const nodeReaddirSync = readdirSync;
 
-export const HEADROOM_SERVICE_ID = 'myelin-headroom';
+export const HEADROOM_SERVICE_ID = 'myelin-compression';
 export const MITM_SERVICE_ID = 'myelin-mitmproxy';
-export const COPILOT_HEADROOM_SERVICE_ID = 'myelin-copilot-headroom';
+export const COPILOT_HEADROOM_SERVICE_ID = 'myelin-copilot-compression';
 
 function engineInstanceIdentity(instance = {}) {
   const { engine, role } = instance;

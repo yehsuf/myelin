@@ -562,7 +562,7 @@ describe('engine instance service generators', () => {
       const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : HEADROOM_LITE_FIXTURE.entrypoint;
       const expectedWindowsBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
       const expectedLabel = role === 'primary' ? 'com.myelin.compression' : 'com.myelin.copilot-headroom';
-      const expectedServiceId = role === 'primary' ? 'myelin-headroom' : 'myelin-copilot-headroom';
+      const expectedServiceId = role === 'primary' ? 'myelin-compression' : 'myelin-copilot-compression';
       const expectedWindowsServiceId = instance.id;
       const expectedWindowsRunKey = `Myelin${instance.id.split(/[-_]/u)
         .map((part) => part[0].toUpperCase() + part.slice(1))
@@ -875,7 +875,7 @@ describe('Windows engine descriptor migration ownership', () => {
     assert.equal(scripts.length, 2);
     assert.ok(scripts[0].includes('state\\headroom-copilot\\start-headroom-copilot.ps1'));
     assert.ok(scripts[1].includes('.myelin\\copilot-headroom\\start-copilot-headroom.ps1'));
-    assert.ok(scripts[1].includes("MyelinCopilotHeadroom"));
+    assert.ok(scripts[1].includes("MyelinCopilotCompression"));
     assert.ok(scripts[1].includes('ParentProcessId'));
     assert.ok(scripts[1].includes('ExecutablePath -eq $launcherExecutable'));
   });
@@ -1052,7 +1052,7 @@ describe('Windows engine descriptor migration ownership', () => {
       port: 8787,
       id: 'headroom-primary',
       legacy: true,
-      stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom',
+      stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression',
       logPath: 'C:\\Users\\alice\\.myelin\\headroom.log',
       healthUrl: 'http://127.0.0.1:8787/health',
     }, {
@@ -1079,7 +1079,7 @@ describe('Windows engine descriptor migration ownership', () => {
         port: 8787,
         id: 'headroom-primary',
         legacy: true,
-        stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom',
+        stateDir: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression',
         logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
         healthUrl: 'http://127.0.0.1:8787/health',
       },
@@ -1295,7 +1295,7 @@ describe('windows run-script generator', () => {
 
   it('contains registry run key name', () => {
     const script = generateHeadroomRunScript(OPTS);
-    assert.ok(script.includes('MyelinHeadroom'));
+    assert.ok(script.includes('MyelinCompression'));
   });
   it('contains command path', () => {
     const script = generateHeadroomRunScript(OPTS);
@@ -1367,7 +1367,7 @@ describe('windows run-script generator', () => {
     // Direct Run-key commands have no durable process ownership proof, so a
     // migration removes only their stale registration.
     assert.doesNotMatch(command, /C:\\Users\\alice\\\.myelin\\bin\\headroom\.exe/);
-    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue`));
+    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinCompression' -ErrorAction SilentlyContinue`));
   });
 
   it('removes a direct legacy registration after a port migration without stopping a matching listener', () => {
@@ -1385,7 +1385,7 @@ describe('windows run-script generator', () => {
       }),
     });
     assert.ok(command.includes('ProcessId = $managedPid'));
-    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinHeadroom' -ErrorAction SilentlyContinue`));
+    assert.ok(command.includes(`Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'MyelinCompression' -ErrorAction SilentlyContinue`));
     assert.doesNotMatch(command, /C:\\Users\\alice\\\.myelin\\bin\\headroom\.exe/);
   });
 });
@@ -1468,15 +1468,15 @@ describe('serviceStatus', () => {
       home: 'C:\\Users\\alice',
       ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-ItemProperty')) {
-          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
+          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-compression\\start-headroom.ps1"\n');
         }
-        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1'")) {
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\start-headroom.ps1'")) {
           return Buffer.from([
             '# Managed by myelin. Keeps Headroom env scoped to this process tree.',
             "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 8787' -WindowStyle Hidden -PassThru",
           ].join('\n'));
         }
-        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid'")) {
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\headroom.pid'")) {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Running\n');
@@ -1488,8 +1488,8 @@ describe('serviceStatus', () => {
     });
 
     assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
-    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1' -Raw")));
-    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid' -Raw")));
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\start-headroom.ps1' -Raw")));
+    assert.ok(commands.some((command) => command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\headroom.pid' -Raw")));
     assert.ok(commands.some((command) => command.includes('ProcessId = $managedPid')));
     assert.ok(commands.some((command) => command.includes(`ExecutablePath -eq 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe'`)));
     assert.ok(commands.some((command) => command.includes('--port 8787')));
@@ -1522,15 +1522,15 @@ describe('serviceStatus', () => {
       home: 'C:\\Users\\alice',
       ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-ItemProperty')) {
-          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
+          return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-compression\\start-headroom.ps1"\n');
         }
-        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1'")) {
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\start-headroom.ps1'")) {
           return Buffer.from([
             '# Managed by myelin. Keeps Headroom env scoped to this process tree.',
             "Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom.exe' -ArgumentList 'proxy --port 8788 --mode cache --connect-timeout-seconds 10' -WindowStyle Hidden -PassThru",
           ].join('\n'));
         }
-        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\headroom.pid'")) {
+        if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\headroom.pid'")) {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Stopped\n');
@@ -1572,8 +1572,8 @@ describe('Windows watchdog generators', () => {
 
     assert.equal(result.taskName, 'Myelin Headroom Watchdog');
     assert.deepEqual(unlinked, [
-      'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.ps1',
-      'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.log',
+      'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\watchdog.ps1',
+      'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\watchdog.log',
     ]);
     assert.ok(deleteScript.includes('Unregister-ScheduledTask'));
     assert.ok(deleteScript.includes('Myelin Headroom Watchdog'));
@@ -1601,7 +1601,7 @@ describe('Windows watchdog generators', () => {
 
     assert.deepEqual(calls.map(({ type }) => type), ['uninstall', 'install']);
     assert.equal(calls[0].opts.id, HEADROOM_SERVICE_ID);
-    assert.equal(calls[1].opts.id, 'myelin-copilot-headroom');
+    assert.equal(calls[1].opts.id, 'myelin-copilot-compression');
     assert.equal(calls[1].opts.serviceName, 'Myelin Copilot Headroom');
   });
 
@@ -1631,7 +1631,7 @@ describe('Windows watchdog generators', () => {
 
 describe('WinSW XML generator', () => {
   const WINSW_OPTS = {
-    id: 'myelin-headroom',
+    id: 'myelin-compression',
     name: 'Myelin Headroom',
     description: 'Myelin token-efficiency proxy (Headroom)',
     executable: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
@@ -1643,7 +1643,7 @@ describe('WinSW XML generator', () => {
 
   it('contains the service id, executable, and arguments', () => {
     const xml = generateWinswConfigXml(WINSW_OPTS);
-    assert.ok(xml.includes('<id>myelin-headroom</id>'));
+    assert.ok(xml.includes('<id>myelin-compression</id>'));
     assert.ok(xml.includes(WINSW_OPTS.executable));
     assert.ok(xml.includes(WINSW_OPTS.arguments));
   });
@@ -2111,7 +2111,7 @@ describe('Windows watchdog generators', () => {
   const home = 'C:\\Users\\alice';
   const configPath = winswConfigPath({ id: HEADROOM_SERVICE_ID, home });
   const exePath = winswExecutablePath({ id: HEADROOM_SERVICE_ID, home });
-  const logPath = 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.log';
+  const logPath = 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\watchdog.log';
 
   it('builds a healthcheck script that probes /health and restarts via WinSW', () => {
     const script = generateWindowsWatchdogHealthcheckScript({
@@ -2133,7 +2133,7 @@ describe('Windows watchdog generators', () => {
   it('builds a Scheduled Task creation script with minute cadence', () => {
     const script = generateWindowsWatchdogTaskCreateScript({
       taskName: 'Myelin Headroom Watchdog',
-      scriptPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\watchdog.ps1',
+      scriptPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\watchdog.ps1',
       intervalMinutes: 2,
     });
     assert.ok(script.includes('schtasks.exe /create'));
@@ -2162,7 +2162,7 @@ describe('windows copilot-headroom run-script generator', () => {
   };
   it('contains a distinct registry run key name from the Claude-Headroom instance', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);
-    assert.ok(script.includes('MyelinCopilotHeadroom'));
+    assert.ok(script.includes('MyelinCopilotCompression'));
   });
   it('sets -WorkingDirectory for state isolation', () => {
     const script = generateCopilotHeadroomRunScript(CH_OPTS);
@@ -2662,12 +2662,12 @@ describe('linkGlobalBin', () => {
 describe('spawnDetachedService', () => {
   it('passes exe and argStr to the PS script (Task Scheduler path)', () => {
     const scripts = [];
-    spawnDetachedService('MyelinHeadroom', 'C:\\bin\\headroom.exe', 'proxy --port 8787', {
+    spawnDetachedService('MyelinCompression', 'C:\\bin\\headroom.exe', 'proxy --port 8787', {
       runPsFn: (s) => scripts.push(s),
     });
     assert.equal(scripts.length, 1);
     const s = scripts[0];
-    assert.ok(s.includes('MyelinHeadroom'), 'task name present');
+    assert.ok(s.includes('MyelinCompression'), 'task name present');
     assert.ok(s.includes('headroom.exe'), 'exe present');
     assert.ok(s.includes('proxy --port 8787'), 'args present');
     assert.ok(s.includes('Register-ScheduledTask'), 'uses task scheduler');

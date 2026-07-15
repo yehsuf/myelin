@@ -1117,7 +1117,7 @@ describe('buildDownstreamProxyServiceInstallOptions', () => {
     });
 
     assert.deepEqual(installed.map(({ id }) => id), ['headroom-primary', 'headroom-copilot']);
-    assert.ok(installed.every(({ id }) => id !== 'myelin-headroom'));
+    assert.ok(installed.every(({ id }) => id !== 'myelin-compression'));
   });
 
   it('sets watchdogOpts.headroomPort for headroom_lite so macOS launchd watchdog covers the primary', () => {
