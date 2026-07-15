@@ -251,7 +251,7 @@ describe('versioned component store', { concurrency: false }, () => {
       }),
       /simulated previous replacement failure/,
     );
-    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability(), platform: 'linux' }), {
       current: '0.43.0',
       previous: '0.42.0',
     });
