@@ -294,6 +294,7 @@ systemctl --user daemon-reload
 # Windows
 Unregister-ScheduledTask -TaskName "MyelinMitmproxy" -Confirm:$false
 Unregister-ScheduledTask -TaskName "MyelinHeadroom" -Confirm:$false
+Unregister-ScheduledTask -TaskName "MyelinCopilotHeadroom" -Confirm:$false   # only if proxy.copilot_headroom.enabled was true
 
 # Edit ~/.zshrc (macOS) or ~/.bashrc (Linux) and remove the
 # '# >>> myelin managed >>>' ... '# <<< myelin managed <<<' block

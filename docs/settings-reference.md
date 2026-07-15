@@ -326,7 +326,7 @@ Controls how much memory the indexing layer uses. Determines which LSP servers a
 
 **What you lose from `full`:** Memory. A `default` → `full` switch on a TypeScript project might cost +400MB (tsserver) or +1-3GB (rust-analyzer). Your laptop will notice.
 
-**Tip:** Use `myelin stats` to see current RAM usage per LSP. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
+**Tip:** Use `myelin stats` to see current compression and token-savings stats. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
 
 ```bash
 myelin config set index_tier light    # reduce memory pressure
