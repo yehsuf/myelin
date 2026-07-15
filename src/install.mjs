@@ -133,6 +133,21 @@ export function installPipPackageInManagedVenv(venv, spec, {
   execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], { stdio });
 }
 
+/**
+ * Resolves the proxy port written into Claude/shell/wrapper env config.
+ *
+ * A running primary engine instance owns the port. When there is none — a
+ * `compression.backend: disabled` config (or an mcp/no-headroom install where
+ * no engine service runs) — the primary instance is absent, so fall back to the
+ * NOMINAL canonical port from the service plan. This keeps the emitted
+ * HEADROOM_PORT / ANTHROPIC_BASE_URL a real integer instead of the literal
+ * string "null".
+ */
+export function resolveProxyEnvPort(cfg = {}, primaryInstance = null) {
+  return primaryInstance?.port ?? buildServiceEnginePlan(cfg).selectedPort;
+
+}
+
 function isVersionAtLeast(version, minimum) {
   const parse = (v) => v.replace(/^v/i, '').split('.').map(n => parseInt(n, 10) || 0);
   const a = parse(version ?? '0.0.0');
@@ -2360,9 +2375,9 @@ async function main() {
   // any stale entry mergeJsonFile previously wrote (mergeDeepPlain otherwise
   // never deletes keys — only overlays what's present in the update object).
   let codegraphReady = codegraphEnabled && tools.codegraph.installed;
-  let port = initialPrimaryInstance?.port ?? null;
+  let port = resolveProxyEnvPort(existingCfg, initialPrimaryInstance);
   let selectedInstallEngine = initialEnginePlan.engine;
-  let selectedProxyPort = initialPrimaryInstance?.port ?? null;
+  let selectedProxyPort = resolveProxyEnvPort(existingCfg, initialPrimaryInstance);
   if (initialEnginePlan.engine === 'headroom' && !(await isPortFree(port))) {
     const alreadyOurs = await import('./tools/headroom.mjs').then(m => m.waitForHeadroom(port, 1500)).catch(() => false);
     if (alreadyOurs) {

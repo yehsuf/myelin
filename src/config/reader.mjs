@@ -50,7 +50,7 @@ function proxyAliasFor(backend, compression, userProxy = {}) {
     (canonicalValue != null && !Object.hasOwn(userScope, key)) ? { [key]: canonicalValue } : {};
 
   const copilotAlias = {
-    enabled: compression.copilot_proxy?.enabled === true,
+    ...ifUnset(userCopilot, 'enabled', compression.copilot_proxy?.enabled === true),
     ...ifUnset(userCopilot, 'port', compression.copilot_proxy?.port),
     ...ifUnset(userCopilot, 'mode', original.mode),
   };

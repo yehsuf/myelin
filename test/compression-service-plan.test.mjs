@@ -9,7 +9,7 @@ import {
   buildServiceEnginePlan,
 } from '../src/config/engine-runtime.mjs';
 import { resolveMitmCompression } from '../src/config/compression-env.mjs';
-import { applyServiceEngineInstallPlan } from '../src/install.mjs';
+import { applyServiceEngineInstallPlan, resolveProxyEnvPort } from '../src/install.mjs';
 import { runRestart } from '../src/cli/restart.mjs';
 
 const TEST_DIR = join(homedir(), '.tokenstack-service-plan-test');
@@ -123,5 +123,35 @@ describe('canonical compression.* drives the install/restart service plan', () =
     assert.ok(!events.some((e) => e.startsWith('start:')), `expected no engine starts, got ${events}`);
     assert.ok(events.includes('remove:headroom:primary'));
     assert.ok(events.includes('remove:headroom_lite:primary'));
+  });
+
+  it('preserves an explicit proxy.copilot_headroom.enabled under canonical compression.backend', async () => {
+    // The user set the legacy Copilot proxy toggle explicitly; canonical
+    // compression.backend must NOT clobber it back to the default (false).
+    const cfg = await load(
+      'compression:\n  backend: headroom-lite\nproxy:\n  copilot_headroom:\n    enabled: true\n',
+    );
+    assert.equal(cfg.proxy.copilot_headroom.enabled, true);
+    // And the wiring flows through: an enabled Copilot proxy yields a copilot instance.
+    assert.ok(copilotOf(buildEngineInstancePlan(cfg)), 'expected a copilot engine instance');
+
+    // The reverse override is also respected: explicit false wins over a
+    // canonically-enabled Copilot proxy.
+    const off = await load(
+      'compression:\n  backend: headroom-lite\n  copilot_proxy:\n    enabled: true\nproxy:\n  copilot_headroom:\n    enabled: false\n',
+    );
+    assert.equal(off.proxy.copilot_headroom.enabled, false);
+  });
+
+  it('resolves a nominal canonical proxy env port when disabled has no primary instance', async () => {
+    // disabled backend => no engine instances; the Claude/shell/wrapper config
+    // must still receive a real numeric port, never null/"null".
+    const cfg = await load('compression:\n  backend: disabled\n');
+    const primary = primaryOf(buildEngineInstancePlan(cfg));
+    assert.equal(primary, undefined);
+    const envPort = resolveProxyEnvPort(cfg, primary);
+    assert.equal(typeof envPort, 'number');
+    assert.ok(Number.isInteger(envPort) && envPort > 0, `expected a real port, got ${envPort}`);
+    assert.equal(String(envPort) === 'null', false);
   });
 });
