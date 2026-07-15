@@ -13,6 +13,8 @@ import {
   rollbackUpdate,
   recoverUpdateJournal,
 } from '../src/update/update-orchestrator.mjs';
+import { resolveCompressionConfig } from '../src/update/engine-selection.mjs';
+import { load as loadYaml } from 'js-yaml';
 
 const temporaryRoots = [];
 
@@ -165,6 +167,26 @@ describe('planUpdate', () => {
       () => planUpdate({ channel: 'nightly', config: {}, manifest: {}, target: { version: '1.1.0' } }),
       /invalid update channel/i,
     );
+  });
+
+  it('keeps an explicit legacy Copilot toggle when planning raw-YAML config (bypasses loadConfig)', () => {
+    // The orchestrator parses the config file with js-yaml directly and never
+    // runs loadConfig's canonical<->legacy reconciliation. A raw config that
+    // selects a canonical backend but enables the Copilot proxy via the LEGACY
+    // key must still resolve to copilotProxy.enabled=true, or the update would
+    // stop a Copilot proxy the user explicitly enabled.
+    const parsed = loadYaml(
+      'compression:\n  backend: headroom-lite\nproxy:\n  copilot_headroom:\n    enabled: true\n',
+    );
+    const plan = planUpdate({
+      channel: 'stable',
+      config: parsed,
+      manifest: { headroomLite: { version: '0.31.0' } },
+      target: { version: '1.1.0' },
+    });
+    // Mirrors the orchestrator's own consumption at activateUpdate:
+    // resolveCompressionConfig(plan.config).
+    assert.equal(resolveCompressionConfig(plan.config).copilotProxy.enabled, true);
   });
 });
 

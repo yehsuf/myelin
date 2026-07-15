@@ -14,7 +14,7 @@
  * present onto that shape so the update subsystem stays backend-agnostic.
  */
 import { normalizeCompressionEngine } from '../config/schema.mjs';
-import { COMPRESSION_BACKENDS } from '../config/compression.mjs';
+import { COMPRESSION_BACKENDS, reconcileCanonicalCopilotEnabled } from '../config/compression.mjs';
 import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 
 const DEFAULT_COPILOT_PORT = 8788;
@@ -62,10 +62,13 @@ export function resolveCompressionConfig(config = {}) {
   const copilot = hasCanonicalBackend(config)
     ? (config.compression.copilot_proxy ?? {})
     : (config?.proxy?.copilot_headroom ?? {});
+  // Raw-YAML update path bypasses loadConfig, so reconcile an explicit legacy
+  // Copilot toggle into the canonical value here (shared with config/reader.mjs).
+  const reconciledEnabled = reconcileCanonicalCopilotEnabled(config);
   return {
     backend,
     copilotProxy: {
-      enabled: copilot.enabled === true,
+      enabled: reconciledEnabled ?? (copilot.enabled === true),
       port: copilot.port ?? DEFAULT_COPILOT_PORT,
     },
   };

@@ -6,6 +6,36 @@ export const COMPRESSION_BACKENDS = Object.freeze([
 
 const DEFAULT_PORT = 8787;
 
+function isObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Reconciles an explicit LEGACY `proxy.copilot_headroom.enabled` toggle into the
+ * canonical `compression.copilot_proxy.enabled` value for a raw config that
+ * carries a canonical `compression.backend`.
+ *
+ * Precedence mirrors reader.mjs `proxyAliasFor`'s `ifUnset`: an explicit
+ * canonical value always wins; only when the canonical `enabled` is UNSET and
+ * the legacy `enabled` is SET does the legacy value flow into the canonical
+ * block. Returns the effective boolean, or `undefined` when no reconciliation
+ * applies.
+ *
+ * Shared by config/reader.mjs (the loadConfig path) and
+ * update/engine-selection.mjs (the raw-YAML update path that parses the config
+ * with js-yaml directly and never runs loadConfig).
+ */
+export function reconcileCanonicalCopilotEnabled(config = {}) {
+  const compression = isObject(config?.compression) ? config.compression : null;
+  if (!compression || compression.backend == null) return undefined;
+  const canonicalCopilot = isObject(compression.copilot_proxy) ? compression.copilot_proxy : {};
+  if (Object.hasOwn(canonicalCopilot, 'enabled')) return undefined;
+  const proxy = isObject(config?.proxy) ? config.proxy : {};
+  const legacyCopilot = isObject(proxy.copilot_headroom) ? proxy.copilot_headroom : {};
+  if (!Object.hasOwn(legacyCopilot, 'enabled')) return undefined;
+  return legacyCopilot.enabled === true;
+}
+
 function asPort(value, fallback = DEFAULT_PORT) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535

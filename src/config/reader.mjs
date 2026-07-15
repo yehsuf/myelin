@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { load as parse } from 'js-yaml';
 import { DEFAULT_CONFIG, mergeDeep, normalizeCompressionEngine } from './schema.mjs';
-import { COMPRESSION_BACKENDS } from './compression.mjs';
+import { COMPRESSION_BACKENDS, reconcileCanonicalCopilotEnabled } from './compression.mjs';
 import { homedir } from 'node:os';
 import { managedPaths } from '../shared/myelin-paths.mjs';
 
@@ -111,11 +111,10 @@ function deriveCanonicalCompression(merged, userConfig) {
     // reads the canonical `compression.copilot_proxy.enabled` (see
     // update/engine-selection.mjs resolveCompressionConfig); without this it
     // would see the canonical default and stop a Copilot proxy the user
-    // explicitly enabled.
-    const userCopilot = isPlainObject(userProxy.copilot_headroom) ? userProxy.copilot_headroom : {};
-    const userCanonicalCopilot = isPlainObject(userCompression.copilot_proxy) ? userCompression.copilot_proxy : {};
-    if (Object.hasOwn(userCopilot, 'enabled') && !Object.hasOwn(userCanonicalCopilot, 'enabled')) {
-      compression.copilot_proxy = { ...compression.copilot_proxy, enabled: userCopilot.enabled === true };
+    // explicitly enabled. Shared helper keeps both read paths consistent.
+    const reconciledCopilotEnabled = reconcileCanonicalCopilotEnabled(userConfig);
+    if (reconciledCopilotEnabled !== undefined) {
+      compression.copilot_proxy = { ...compression.copilot_proxy, enabled: reconciledCopilotEnabled };
     }
 
     return { compression, proxyOverride: proxyAliasFor(backend, compression, userProxy) };
