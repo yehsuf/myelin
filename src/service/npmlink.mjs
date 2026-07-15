@@ -1,6 +1,8 @@
 import { execSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix as pathPosix } from 'node:path';
+import { chmodSync, copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, join, posix as pathPosix } from 'node:path';
+import { writeManagedLauncher } from '../runtime/launcher.mjs';
 
 /**
  * Resolve where npm puts global bin shims for a given prefix.
@@ -29,42 +31,48 @@ function isWritable(dir) {
   }
 }
 
+function makeExecutable(path) {
+  try {
+    chmodSync(path, 0o755);
+  } catch {}
+}
+
 /**
- * Attempt to expose the `myelin` command globally via npm's own bin-linking
- * mechanism (the standard, idiomatic way to ship a Node CLI), instead of
- * hand-writing shell aliases/functions. This is what package.json's "bin"
- * field is for — npm generates the platform-correct shim itself (POSIX
- * symlink+chmod, Windows .cmd/.ps1 wrapper), still just executing the same
- * source files (no bundling), so self-update via `git pull` continues to
- * work unchanged.
- *
- * Accepts an optional `prefix` override so this can be exercised in a fully
- * isolated sandbox (e.g. `npm link --prefix /tmp/fake-prefix`) without ever
- * touching the real global npm state — used by tests and pre-deploy checks.
- *
- * Gracefully returns { linked: false, reason } instead of throwing when the
- * global prefix isn't writable (common on some corp machines) — callers
- * should fall back to the existing shell-alias approach in that case.
+ * Write a stable managed-runtime launcher into ~/.myelin/bin and, when the
+ * npm global prefix is writable, copy the platform-specific command shim into
+ * npm's global bin dir. This avoids ever executing a caller checkout.
  */
-export function linkGlobalBin({ repoRoot, os, prefix = null } = {}) {
+export function linkGlobalBin({ os, prefix = null, home = homedir() } = {}) {
   try {
     const resolvedPrefix = prefix
       ?? execSync('npm config get prefix', { stdio: 'pipe' }).toString().trim();
-    const binDir = resolveGlobalBinDir(resolvedPrefix, os);
-    if (!isWritable(binDir)) {
-      return { linked: false, reason: `no write access to npm global bin dir (${binDir})`, binDir };
+    const globalBinDir = resolveGlobalBinDir(resolvedPrefix, os);
+    const launcher = writeManagedLauncher({ home, os });
+
+    if (!isWritable(globalBinDir)) {
+      return {
+        linked: false,
+        reason: `no write access to npm global bin dir (${globalBinDir})`,
+        binDir: launcher.binDir,
+        launcherPath: launcher.launcherPath,
+        commandPath: launcher.commandPath,
+      };
     }
-    // `npm link` is always implicitly global — `-g`/`--global` is rejected as
-    // redundant, and the `--prefix` CLI flag means something different in
-    // this context (it's read as "project root to link", not "global
-    // install location", causing an ENOENT looking for package.json there).
-    // The sanctioned way to override the global prefix for one invocation
-    // is the npm_config_prefix env var — verified live against a real
-    // sandboxed prefix.
-    const env = prefix ? { ...process.env, npm_config_prefix: prefix } : process.env;
-    execSync('npm link --registry https://registry.npmjs.org', { cwd: repoRoot, stdio: 'pipe', env });
-    return { linked: true, reason: null, binDir };
+
+    const linkedCommandPath = join(globalBinDir, basename(launcher.commandPath));
+    if (linkedCommandPath !== launcher.commandPath) {
+      copyFileSync(launcher.commandPath, linkedCommandPath);
+      makeExecutable(linkedCommandPath);
+    }
+
+    return {
+      linked: true,
+      reason: null,
+      binDir: globalBinDir,
+      launcherPath: launcher.launcherPath,
+      commandPath: linkedCommandPath,
+    };
   } catch (e) {
-    return { linked: false, reason: e.message.split('\n')[0], binDir: null };
+    return { linked: false, reason: e.message.split('\n')[0], binDir: null, launcherPath: null, commandPath: null };
   }
 }

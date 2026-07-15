@@ -1,18 +1,22 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { existsSync } from 'node:fs';
-import { win32 as pathWin32 } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import {
   applyServiceEngineInstallPlan,
   applyMitmServiceInstallPlan,
   buildDownstreamProxyServiceInstallOptions,
   buildManagedHeadroomRunKeyCleanupCommand,
   buildMitmServiceInstallOptions,
+  buildHeadroomStopExec,
   ensureManagedHeadroomService,
-  mitmAddonPath,
+  ensureManagedVenv,
+  installPipPackageInManagedVenv,
   removeManagedHeadroomRegistration,
   shouldInstallPythonHeadroomPackage,
+  stopLegacyManagedProxies,
+  stopManagedUvToolProcess,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
@@ -40,6 +44,60 @@ describe('shouldInstallPythonHeadroomPackage', () => {
         },
       },
     }), true);
+  });
+});
+
+describe('ensureManagedVenv / installPipPackageInManagedVenv (C: MYELIN_DIR venv never reaches a shell)', () => {
+  // A venv path derived from a relocated MYELIN_DIR is arbitrary user text. It
+  // MUST reach `uv` as a single literal argv element via execFileSync — never
+  // interpolated into an execSync shell string where `"`, `$(...)`, backticks or
+  // `'` could break out into command execution.
+  const HOSTILE_VENV = 'C:\\Users\\dev\\my "weird" $(calc) `bt` \'root\'\\venv';
+
+  it('ensureManagedVenv calls execFileSync(uv, [venv, <venv>]) with the venv as ONE literal argv element', () => {
+    const calls = [];
+    ensureManagedVenv(HOSTILE_VENV, {
+      existsSyncImpl: () => false, // pyvenv.cfg missing → must create
+      execFileSyncImpl: (file, args, opts) => { calls.push({ file, args, opts }); return Buffer.from(''); },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, 'uv', 'must invoke the uv binary directly (no shell)');
+    assert.ok(Array.isArray(calls[0].args), 'args must be an argv array, not a shell string');
+    assert.deepEqual(calls[0].args, ['venv', HOSTILE_VENV]);
+    // The venv is a discrete, byte-for-byte-verbatim element — never escaped,
+    // split, or embedded in a larger command string.
+    assert.equal(calls[0].args[1], HOSTILE_VENV);
+    assert.ok(!calls[0].args.some((a) => /uv venv/.test(a)), 'no shell command string may be built');
+  });
+
+  it('ensureManagedVenv does NOT recreate the venv when pyvenv.cfg already exists', () => {
+    const calls = [];
+    ensureManagedVenv(HOSTILE_VENV, {
+      existsSyncImpl: () => true, // already present
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); },
+    });
+    assert.deepEqual(calls, []);
+  });
+
+  it('installPipPackageInManagedVenv passes venv + spec as literal argv (no shell parses [extras] / >=)', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'headroom-ai[all]', {
+      execFileSyncImpl: (file, args, opts) => { calls.push({ file, args, opts }); },
+    });
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, 'uv');
+    assert.deepEqual(calls[0].args, ['pip', 'install', '--python', HOSTILE_VENV, 'headroom-ai[all]']);
+    // venv + spec are each ONE argv element, verbatim.
+    assert.equal(calls[0].args[3], HOSTILE_VENV);
+    assert.equal(calls[0].args[4], 'headroom-ai[all]');
+  });
+
+  it('installPipPackageInManagedVenv keeps a litellm[proxy]>=1.92 spec intact as a literal argv element', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'litellm[proxy]>=1.92', {
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); },
+    });
+    assert.deepEqual(calls[0].args, ['pip', 'install', '--python', HOSTILE_VENV, 'litellm[proxy]>=1.92']);
   });
 });
 
@@ -712,18 +770,9 @@ describe('buildMitmServiceInstallOptions', () => {
 
     assert.equal(opts.home, 'C:\\Users\\alice');
     assert.equal(opts.mitmdumpBin, 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\mitmdump.exe');
-    const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
-    const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
-    const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
-      || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
     assert.equal(
       opts.addonPath,
-      pathWin32.join(
-        useCanonicalRepo ? canonicalRepo : currentRepo,
-        'src',
-        'mitm',
-        'copilot_addon.py',
-      ),
+      'C:\\Users\\alice\\.myelin\\runtime-bridge\\src\\mitm\\copilot_addon.py',
     );
     assert.equal(opts.logPath, 'C:\\Users\\alice\\.myelin\\mitmproxy.log');
     assert.equal(opts.envVars.REQUESTS_CA_BUNDLE, 'C:\\ProgramData\\Corp\\ca.pem');
@@ -844,12 +893,6 @@ describe('buildMitmServiceInstallOptions', () => {
     );
   });
 
-  it('rejects a native WSL repo root before addon service paths can become \\home paths', () => {
-    assert.throws(
-      () => mitmAddonPath('/home/alice', 'windows'),
-      /Windows-service.*home|home.*Windows-service/i,
-    );
-  });
 });
 
 describe('buildDownstreamProxyServiceInstallOptions', () => {
@@ -1062,5 +1105,326 @@ describe('removeManagedHeadroomRegistration', () => {
     assert.equal(stops[0].home, 'C:\\Users\\alice');
     assert.equal(stops[0].port, 8787);
     assert.ok(commands[0].startsWith('powershell.exe '));
+  });
+});
+
+describe('stopLegacyManagedProxies (C1: no name-based process kill)', () => {
+  function makeTempDir(name) {
+    const dir = join(process.cwd(), '.test-artifacts', `${name}-${process.pid}-${randomBytes(4).toString('hex')}`);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  function writePidFile(oldDir, serviceId, pidName, pid) {
+    const dir = join(oldDir, 'services', serviceId);
+    mkdirSync(dir, { recursive: true });
+    const pidPath = join(dir, pidName);
+    writeFileSync(pidPath, `${pid}\n`, 'utf8');
+    return pidPath;
+  }
+
+  it('is a no-op on non-windows platforms', () => {
+    const oldDir = makeTempDir('legacy-noop');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 4242);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'darwin',
+        oldDir,
+        processInfoFn: () => { throw new Error('should not query on non-windows'); },
+        stopPidFn: (pid) => kills.push(pid),
+      });
+      assert.deepEqual(result, { stopped: [], skipped: [] });
+      assert.deepEqual(kills, []);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT kill an unrelated same-named process (path not under the managed dir)', () => {
+    const oldDir = makeTempDir('legacy-unrelated');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 4242);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        // A DIFFERENT headroom.exe installed elsewhere on the machine that
+        // happens to have reused (or coincidentally matches) the recorded pid.
+        processInfoFn: () => ({
+          command: 'C:\\Program Files\\headroom\\headroom.exe proxy --port 8787',
+          executablePath: 'C:\\Program Files\\headroom\\headroom.exe',
+          startTime: '2024-01-01T00:00:00.0000000+00:00',
+        }),
+        stopPidFn: (pid) => kills.push(pid),
+      });
+
+      assert.deepEqual(kills, [], 'unrelated same-named process must never be killed');
+      assert.deepEqual(result.stopped, []);
+      assert.equal(result.skipped.length, 1);
+      assert.equal(result.skipped[0].pid, 4242);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT kill when the recorded pid is dead / stale (no live process)', () => {
+    const oldDir = makeTempDir('legacy-stale');
+    try {
+      writePidFile(oldDir, 'myelin-mitmproxy', 'mitm.pid', 9999);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        processInfoFn: () => null, // process no longer exists
+        stopPidFn: (pid) => kills.push(pid),
+      });
+      assert.deepEqual(kills, []);
+      assert.deepEqual(result.stopped, []);
+      assert.equal(result.skipped.length, 1);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('DOES stop a verified Myelin-managed process running from the managed dir', () => {
+    const oldDir = makeTempDir('legacy-managed');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 5555);
+      writePidFile(oldDir, 'myelin-mitmproxy', 'mitm.pid', 6666);
+      const kills = [];
+      const result = stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        processInfoFn: (pid) => ({
+          command: `${oldDir}\\venv\\Scripts\\${pid === 5555 ? 'headroom.exe proxy --port 8787' : 'mitmdump.exe'}`,
+          executablePath: `${oldDir}\\venv\\Scripts\\${pid === 5555 ? 'headroom.exe' : 'mitmdump.exe'}`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        }),
+        stopPidFn: (pid) => kills.push(pid),
+      });
+
+      assert.deepEqual(kills.sort(), [5555, 6666]);
+      assert.deepEqual(result.stopped.sort(), [5555, 6666]);
+      assert.deepEqual(result.skipped, []);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+
+  it('default stop path targets the pid (Stop-Process -Id) and NEVER a process name', () => {
+    const oldDir = makeTempDir('legacy-byid');
+    try {
+      writePidFile(oldDir, 'myelin-headroom', 'headroom.pid', 5555);
+      const commands = [];
+      stopLegacyManagedProxies({
+        os: 'windows',
+        oldDir,
+        powershellExe: 'powershell.exe',
+        // capture what the DEFAULT stopPidFn would execute
+        execSyncImpl: (cmd) => { commands.push(String(cmd)); return Buffer.from(''); },
+        processInfoFn: () => ({
+          command: `${oldDir}\\venv\\Scripts\\headroom.exe proxy`,
+          executablePath: `${oldDir}\\venv\\Scripts\\headroom.exe`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        }),
+      });
+
+      assert.equal(commands.length, 1);
+      assert.ok(commands[0].includes('Stop-Process -Id 5555'), `expected Stop-Process -Id: ${commands[0]}`);
+      assert.ok(!/-Name\b/.test(commands[0]), `must never use -Name: ${commands[0]}`);
+      assert.ok(!/headroom,mitmdump/.test(commands[0]), `must never name-kill: ${commands[0]}`);
+    } finally {
+      rmSync(oldDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('stopManagedUvToolProcess (C4: no name-based serena/semble kill)', () => {
+  const TOOL_DIR = 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools';
+
+  it('is a no-op on non-windows platforms', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'darwin',
+      toolDirFn: () => { throw new Error('should not resolve tool dir on non-windows'); },
+      processListFn: () => { throw new Error('should not enumerate on non-windows'); },
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(result, { stopped: [], skipped: [] });
+    assert.deepEqual(kills, []);
+  });
+
+  it('does NOTHING (never name-kills) when the uv tool dir cannot be verified', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => null, // `uv tool dir` failed / uv not installed
+      processListFn: () => { throw new Error('must not enumerate when tool dir unknown'); },
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'must never fall back to a name-kill');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.unverified, true);
+  });
+
+  it('does NOT kill an unrelated same-named process (path not under the uv tool dir)', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      // A DIFFERENT semble.exe the user built elsewhere on the machine.
+      processListFn: () => ([{
+        pid: 4242,
+        command: 'C:\\Users\\dev\\code\\semble\\target\\release\\semble.exe --serve',
+        executablePath: 'C:\\Users\\dev\\code\\semble\\target\\release\\semble.exe',
+        startTime: '2024-01-01T00:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'unrelated same-named process must never be killed');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 4242);
+  });
+
+  it('does NOT kill a same-named process with no StartTime (stale/unverifiable)', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([{
+        pid: 9999,
+        command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        startTime: '', // not live / cannot verify
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, []);
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+  });
+
+  it('DOES stop a verified uv-tool-managed process running from the tool dir', () => {
+    const kills = [];
+    const result = stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([
+        {
+          pid: 5555,
+          command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe start-mcp-server`,
+          executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        },
+        // A second, unrelated same-named process elsewhere — must be left alone.
+        {
+          pid: 6666,
+          command: 'D:\\other\\serena-agent.exe',
+          executablePath: 'D:\\other\\serena-agent.exe',
+          startTime: '2024-06-01T12:00:00.0000000+00:00',
+        },
+      ]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [5555], 'only the managed pid is stopped');
+    assert.deepEqual(result.stopped, [5555]);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 6666);
+  });
+
+  it('does NOT stop a SIBLING tool dir that shares a name prefix (tools-backup vs tools)', () => {
+    // Regression (I3): the ownership check used a bare substring match, so
+    // `...\uv\tools-backup\semble.exe` matched the tool dir `...\uv\tools`
+    // (the prefix `tools` is a substring of `tools-backup`). A PATH-COMPONENT
+    // boundary match must reject the sibling.
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR, // ...\uv\tools
+      processListFn: () => ([{
+        pid: 7777,
+        command: 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools-backup\\semble\\Scripts\\semble.exe --serve',
+        executablePath: 'C:\\Users\\dev\\AppData\\Roaming\\uv\\tools-backup\\semble\\Scripts\\semble.exe',
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [], 'a sibling tools-backup path must never be stopped');
+    assert.deepEqual(result.stopped, []);
+    assert.equal(result.skipped.length, 1);
+    assert.equal(result.skipped[0].pid, 7777);
+  });
+
+  it('DOES stop a genuine child under the tool dir at a component boundary (tools\\<x>)', () => {
+    // Cross-separator + case variation must still match: the tool dir uses `\`,
+    // the recorded command uses `/` and mixed case.
+    const kills = [];
+    const result = stopManagedUvToolProcess('semble', {
+      os: 'windows',
+      toolDirFn: () => TOOL_DIR, // ...\uv\tools
+      processListFn: () => ([{
+        pid: 8888,
+        command: 'C:/Users/dev/AppData/Roaming/UV/Tools/semble/Scripts/semble.exe --serve',
+        executablePath: 'C:/Users/dev/AppData/Roaming/UV/Tools/semble/Scripts/semble.exe',
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      stopPidFn: (pid) => kills.push(pid),
+    });
+    assert.deepEqual(kills, [8888], 'a genuine child of the tool dir must be stopped');
+    assert.deepEqual(result.stopped, [8888]);
+    assert.deepEqual(result.skipped, []);
+  });
+
+  it('default stop path targets the pid (Stop-Process -Id) and NEVER a process name', () => {
+    const commands = [];
+    stopManagedUvToolProcess('serena-agent', {
+      os: 'windows',
+      powershellExe: 'powershell.exe',
+      toolDirFn: () => TOOL_DIR,
+      processListFn: () => ([{
+        pid: 5555,
+        command: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        executablePath: `${TOOL_DIR}\\serena-agent\\Scripts\\serena-agent.exe`,
+        startTime: '2024-06-01T12:00:00.0000000+00:00',
+      }]),
+      // capture what the DEFAULT stopPidFn would execute
+      execSyncImpl: (cmd) => { commands.push(String(cmd)); return Buffer.from(''); },
+    });
+
+    assert.equal(commands.length, 1);
+    assert.ok(commands[0].includes('Stop-Process -Id 5555'), `expected Stop-Process -Id: ${commands[0]}`);
+    assert.ok(!/-Name\b/.test(commands[0]), `must never use -Name: ${commands[0]}`);
+    assert.ok(!/Get-Process/.test(commands[0]), `must never enumerate by Get-Process name: ${commands[0]}`);
+  });
+});
+
+describe('buildHeadroomStopExec — MYELIN_DIR-derived headroomBin injection safety', () => {
+  const EVIL_BIN = "/evil/$(touch pwned)/`whoami`/'q'/root/venv/bin/headroom";
+
+  it('passes the managed headroom binary path as a literal argv element (never interpolated into the script)', () => {
+    const { file, args } = buildHeadroomStopExec({ port: 8787, headroomBin: EVIL_BIN });
+    assert.equal(file, '/bin/bash');
+    assert.equal(args[0], '-c');
+    // The bin path is a positional parameter ($1), passed as its own opaque argv slot.
+    assert.equal(args[3], EVIL_BIN, 'headroomBin is a literal, unmodified argv element');
+    assert.equal(args[4], '8787');
+    // The script itself references $1/$2 — it NEVER embeds the payload, so bash cannot expand it.
+    const script = args[1];
+    assert.ok(!script.includes('evil'), `script must not interpolate the bin path:\n${script}`);
+    assert.ok(!script.includes('$(touch'), script);
+    assert.ok(script.includes('bin="$1"') && script.includes('port="$2"'), script);
+  });
+
+  it('is inert against command substitution when actually executed (no side effect)', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const marker = join(process.cwd(), `_headroom_stop_pwn_${randomBytes(4).toString('hex')}`);
+    const bin = `/nope/$(touch ${marker})/headroom`;
+    const { file, args } = buildHeadroomStopExec({ port: 65531, headroomBin: bin });
+    try { execFileSync(file, args, { stdio: 'pipe' }); } catch { /* lsof/no match is fine */ }
+    const { existsSync } = await import('node:fs');
+    assert.ok(!existsSync(marker), 'command substitution in the bin path must NOT execute');
   });
 });

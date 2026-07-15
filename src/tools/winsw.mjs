@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { win32 as pathWin32 } from 'node:path';
 import { isWsl } from '../detect/wsl.mjs';
+import { resolveMyelinRoot, joinManaged } from '../shared/myelin-paths.mjs';
+import { normalizeWindowsFilesystemPath } from '../service/windows.mjs';
 
 export const WINSW_REPO = 'winsw/winsw';
 // Pinned to the current 3.x line this Windows keepalive work was researched
@@ -28,8 +30,20 @@ export function getWinswVersionStatus(raw = '') {
   };
 }
 
-export function winswBinPath({ home = homedir() } = {}) {
-  return pathWin32.join(home, '.myelin', 'bin', 'winsw.exe');
+export function toNativeWinswCommandPath(value = '') {
+  const raw = String(value ?? '');
+  // A mounted-WSL managed root (/mnt/<drive>/...) is a Node-filesystem *view*
+  // of a Windows path. PowerShell / WinSW consume the COMMAND path natively, so
+  // they need the real Windows form (<Drive>:\...). Native paths pass through
+  // unchanged; only the /mnt/<drive> case is rewritten.
+  if (!/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(raw)) return raw;
+  return normalizeWindowsFilesystemPath(raw, { rejectPosix: false });
+}
+
+export function winswBinPath({ home = homedir(), env = process.env } = {}) {
+  return toNativeWinswCommandPath(
+    joinManaged(resolveMyelinRoot({ home, env, platform: 'windows' }), 'bin', 'winsw.exe'),
+  );
 }
 
 export function winswFilesystemPath(value = '', { wsl = isWsl() } = {}) {
@@ -81,12 +95,13 @@ export function selectWinswAsset(release = {}, { arch = process.arch, preferNetF
 
 export function detectWinsw({
   home = homedir(),
+  env = process.env,
   execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   filesystemPathImpl = winswFilesystemPath,
   wsl = isWsl(),
 } = {}) {
-  const path = winswBinPath({ home });
+  const path = winswBinPath({ home, env });
   const filesystemPath = filesystemPathImpl(path, { wsl });
   if (!existsSyncImpl(filesystemPath)) {
     return { installed: false, version: null, path: null, ...getWinswVersionStatus('') };
@@ -104,6 +119,7 @@ export function detectWinsw({
 
 export async function downloadWinsw({
   home = homedir(),
+  env = process.env,
   version = WINSW_PINNED_VERSION,
   arch = process.arch,
   preferNetFx = false,
@@ -142,9 +158,9 @@ export async function downloadWinsw({
     throw new Error(`WinSW asset download failed: ${assetRes.status} ${assetRes.statusText}`);
   }
 
-  const target = winswBinPath({ home });
+  const target = winswBinPath({ home, env });
   const filesystemTarget = filesystemPathImpl(target, { wsl });
-  const filesystemDir = filesystemPathImpl(pathWin32.dirname(target), { wsl });
+  const filesystemDir = filesystemPathImpl(joinManaged(resolveMyelinRoot({ home, env, platform: 'windows' }), 'bin'), { wsl });
   mkdirSyncImpl(filesystemDir, { recursive: true });
   writeFileSyncImpl(filesystemTarget, Buffer.from(await assetRes.arrayBuffer()));
   try { chmodSyncImpl(filesystemTarget, 0o755); } catch {}

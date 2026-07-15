@@ -56,6 +56,33 @@ import {
 } from '../src/service/windows.mjs';
 import { resolveGlobalBinDir, linkGlobalBin } from '../src/service/npmlink.mjs';
 
+/**
+ * Routes BOTH PowerShell injection points through one handler:
+ *  - `execSyncImpl(command)` — still used only for constant-only registry
+ *    Run-key probes (`Get-ItemProperty`), which build a shell string.
+ *  - `execFileSyncImpl(file, args)` — the injection-safe arg-array path used
+ *    for every managed/MYELIN_DIR-derived script; `args.at(-1)` is the literal
+ *    PowerShell command element (no shell ever re-parses it).
+ * `commands` collects the PowerShell command text from both forms so existing
+ * `.includes(...)` assertions keep working; `forms` records how each was
+ * invoked so a test can prove managed-path scripts use the arg array.
+ */
+function stubPowerShell(commands, handler, forms = []) {
+  return {
+    execSyncImpl: (command) => {
+      commands.push(command);
+      forms.push({ kind: 'string', file: 'powershell.exe', command });
+      return handler(command);
+    },
+    execFileSyncImpl: (file, args) => {
+      const command = args[args.length - 1];
+      commands.push(command);
+      forms.push({ kind: 'argv', file, args, command });
+      return handler(command);
+    },
+  };
+}
+
 const OPTS = {
   headroomBin: '/home/user/.local/bin/headroom',
   port: 8787,
@@ -147,7 +174,7 @@ describe('runPs WSL script path', () => {
       nowImpl: () => 456,
       mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
       writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
-      execSyncImpl: (command) => operations.push({ type: 'exec', command }),
+      execFileSyncImpl: (file, args) => operations.push({ type: 'exec', file, args }),
       unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
     });
 
@@ -156,9 +183,232 @@ describe('runPs WSL script path', () => {
     assert.deepEqual(operations, [
       { type: 'mkdir', path: '/mnt/c/Users/alice/.myelin/state' },
       { type: 'write', path: mountedScript, content: 'Write-Host ready' },
-      { type: 'exec', command: `powershell.exe -ExecutionPolicy Bypass -File "${nativeScript}"` },
+      { type: 'exec', file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', nativeScript] },
       { type: 'unlink', path: mountedScript },
     ]);
+  });
+
+  it('canonicalizes a mounted MYELIN_DIR for Windows service scripts and environments', () => {
+    const operations = [];
+    const env = { MYELIN_DIR: '/mnt/c/Myelin' };
+
+    runPs('Write-Host ready', {
+      home: '/home/alice',
+      env,
+      isWslImpl: () => true,
+      defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
+      powershellExe: 'powershell.exe',
+      processId: 123,
+      nowImpl: () => 456,
+      mkdirSyncImpl: (path) => operations.push({ type: 'mkdir', path }),
+      writeFileSyncImpl: (path, content) => operations.push({ type: 'write', path, content }),
+      execFileSyncImpl: (file, args) => operations.push({ type: 'exec', file, args }),
+      unlinkSyncImpl: (path) => operations.push({ type: 'unlink', path }),
+    });
+
+    assert.deepEqual(windowsService.withForwardedMyelinDir({}, env), {
+      MYELIN_DIR: 'C:\\Myelin',
+    });
+    assert.deepEqual(operations, [
+      { type: 'mkdir', path: '/mnt/c/Myelin/state' },
+      { type: 'write', path: '/mnt/c/Myelin/state/myelin-123-456.ps1', content: 'Write-Host ready' },
+      { type: 'exec', file: 'powershell.exe', args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'C:\\Myelin\\state\\myelin-123-456.ps1'] },
+      { type: 'unlink', path: '/mnt/c/Myelin/state/myelin-123-456.ps1' },
+    ]);
+  });
+});
+
+describe('runPs managed-path injection safety (arg-array exec, no shell string)', () => {
+  it('passes a $()/quote/%VAR%-laden MYELIN_DIR script path as a literal -File argument, never a shell string', () => {
+    const ops = [];
+    const evilRoot = String.raw`C:\ev'il$(touch pwned)%TEMP%\m`;
+
+    runPs('Write-Host hi', {
+      home: 'C:\\Users\\alice',
+      env: { MYELIN_DIR: evilRoot },
+      isWslImpl: () => false,
+      defaultWindowsHomeImpl: (h) => h,
+      powershellExe: 'powershell.exe',
+      processId: 7,
+      nowImpl: () => 9,
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      execFileSyncImpl: (file, args) => ops.push({ file, args }),
+      // A command STRING must NEVER be built for a managed path — fail loudly if runPs falls back to execSync.
+      execSyncImpl: (command) => assert.fail(`runPs must not build a shell command string: ${command}`),
+      unlinkSyncImpl: () => {},
+    });
+
+    assert.equal(ops.length, 1);
+    const { file, args } = ops[0];
+    assert.equal(file, 'powershell.exe');
+    const fileFlag = args.indexOf('-File');
+    assert.ok(fileFlag >= 0, 'invokes PowerShell via -File');
+    const scriptArg = args[fileFlag + 1];
+    // The whole injection payload survives as ONE opaque literal argv element.
+    assert.ok(scriptArg.includes("ev'il$(touch pwned)%TEMP%"), scriptArg);
+    // No argv element is a concatenated "powershell ... -File ..." command string.
+    assert.ok(!args.some((a) => /powershell/i.test(a)), 'no argv element is a shell command line');
+  });
+});
+
+// Regression suite for the WSL command-injection class.
+//
+// On WSL, detectOS() === 'windows' but process.platform === 'linux', so the OLD
+// `execSync('powershell.exe ... -Command "& { <script> }"')` was parsed by
+// `/bin/sh -c` FIRST. `/bin/sh` command-substitutes $(...)/backticks embedded in
+// the (single-PowerShell-quoted, MYELIN_DIR-derived) paths BEFORE PowerShell ever
+// runs -> arbitrary code execution. `$`, backtick, `(`, `)` are legal Windows
+// filename characters and MYELIN_DIR is untrusted.
+//
+// The fix routes every managed-path PowerShell invocation through argument-array
+// execFileSync (one opaque literal argv element) so NO shell (/bin/sh or cmd.exe)
+// re-parses it on ANY platform. These behavioral tests prove, for each converted
+// site, that (a) execFileSync receives an argv array with the injection payload as
+// a single literal element, and (b) NO shell command STRING is ever constructed
+// (execSync is never called) — which is exactly what neutralises the WSL vector.
+describe('managed-path command-injection regression (WSL /bin/sh vector)', () => {
+  // A MYELIN_DIR-derived path packed with the shell metacharacters that /bin/sh
+  // would command-substitute: $(...), backticks, and a single quote.
+  const EVIL = String.raw`C:\Users\ev'il$(touch pwned)` + '`whoami`';
+  // The command-substitution payload that must survive VERBATIM (never expanded,
+  // never regex/shell-escaped) inside a single argv element.
+  const SHELL_PAYLOAD = '$(touch pwned)';
+
+  // Doubling single quotes is how a path is embedded inside a PowerShell launcher
+  // Start-Process '...' literal; the parsers recover the original path.
+  const psLit = (s) => s.replace(/'/g, "''");
+
+  // Asserts arg-array safety across every captured PowerShell invocation:
+  //  - the exec target is the PowerShell binary itself (not /bin/sh, not cmd);
+  //  - PowerShell is invoked with an argv ARRAY (never a single command string);
+  //  - no argv element is itself a bundled "powershell ... -Command/-File ..." line;
+  //  - the injection payload survives verbatim as a literal argv element.
+  function assertArgvSafe(calls, payload = SHELL_PAYLOAD) {
+    assert.ok(calls.length > 0, 'expected at least one PowerShell invocation');
+    let payloadSeen = false;
+    for (const { file, args } of calls) {
+      assert.match(String(file), /powershell/i, `exec target must be the PowerShell binary, got ${file}`);
+      assert.ok(Array.isArray(args), 'PowerShell must be invoked with an argv array, never a shell command string');
+      for (const a of args) {
+        assert.ok(!/powershell/i.test(String(a)), `argv element must not embed a nested shell command line: ${a}`);
+      }
+      if (args.some((a) => String(a).includes(payload))) payloadSeen = true;
+    }
+    assert.ok(payloadSeen, `injection payload ${payload} must survive verbatim as a literal argv element`);
+  }
+
+  it('stopHeadroomProcessByExecutablePath: evil executable path is a literal argv element, no shell string', () => {
+    const calls = [];
+    const shellStrings = [];
+    windowsService.stopHeadroomProcessByExecutablePath({
+      port: 8787,
+      executablePath: EVIL + '\\headroom.exe',
+      powershellExe: 'powershell.exe',
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); return Buffer.from(''); },
+    });
+    // This site no longer accepts execSyncImpl at all — a shell string is impossible.
+    assertArgvSafe(calls);
+    assert.equal(shellStrings.length, 0);
+  });
+
+  it('winswServiceStatus: evil MYELIN_DIR service path is a literal argv element, no shell string', () => {
+    const calls = [];
+    windowsService.winswServiceStatus({
+      id: HEADROOM_SERVICE_ID,
+      home: EVIL,
+      isWslImpl: () => false,
+      existsSyncImpl: () => true,
+      powershellExe: 'powershell.exe',
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); return Buffer.from('Active (running)\n'); },
+    });
+    assertArgvSafe(calls);
+  });
+
+  it('stopManagedHeadroomProcess: evil managed pid/launcher paths are literal argv elements, no shell string', () => {
+    const calls = [];
+    const shellStrings = [];
+    stopManagedHeadroomProcess({
+      port: 8787,
+      home: EVIL,
+      powershellExe: 'powershell.exe',
+      headroomRunKeyStatusImpl: () => ({ registered: false, raw: '' }),
+      execSyncImpl: (command) => { shellStrings.push(command); return Buffer.from(''); },
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); return Buffer.from(''); },
+    });
+    assertArgvSafe(calls);
+    // The stop script embeds the managed pidPath + launcherRegex but must never be
+    // handed to a shell — execSync (the /bin/sh boundary on WSL) is never invoked.
+    assert.equal(shellStrings.length, 0, 'managed stop must not construct a PowerShell shell command string');
+  });
+
+  it('engineInstanceStatus (registry): evil launcher/executable paths stay inside argv elements, no shell string', () => {
+    const calls = [];
+    const shellStrings = [];
+    const evilLauncher = EVIL + '\\start-headroom.ps1';
+    const evilExe = EVIL + '\\headroom.exe';
+    const launcherScript =
+      `Start-Process -FilePath '${psLit(evilExe)}' -ArgumentList 'proxy --port 8787' -WindowStyle Hidden -PassThru`;
+    windowsEngineInstanceStatus(
+      {
+        engine: 'headroom',
+        role: 'primary',
+        port: 8787,
+        id: 'headroom-primary',
+        stateDir: EVIL + '\\.myelin\\state\\headroom-primary',
+        logPath: EVIL + '\\headroom.log',
+        healthUrl: 'http://127.0.0.1:8787/health',
+        env: {},
+      },
+      {
+        manager: 'registry',
+        home: EVIL,
+        isWslImpl: () => false,
+        existsSyncImpl: () => false,
+        readFileSyncImpl: () => { throw new Error('force PowerShell fallback'); },
+        runKeyStatusImpl: () => ({
+          registered: true,
+          raw: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${evilLauncher}"`,
+        }),
+        execSyncImpl: (command) => { shellStrings.push(command); return Buffer.from(''); },
+        execFileSyncImpl: (file, args) => {
+          const command = String(args[args.length - 1]);
+          calls.push({ file, args });
+          if (command.includes('Test-Path')) {
+            return Buffer.from(command.includes('start-headroom.ps1') ? launcherScript : '');
+          }
+          return Buffer.from('Running\n');
+        },
+      },
+    );
+    assertArgvSafe(calls);
+    assert.equal(shellStrings.length, 0, 'managed status must not construct a PowerShell shell command string');
+  });
+
+  it('mitmServiceStatus (registry): evil managed mitm paths stay inside argv elements, no shell string', () => {
+    const calls = [];
+    const shellStrings = [];
+    const evilExe = EVIL + '\\.myelin\\venv\\Scripts\\mitmdump.exe';
+    const launcherScript =
+      `Start-Process -FilePath '${psLit(evilExe)}' -ArgumentList '--listen-port 8888' -WindowStyle Hidden -PassThru`;
+    mitmServiceStatus({
+      manager: 'registry',
+      home: EVIL,
+      isWslImpl: () => false,
+      existsSyncImpl: () => false,
+      readFileSyncImpl: () => { throw new Error('force PowerShell fallback'); },
+      execSyncImpl: (command) => { shellStrings.push(command); return Buffer.from(''); },
+      execFileSyncImpl: (file, args) => {
+        const command = String(args[args.length - 1]);
+        calls.push({ file, args });
+        if (command.includes('Test-Path')) {
+          return Buffer.from(command.includes('.pid') ? '4321\n' : launcherScript);
+        }
+        return Buffer.from('Running\n');
+      },
+    });
+    assertArgvSafe(calls);
+    assert.equal(shellStrings.length, 0, 'managed mitm status must not construct a PowerShell shell command string');
   });
 });
 
@@ -203,6 +453,8 @@ describe('WSL PowerShell registration paths', () => {
       existsSyncImpl: () => false,
       copyFileSyncImpl: () => {},
       writeFileSyncImpl: () => {},
+      renameSyncImpl: () => {},
+      unlinkSyncImpl: () => {},
       runPsFn: (script, options) => winswCalls.push({ script, options }),
     });
     windowsService.installWindowsWatchdogTask({
@@ -419,6 +671,44 @@ describe('engine instance service generators', () => {
       assert.doesNotMatch(serviceDefinition, /https:\/\/api\.(anthropic\.com|githubcopilot\.com)/);
     }
   });
+
+  it('forwards a relocated MYELIN_DIR into launchd and systemd service env', () => {
+    const instance = engineInstance('headroom', 'primary');
+    const env = { MYELIN_DIR: '/srv/managed-myelin' };
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.match(plist, /<key>MYELIN_DIR<\/key>\s*<string>\/srv\/managed-myelin<\/string>/);
+    assert.match(unit, /Environment=MYELIN_DIR=\/srv\/managed-myelin/);
+  });
+
+  it('does not emit MYELIN_DIR when the managed root is not relocated', () => {
+    const instance = engineInstance('headroom', 'primary');
+    const env = {};
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.ok(!plist.includes('MYELIN_DIR'));
+    assert.ok(!unit.includes('MYELIN_DIR'));
+  });
+
+  it('keeps an explicit MYELIN_DIR env var authoritative over the forwarded root', () => {
+    const instance = {
+      ...engineInstance('headroom', 'primary'),
+      env: { MYELIN_DIR: '/instance/override' },
+    };
+    const env = { MYELIN_DIR: '/srv/ambient' };
+
+    const plist = generateEngineInstancePlist({ instance, ...ENGINE_BINS, env });
+    const unit = generateEngineInstanceUnit({ instance, ...ENGINE_BINS, env });
+
+    assert.match(plist, /<key>MYELIN_DIR<\/key>\s*<string>\/instance\/override<\/string>/);
+    assert.ok(!plist.includes('/srv/ambient'));
+    assert.match(unit, /Environment=MYELIN_DIR=\/instance\/override/);
+    assert.ok(!unit.includes('/srv/ambient'));
+  });
 });
 
 describe('Windows registry engine-instance ownership', () => {
@@ -437,14 +727,13 @@ describe('Windows registry engine-instance ownership', () => {
     const commands = [];
     const status = windowsEngineInstanceStatus(LITE_INSTANCE, {
       manager: 'registry',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-Content -Path') && command.includes('start-headroom_lite-primary.ps1')) {
           return Buffer.from("Start-Process -FilePath 'C:\\Users\\alice\\.myelin\\bin\\headroom-lite.exe' -ArgumentList '' -WorkingDirectory 'C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary' -WindowStyle Hidden -PassThru");
         }
         if (command.includes('headroom_lite-primary.pid')) return Buffer.from('4321\n');
         return Buffer.from('Running\n');
-      },
+      }),
       runKeyStatusImpl: () => ({
         registered: true,
         raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\state\\headroom_lite-primary\\start-headroom_lite-primary.ps1"',
@@ -541,8 +830,8 @@ describe('Windows registry engine-instance ownership', () => {
       }),
       existsSyncImpl: () => true,
       readFileSyncImpl: (path) => String(path).endsWith('.pid') ? '4321\n' : launcherScript,
-      execSyncImpl: (command) => {
-        statusCommands.push(command);
+      execFileSyncImpl: (file, args) => {
+        statusCommands.push(args[args.length - 1]);
         return Buffer.from('Running\n');
       },
     });
@@ -1055,17 +1344,25 @@ describe('windows run-script generator', () => {
 
   it('clears a stale direct Myelin Run-key without using it to identify a listener', () => {
     let command = '';
+    let capturedArgs = null;
+    let capturedFile = '';
     stopManagedHeadroomProcess({
       port: 8787,
-      execSyncImpl: (value) => {
-        command = value;
+      execFileSyncImpl: (file, args) => {
+        capturedFile = file;
+        capturedArgs = args;
+        command = args[args.length - 1];
         return Buffer.from('');
       },
+      execSyncImpl: () => assert.fail('managed stop must not build a shell command string'),
       headroomRunKeyStatusImpl: () => ({
         registered: true,
         raw: '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787',
       }),
     });
+    // Arg-array exec: no /bin/sh (WSL) or cmd.exe re-parse of the managed script.
+    assert.match(capturedFile, /powershell/);
+    assert.ok(!capturedArgs.some((arg) => /powershell/i.test(arg)), 'no argv element is a shell command line');
     assert.ok(command.includes('ProcessId = $managedPid'));
     // Direct Run-key commands have no durable process ownership proof, so a
     // migration removes only their stale registration.
@@ -1077,10 +1374,11 @@ describe('windows run-script generator', () => {
     let command = '';
     stopManagedHeadroomProcess({
       port: 9797,
-      execSyncImpl: (value) => {
-        command = value;
+      execFileSyncImpl: (file, args) => {
+        command = args[args.length - 1];
         return Buffer.from('');
       },
+      execSyncImpl: () => assert.fail('managed stop must not build a shell command string'),
       headroomRunKeyStatusImpl: () => ({
         registered: true,
         raw: '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787',
@@ -1098,8 +1396,7 @@ describe('copilotHeadroomServiceStatus', () => {
     const status = copilotHeadroomServiceStatus({
       manager: 'registry',
       port: 9797,
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-Content -Path')) {
           return Buffer.from([
             "# Managed by myelin. Keeps Copilot-Headroom env scoped to this process tree.",
@@ -1107,7 +1404,7 @@ describe('copilotHeadroomServiceStatus', () => {
           ].join('\n'));
         }
         return Buffer.from('Running\n');
-      },
+      }),
       runKeyStatusImpl: () => ({
         registered: true,
         raw: 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
@@ -1123,14 +1420,14 @@ describe('copilotHeadroomServiceStatus', () => {
     assert.ok(!commands.some((command) => command.includes('--port 8788')));
   });
 
-  it('uses powershell.exe for registry status probes when simulating WSL fallback reads', () => {
+  it('invokes PowerShell without a shell string for registry status probes (WSL-safe arg array)', () => {
     const commands = [];
+    const forms = [];
     copilotHeadroomServiceStatus({
       manager: 'registry',
       port: 9797,
       powershellExe: 'powershell.exe',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-ItemProperty')) {
           return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"\n');
         }
@@ -1141,14 +1438,25 @@ describe('copilotHeadroomServiceStatus', () => {
           ].join('\n'));
         }
         return Buffer.from('Running\n');
-      },
+      }, forms),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('launcher should be read via PowerShell for Windows paths');
       },
     });
 
-    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+    // Every managed/MYELIN_DIR-derived script (Get-Content launcher, pid read,
+    // status probe) MUST go through the shell-free arg array; only the
+    // constant-only Run-key probe may still use a shell command string.
+    const argvForms = forms.filter((form) => form.kind === 'argv');
+    assert.ok(argvForms.length >= 1, 'managed-path probes use execFileSync arg array');
+    for (const form of argvForms) {
+      assert.equal(form.file, 'powershell.exe');
+      assert.ok(!form.args.some((arg) => /powershell/i.test(arg)), 'no argv element is a shell command line');
+    }
+    for (const form of forms.filter((form) => form.kind === 'string')) {
+      assert.ok(form.command.includes('Get-ItemProperty'), 'only constant-only Run-key probes may use a shell string');
+    }
   });
 });
 
@@ -1158,8 +1466,7 @@ describe('serviceStatus', () => {
     const status = serviceStatus({
       manager: 'registry',
       home: 'C:\\Users\\alice',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-ItemProperty')) {
           return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
         }
@@ -1173,7 +1480,7 @@ describe('serviceStatus', () => {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Running\n');
-      },
+      }),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('managed headroom status should fall back to PowerShell for Windows paths');
@@ -1193,12 +1500,9 @@ describe('serviceStatus', () => {
     const commands = [];
     const status = serviceStatus({
       manager: 'registry',
-      execSyncImpl: (command) => {
-        commands.push(command);
-        return Buffer.from(command.includes('Get-ItemProperty')
-          ? '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787\n'
-          : 'Running\n');
-      },
+      ...stubPowerShell(commands, (command) => Buffer.from(command.includes('Get-ItemProperty')
+        ? '"C:\\Users\\alice\\.myelin\\bin\\headroom.exe" proxy --port 8787\n'
+        : 'Running\n')),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('legacy status should not require local launcher reads');
@@ -1216,8 +1520,7 @@ describe('serviceStatus', () => {
     const status = serviceStatus({
       manager: 'registry',
       home: 'C:\\Users\\alice',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes('Get-ItemProperty')) {
           return Buffer.from('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\services\\myelin-headroom\\start-headroom.ps1"\n');
         }
@@ -1231,7 +1534,7 @@ describe('serviceStatus', () => {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Stopped\n');
-      },
+      }),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('managed headroom status should fall back to PowerShell for Windows paths');
@@ -1474,6 +1777,32 @@ describe('WSL Windows-service executable resolution', () => {
     );
   });
 
+  it('resolves the headroom venv under a WSL-relocated MYELIN_DIR mount path', () => {
+    const scripts = [];
+    const resolved = windowsService.resolveWindowsServiceExecutable({
+      engine: 'headroom',
+      candidate: '/home/alice/.myelin/venv/bin/headroom',
+      serviceHome: '/home/alice',
+      servicePlatform: 'windows',
+      wsl: true,
+      env: { MYELIN_DIR: '/mnt/d/managed-myelin' },
+    }, {
+      execFileSyncImpl: (file, args) => {
+        if (file === 'powershell.exe') {
+          scripts.push(String(args.at(-1)));
+          return Buffer.from('D:\\managed-myelin\\venv\\Scripts\\headroom.exe\n');
+        }
+        throw new Error(`unexpected probe: ${file}`);
+      },
+    });
+
+    assert.equal(resolved, 'D:\\managed-myelin\\venv\\Scripts\\headroom.exe');
+    // The probe targets the native Windows venv derived from the mounted
+    // MYELIN_DIR, not the Windows User-scope MYELIN_DIR fallback.
+    assert.ok(scripts.some((s) => s.includes('D:\\managed-myelin\\venv\\Scripts\\headroom.exe')));
+    assert.ok(!scripts.some((s) => s.includes("GetEnvironmentVariable('MYELIN_DIR'")));
+  });
+
   it('rejects a native WSL path instead of converting it into a \\home command path', () => {
     assert.throws(
       () => normalizeWindowsFilesystemPath('/home/alice/.myelin/bin/headroom.exe', { rejectPosix: true }),
@@ -1512,6 +1841,8 @@ describe('WinSW WSL filesystem split', () => {
       },
       copyFileSyncImpl: (source, target) => filesystemOps.push({ op: 'copy', source, target }),
       writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      renameSyncImpl: (source, target) => filesystemOps.push({ op: 'rename', source, target }),
+      unlinkSyncImpl: (path) => filesystemOps.push({ op: 'unlink', path }),
       runPsFn: (script) => powerShellScripts.push(script),
     });
 
@@ -1532,8 +1863,8 @@ describe('WinSW WSL filesystem split', () => {
         filesystemReads.push(path);
         return true;
       },
-      execSyncImpl: (command) => {
-        powerShellCommands.push(command);
+      execFileSyncImpl: (file, args) => {
+        powerShellCommands.push(args[args.length - 1]);
         return Buffer.from('Active (running)\n');
       },
       powershellExe: 'powershell.exe',
@@ -1580,7 +1911,7 @@ describe('WinSW WSL filesystem split', () => {
         filesystemReads.push(path);
         return true;
       },
-      execSyncImpl: () => Buffer.from('Active (running)\n'),
+      execFileSyncImpl: () => Buffer.from('Active (running)\n'),
       powershellExe: 'powershell.exe',
     });
     removeWindowsEngineInstance(instance, {
@@ -2123,8 +2454,8 @@ describe('mitmServiceStatus', () => {
         filesystemReads.push(path);
         return path.startsWith('/mnt/c/');
       },
-      execSyncImpl: (command) => {
-        commands.push(command);
+      execFileSyncImpl: (file, args) => {
+        commands.push(args[args.length - 1]);
         return Buffer.from('Active (running)\n');
       },
       powershellExe: 'powershell.exe',
@@ -2135,7 +2466,6 @@ describe('mitmServiceStatus', () => {
       '/mnt/c/Users/alice/.myelin/services/myelin-mitmproxy/myelin-mitmproxy.exe',
       '/mnt/c/Users/alice/.myelin/services/myelin-mitmproxy/myelin-mitmproxy.xml',
     ]);
-    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
     assert.ok(commands[0].includes("'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\myelin-mitmproxy.exe'"));
   });
 
@@ -2144,8 +2474,7 @@ describe('mitmServiceStatus', () => {
     const status = mitmServiceStatus({
       manager: 'registry',
       home: 'C:\\Users\\alice',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
           return Buffer.from([
             '# Managed by myelin. Keeps mitm env scoped to this process tree.',
@@ -2156,7 +2485,7 @@ describe('mitmServiceStatus', () => {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Running\n');
-      },
+      }),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('managed mitm status should fall back to PowerShell for Windows paths');
@@ -2169,14 +2498,14 @@ describe('mitmServiceStatus', () => {
     assert.ok(commands.some((command) => command.includes('ProcessId = $managedPid')));
   });
 
-  it('uses powershell.exe for registry status probes when simulating WSL fallback reads', () => {
+  it('invokes PowerShell without a shell string for registry status probes (WSL-safe arg array)', () => {
     const commands = [];
+    const forms = [];
     mitmServiceStatus({
       manager: 'registry',
       home: 'C:\\Users\\alice',
       powershellExe: 'powershell.exe',
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes("Get-Content -Path 'C:\\Users\\alice\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
           return Buffer.from([
             '# Managed by myelin. Keeps mitm env scoped to this process tree.',
@@ -2187,18 +2516,27 @@ describe('mitmServiceStatus', () => {
           return Buffer.from('4321\n');
         }
         return Buffer.from('Running\n');
-      },
+      }, forms),
       existsSyncImpl: () => false,
       readFileSyncImpl: () => {
         throw new Error('managed mitm status should fall back to PowerShell for Windows paths');
       },
     });
 
-    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+    const argvForms = forms.filter((form) => form.kind === 'argv');
+    assert.ok(argvForms.length >= 1, 'managed-path probes use execFileSync arg array');
+    for (const form of argvForms) {
+      assert.equal(form.file, 'powershell.exe');
+      assert.ok(!form.args.some((arg) => /powershell/i.test(arg)), 'no argv element is a shell command line');
+    }
+    for (const form of forms.filter((form) => form.kind === 'string')) {
+      assert.ok(form.command.includes('Get-ItemProperty'), 'only constant-only Run-key probes may use a shell string');
+    }
   });
 
   it('recognizes an exact direct legacy Run-key MITM listener without a managed launcher', () => {
     const commands = [];
+    const forms = [];
     const status = mitmServiceStatus({
       manager: 'registry',
       home: 'C:\\Users\\alice\\custom-home',
@@ -2207,8 +2545,7 @@ describe('mitmServiceStatus', () => {
       readFileSyncImpl: () => {
         throw new Error('custom Windows paths must be read through PowerShell');
       },
-      execSyncImpl: (command) => {
-        commands.push(command);
+      ...stubPowerShell(commands, (command) => {
         if (command.includes("Get-Content -Path 'C:\\Users\\alice\\custom-home\\.myelin\\services\\myelin-mitmproxy\\start-mitmproxy.ps1'")) {
           return Buffer.from('');
         }
@@ -2216,11 +2553,20 @@ describe('mitmServiceStatus', () => {
           return Buffer.from('"C:\\Users\\alice\\custom-home\\.myelin\\venv\\Scripts\\mitmdump.exe" --listen-port 8888 -s "C:\\Users\\alice\\custom-home\\.myelin\\repo\\src\\mitm\\copilot_addon.py"\n');
         }
         return Buffer.from('Running\n');
-      },
+      }, forms),
     });
 
     assert.deepEqual(status, { running: true, state: 'Running', raw: 'Running' });
-    assert.ok(commands.every((command) => command.startsWith('powershell.exe ')));
+    // The managed launcher read and the legacy status probe (both embed the
+    // custom-home managed path) MUST use the shell-free arg array; only the
+    // constant-only Run-key probe may still use a shell string.
+    for (const form of forms.filter((form) => form.kind === 'argv')) {
+      assert.equal(form.file, 'powershell.exe');
+      assert.ok(!form.args.some((arg) => /powershell/i.test(arg)), 'no argv element is a shell command line');
+    }
+    for (const form of forms.filter((form) => form.kind === 'string')) {
+      assert.ok(form.command.includes('Get-ItemProperty'), 'only constant-only Run-key probes may use a shell string');
+    }
     assert.ok(commands.some((command) => command.includes('$legacyPort = 8888')));
     assert.ok(commands.some((command) => command.includes('Get-NetTCPConnection -State Listen -LocalPort $legacyPort')));
     assert.ok(commands.some((command) => command.includes("ExecutablePath -eq 'C:\\Users\\alice\\custom-home\\.myelin\\venv\\Scripts\\mitmdump.exe'")));

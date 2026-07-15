@@ -13,6 +13,7 @@ import {
   resolveWindowsServiceExecutable,
 } from '../service/windows.mjs';
 import { isWsl } from '../detect/wsl.mjs';
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
 import {
   installCopilotHeadroomService,
   installEngineInstance,
@@ -31,7 +32,6 @@ import {
 
 const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
-const HEADROOM_LITE_STATE_DIR = ['.myelin', 'state', 'headroom-lite'];
 
 function escapePs(value = '') {
   return String(value ?? '').replace(/'/g, "''");
@@ -68,16 +68,19 @@ export function buildManagedHeadroomEnv(cfg, baseEnv = process.env) {
   return env;
 }
 
-function headroomLiteStateDir(home = homedir()) {
-  return joinManagedPath(home, ...HEADROOM_LITE_STATE_DIR);
+function headroomLiteStateDir(home = homedir(), {
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  return joinManaged(managedPaths({ home, env, platform }).root, 'state', 'headroom-lite');
 }
 
-export function headroomLitePidPath({ home = homedir() } = {}) {
-  return joinManagedPath(headroomLiteStateDir(home), 'headroom-lite.pid');
+export function headroomLitePidPath({ home = homedir(), env, platform } = {}) {
+  return joinManaged(headroomLiteStateDir(home, { env, platform }), 'headroom-lite.pid');
 }
 
-export function headroomLiteLauncherPath({ home = homedir(), osKind } = {}) {
-  return joinManagedPath(headroomLiteStateDir(home), osKind === 'windows' ? 'start-headroom-lite.ps1' : 'start-headroom-lite.sh');
+export function headroomLiteLauncherPath({ home = homedir(), env, platform, osKind } = {}) {
+  return joinManaged(headroomLiteStateDir(home, { env, platform }), osKind === 'windows' ? 'start-headroom-lite.ps1' : 'start-headroom-lite.sh');
 }
 
 function trimShellValue(value = '') {
@@ -371,8 +374,8 @@ export async function stopManagedHeadroomLite({
   }),
 } = {}) {
   const managedHome = resolveManagedWindowsHome(home, osKind, defaultWindowsHomeImpl);
-  const pidPath = headroomLitePidPath({ home: managedHome });
-  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind });
+  const pidPath = headroomLitePidPath({ home: managedHome, platform: osKind });
+  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind, platform: osKind });
   const managedBinaryPath = normalizeManagedWindowsPath(binaryPath, osKind, normalizeWindowsFilesystemPathImpl);
   const ownerPid = headroomLitePortOwnerPid(port, osKind, execSyncImpl, { powershellExe });
   const managedPid = readManagedHeadroomLitePid(pidPath, {
@@ -493,8 +496,8 @@ export async function restartHeadroomLite(port, osKind, _cfg, {
     return false;
   }
 
-  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind });
-  const pidPath = headroomLitePidPath({ home: managedHome });
+  const launcherPath = headroomLiteLauncherPath({ home: managedHome, osKind, platform: osKind });
+  const pidPath = headroomLitePidPath({ home: managedHome, platform: osKind });
   const launcherScript = buildHeadroomLiteLauncherScript({ binaryPath, port, pidPath, osKind });
   if (osKind === 'windows') {
     persistWindowsHeadroomLiteLauncher({
@@ -551,13 +554,15 @@ async function waitForHeadroomLite(port, timeoutMs = 5000) {
 
 export function buildCopilotHeadroomTaskEnv({
   home = homedir(),
+  env = process.env,
+  platform = process.platform,
   copilotPort = 8788,
   egressPort = 8889,
   mode = 'cache',
 } = {}) {
   const loopbackTarget = `http://127.0.0.1:${egressPort}`;
   return {
-    HEADROOM_WORKSPACE_DIR: joinManagedPath(home, '.myelin', `headroom-copilot-${copilotPort}`),
+    HEADROOM_WORKSPACE_DIR: joinManaged(managedPaths({ home, env, platform }).root, `headroom-copilot-${copilotPort}`),
     ANTHROPIC_TARGET_API_URL: loopbackTarget,
     OPENAI_TARGET_API_URL: loopbackTarget,
     HEADROOM_MODE: mode,
@@ -803,7 +808,7 @@ export async function defaultRestartManagedHeadroom({
         envVars,
         home,
         interceptToolResults,
-        logPath: join(home, '.myelin', 'headroom.log'),
+        logPath: joinManaged(managedPaths({ home, platform: os }).root, 'headroom.log'),
         manager: winManager,
       });
       log(`  ✓ headroom service refreshed (:${port})`);
@@ -882,6 +887,7 @@ export async function defaultRestartCopilotHeadroom({
     const egressPort = cfg?.proxy?.mitm?.egress_port ?? 8889;
     const taskEnv = buildCopilotHeadroomTaskEnv({
       home,
+      platform: os,
       copilotPort: port,
       egressPort,
       mode: cfg?.proxy?.copilot_headroom?.mode ?? 'cache',
@@ -996,13 +1002,14 @@ function ownedEngineRoleInstance(engine, role, home, cfg) {
   const id = `${engine}-${role}`;
   const port = cleanupPort(engine, role, cfg);
   if (port == null) return null;
+  const root = managedPaths({ home }).root;
   return {
     engine,
     role,
     id,
     port,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }

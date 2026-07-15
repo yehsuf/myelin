@@ -1008,7 +1008,7 @@ describe('headroom-lite ownership guards', () => {
   it('stops a managed Unix headroom-lite owner when the pid file matches the listener', async () => {
     const killed = [];
     const home = '/Users/alice';
-    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux', platform: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8790,
       osKind: 'linux',
@@ -1066,7 +1066,7 @@ describe('headroom-lite ownership guards', () => {
     const killed = [];
     let unlinked = 0;
     const home = '/Users/alice';
-    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux' });
+    const launcherPath = headroomLiteLauncherPath({ home, osKind: 'linux', platform: 'linux' });
     const result = await stopManagedHeadroomLite({
       port: 8791,
       osKind: 'linux',
@@ -1438,14 +1438,10 @@ describe('defaultRestartMitm', () => {
       assert.equal(installs[0].envVars.MYELIN_BLOCK_BYPASS, '1');
       if (os === 'windows') {
         assert.equal(installs[0].home, 'C:\\Users\\alice');
-        const canonicalRepo = 'C:\\Users\\alice\\.myelin\\repo';
-        const currentRepo = normalizeWindowsFilesystemPath(fileURLToPath(new URL('../', import.meta.url)));
-        const useCanonicalRepo = existsSync(pathWin32.join(canonicalRepo, 'src', 'cli', 'index.mjs'))
-          || (!/^[a-zA-Z]:\\/u.test(currentRepo) && !currentRepo.startsWith('\\\\'));
         assert.equal(
           installs[0].addonPath,
           pathWin32.join(
-            useCanonicalRepo ? canonicalRepo : currentRepo,
+            'C:\\Users\\alice\\.myelin\\runtime-bridge',
             'src',
             'mitm',
             'copilot_addon.py',

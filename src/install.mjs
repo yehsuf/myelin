@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -50,7 +50,11 @@ import {
 } from './service/windows.mjs';
 import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
+import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
+import { stageMainRuntime } from './runtime/stage-main.mjs';
+import { managedPaths, joinManaged, isManagedRootRelocated, resolveMyelinRoot } from './shared/myelin-paths.mjs';
+import { posixSingleQuote, powershellSingleQuote } from './shared/shell-quote.mjs';
 
 // helpers
 const ok   = m => console.log(`  \u2713 ${m}`);
@@ -86,6 +90,38 @@ function mergeJsonFile(path, updates, createIfMissing = {}) {
 export function shouldInstallPythonHeadroomPackage({ cfg = {}, flags = {} } = {}) {
   if (flags['no-headroom']) return false;
   return buildServiceEnginePlan(cfg).selectedEngine === 'headroom';
+}
+
+/**
+ * Create the managed Python venv via `uv` using an execFileSync ARGUMENT ARRAY
+ * so the venv path — which is MYELIN_DIR-derived (arbitrary user text) — is
+ * handed to `uv` as ONE literal argv element and never composed into a shell
+ * string. A relocated root containing `"`, `$(...)`, backticks, or `'` therefore
+ * cannot break out into command execution. The venv is only (re)created when its
+ * `pyvenv.cfg` is missing.
+ */
+export function ensureManagedVenv(venv, {
+  execFileSyncImpl = execFileSync,
+  existsSyncImpl = existsSync,
+  stdio = 'pipe',
+} = {}) {
+  const venvArg = String(venv);
+  if (!existsSyncImpl(join(venvArg, 'pyvenv.cfg'))) {
+    execFileSyncImpl('uv', ['venv', venvArg], { stdio });
+  }
+}
+
+/**
+ * Install a pip package spec INTO the managed venv via `uv pip install --python
+ * <venv> <spec>`, again as an execFileSync argument array. Both the venv path
+ * and the (fixed) package spec are literal argv elements — no shell parses
+ * `[extras]`, `>=`, or any metacharacter in a relocated venv path.
+ */
+export function installPipPackageInManagedVenv(venv, spec, {
+  execFileSyncImpl = execFileSync,
+  stdio = 'inherit',
+} = {}) {
+  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], { stdio });
 }
 
 function isVersionAtLeast(version, minimum) {
@@ -169,7 +205,7 @@ export async function removeManagedHeadroomRegistration({
   }
 }
 
-export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787 } = {}) {
+export async function managedHeadroomRegistrationStatus({ os, winManager, home, headroomPort = 8787, env = process.env, runKeyStatusImpl } = {}) {
   if (os === 'darwin') {
     const { plistPath } = await import('./service/launchd.mjs');
     return { registered: existsSync(plistPath()) };
@@ -189,13 +225,63 @@ export async function managedHeadroomRegistrationStatus({ os, winManager, home, 
     };
   }
 
-  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue } = await import('./service/windows.mjs');
-  const status = headroomRunKeyStatus();
+  const { headroomRunKeyStatus, isLegacyManagedHeadroomRunKeyValue, launcherOwnedByManagedRoot } = await import('./service/windows.mjs');
+  const status = (runKeyStatusImpl ?? headroomRunKeyStatus)();
+  const legacy = isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw });
+  // A Run key is only "registered" if its launcher belongs to the CURRENT
+  // managed root. A stale key from an earlier default ~/.myelin (or a different
+  // relocated root) must be re-registered, never trusted.
+  const ownsCurrentRoot = status.registered && !legacy
+    ? launcherOwnedByManagedRoot({ runKeyValue: status.raw, home, env })
+    : false;
   return {
     ...status,
-    registered: status.registered && !isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
-    needsMigration: isLegacyManagedHeadroomRunKeyValue({ port: headroomPort, runKeyValue: status.raw }),
+    registered: status.registered && !legacy && ownsCurrentRoot,
+    needsMigration: legacy,
+    foreignRoot: status.registered && !legacy && !ownsCurrentRoot,
   };
+}
+
+/**
+ * Pure detection + decision for the one-time relocation migration: when the user
+ * relocates the managed root via MYELIN_DIR but the default `<home>/.myelin`
+ * still holds the managed state (releases/current.json/config) and the relocated
+ * root does not yet exist, that state should be migrated so the relocated install
+ * keeps its release history and config. This helper makes NO filesystem changes;
+ * it only reports whether a migration is warranted and which sources to move.
+ *
+ * @returns {{ relocated: boolean, shouldMigrate: boolean, from: string, to: string,
+ *   sources: string[], reason: string }}
+ */
+export function planManagedRelocationMigration({
+  home,
+  env = process.env,
+  platform = detectOS(),
+  existsSyncImpl = existsSync,
+} = {}) {
+  const relocatedRoot = resolveMyelinRoot({ home, env, platform });
+  const defaultRoot = resolveMyelinRoot({ home, env: {}, platform });
+  const stripTrailing = (p) => String(p).replace(/[\\/]+$/u, '');
+  const sameAsDefault =
+    stripTrailing(relocatedRoot).toLowerCase() === stripTrailing(defaultRoot).toLowerCase();
+
+  if (!isManagedRootRelocated({ home, env, platform }) || sameAsDefault) {
+    return { relocated: false, shouldMigrate: false, from: defaultRoot, to: relocatedRoot, sources: [], reason: 'not-relocated' };
+  }
+
+  const defaultExists = existsSyncImpl(defaultRoot);
+  const relocatedExists = existsSyncImpl(relocatedRoot);
+  // Migrate only when the default install still holds state AND the relocated
+  // root is empty/absent — otherwise there is nothing to move (relocated root
+  // already populated) or nothing to move from (no default state).
+  const shouldMigrate = defaultExists && !relocatedExists;
+  const sources = shouldMigrate
+    ? ['releases', 'current.json', 'config.yaml'].map((name) => joinManaged(defaultRoot, name))
+    : [];
+  const reason = shouldMigrate
+    ? 'migrate-default-to-relocated'
+    : (relocatedExists ? 'relocated-root-populated' : 'no-default-state');
+  return { relocated: true, shouldMigrate, from: defaultRoot, to: relocatedRoot, sources, reason };
 }
 
 export async function ensureManagedHeadroomService({
@@ -240,7 +326,7 @@ export async function ensureManagedHeadroomService({
       envVars,
       home,
       interceptToolResults,
-      logPath: join(home, '.myelin', 'headroom.log'),
+      logPath: joinManaged(managedPaths({ home, platform: os }).root, 'headroom.log'),
       manager: winManager,
     });
     okFn(`service registered (port ${port})`);
@@ -270,13 +356,14 @@ function ownedEngineRoleInstance(engine, role, home = homedir(), cfg = {}) {
   const id = `${engine}-${role}`;
   const port = cleanupPort(engine, role, cfg);
   if (port == null) return null;
+  const root = managedPaths({ home }).root;
   return {
     engine,
     role,
     id,
     port,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }
@@ -285,10 +372,11 @@ function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defau
   const port = cleanupPort('headroom', role, cfg);
   if (port == null) return null;
   const winHome = defaultWindowsHomeImpl(home);
+  const root = managedPaths({ home: winHome, platform: 'windows' }).root;
   const id = `headroom-${role}`;
   const stateDir = role === 'primary'
-    ? pathWin32.join(winHome, '.myelin', 'services', 'myelin-headroom')
-    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+    ? joinManaged(root, 'services', 'myelin-headroom')
+    : joinManaged(root, 'copilot-headroom');
   return {
     engine: 'headroom',
     role,
@@ -296,7 +384,7 @@ function legacyWindowsEngineRoleInstance(role, home = homedir(), cfg = {}, defau
     legacy: true,
     port,
     stateDir,
-    logPath: pathWin32.join(winHome, '.myelin', `${id}.log`),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
   };
 }
@@ -519,7 +607,26 @@ export async function applyServiceEngineInstallPlan({
   };
 }
 
-async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin }) {
+/**
+ * Build the argument-array exec that stops ONLY a managed-root Headroom process
+ * listening on `port`. The MYELIN_DIR-derived `headroomBin` and the `port` are
+ * passed to `bash` as POSITIONAL PARAMETERS ($1/$2), never string-interpolated
+ * into the script, so a `$(...)`/backtick/quote/space in the relocated binary
+ * path is treated as literal data and can never be shell-executed. The `case`
+ * quotes `"$bin"` so glob metacharacters in the path match literally too.
+ */
+export function buildHeadroomStopExec({ port, headroomBin }) {
+  const script =
+    'bin="$1"; port="$2"; ' +
+    'pids=$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null); ' +
+    'for pid in $pids; do ' +
+    'cmd=$(ps -p "$pid" -o command=); ' +
+    'case "$cmd" in *"$bin"*"proxy --port $port"*) kill -9 "$pid" ;; esac; ' +
+    'done';
+  return { file: '/bin/bash', args: ['-c', script, 'myelin-headroom-stop', String(headroomBin), String(port)] };
+}
+
+async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin, execFileSyncImpl = execFileSync }) {
   if (os === 'windows') {
     try {
       const { stopManagedHeadroomProcess } = await import('./service/windows.mjs');
@@ -529,8 +636,8 @@ async function stopHealthyProcessForManagedInstall({ os, home, port, headroomBin
   }
 
   try {
-    const command = `pids=$(lsof -tiTCP:${port} -sTCP:LISTEN 2>/dev/null); for pid in $pids; do cmd=$(ps -p "$pid" -o command=); case "$cmd" in *"${headroomBin}"*"proxy --port ${port}"*) kill -9 "$pid" ;; esac; done`;
-    execSync(command, { stdio: 'pipe', shell: '/bin/bash' });
+    const { file, args } = buildHeadroomStopExec({ port, headroomBin });
+    execFileSyncImpl(file, args, { stdio: 'pipe' });
   } catch {}
 }
 
@@ -652,8 +759,8 @@ async function installMitmproxyCA(home, interactive = true) {
   }
 
   // --- 2. Always rebuild our own bundle (fresh system content + mitmproxy CA) ---
-  const ourBundle = join(home, '.myelin', 'ca-bundle.pem');
-  mkdirSync(join(home, '.myelin'), { recursive: true });
+  const { root: myelinRoot, caBundlePath: ourBundle } = managedPaths({ home });
+  mkdirSync(myelinRoot, { recursive: true });
 
   // Seed from: read-only discovered files + well-known system paths
   let sysCerts = '';
@@ -763,45 +870,413 @@ async function promptYN(question) {
 
 function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
+const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
+
+function resolveManagedMainRepoUrl({
+  env = process.env,
+  execSyncFn = execSync,
+  metaUrl = import.meta.url,
+} = {}) {
+  if (env.MYELIN_REPO_URL) return env.MYELIN_REPO_URL;
+
+  try {
+    return String(execSyncFn('git config --get remote.origin.url', {
+      cwd: fileURLToPath(new URL('..', metaUrl)),
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })).trim() || MANAGED_MAIN_REPO_URL;
+  } catch {
+    return MANAGED_MAIN_REPO_URL;
+  }
+}
+
 /**
- * Resolve the canonical repo root to use for generated paths (shell alias,
- * service configs, etc.). Prefers ~/.myelin/repo once it actually contains
- * a working checkout — this is where the shell alias will point future
- * `myelin` invocations — falling back to wherever *this* script instance
- * currently lives (e.g. still ~/.tokenstack/repo mid-migration). Always
- * consulting the canonical path first, rather than blindly using
- * import.meta.url, means generated configs stay valid even after a legacy
- * ~/.tokenstack checkout is deleted on a later run.
+ * Build the shell line that defines the `myelin` command in the managed profile
+ * block. The managed command path is MYELIN_DIR-derived and thus arbitrary text
+ * (a relocated root can contain spaces, `$(...)`, backticks, `$VAR`, or quotes),
+ * so it is emitted as an inert single-quoted literal:
+ *   - POSIX: `alias myelin='<path>'` — the single quotes stop any expansion or
+ *     command substitution when the profile is sourced or the alias is invoked.
+ *   - Windows: `function global:myelin { & '<path>' @args }` — the PowerShell
+ *     call operator with a single-quoted (verbatim) literal, so `$(...)`/`$var`
+ *     in the path never expand when the function runs.
  */
-function resolveRepoRoot(home, os) {
-  const sep = os === 'windows' ? '\\' : '/';
-  const serviceHome = os === 'windows' ? defaultWindowsHome(home) : home;
-  if (os === 'windows' && !/^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(serviceHome)) {
-    throw new Error(`Cannot resolve a Windows-service home from ${home}; refusing to emit a \\home service asset path.`);
-  }
-  const canonical = os === 'windows'
-    ? pathWin32.join(serviceHome, '.myelin', 'repo')
-    : join(home, '.myelin', 'repo');
-  if (existsSync(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep;
-  const currentRoot = fileURLToPath(new URL('..', import.meta.url));
+export function managedMyelinCommandLine({ os, commandPath }) {
+  return os === 'windows'
+    ? `function global:myelin { & ${powershellSingleQuote(commandPath)} @args }`
+    : `alias myelin=${posixSingleQuote(commandPath)}`;
+}
+
+/**
+ * Build the shell-profile PATH additions, rooting the managed bin dir in the
+ * managed root so a relocated MYELIN_DIR is honored. The default (MYELIN_DIR
+ * unset — or set to the default `<home>/.myelin`) keeps the shell-portable
+ * `$HOME`/`$env:USERPROFILE` form; only a *genuinely relocated* managed root
+ * (an explicit rootDir/MYELIN_DIR resolving somewhere other than the default)
+ * points the entries at the resolved managed bin dir.
+ *
+ * "Relocated" is decided by {@link isManagedRootRelocated} (explicit root that
+ * resolves to a NON-default path), never by mere non-blankness of MYELIN_DIR —
+ * `myelin update` forwards the resolved default root (resolveMyelinRoot never
+ * returns blank), so treating any non-blank value as relocated would rewrite a
+ * default install's portable `$HOME` PATH into a hardcoded absolute path on
+ * every update, breaking synced dotfiles / home moves.
+ *
+ * When the root is relocated, the POSIX block additionally persists an
+ * `export MYELIN_DIR=<quoted root>` (via `posixMyelinDirExport`) and the Windows
+ * block a `$env:MYELIN_DIR = '<native root>'` (via `windowsMyelinDirExport`,
+ * carrying the NATIVE Windows form of the root) so a freshly-sourced shell
+ * resolves the same managed root the baked-in PATH points at. Values are
+ * single-quoted (POSIX / PowerShell literal rules) to stay safe for paths with
+ * spaces or shell metacharacters. Both exports are empty when not relocated.
+ */
+export function managedProfilePathBlock({ os, home = homedir(), env = process.env } = {}) {
+  const relocated = isManagedRootRelocated({ home, env, platform: os });
+  const managed = managedPaths({ home, env, platform: os });
+  const managedBinDir = managed.binDir;
   if (os === 'windows') {
-    if (/^\/mnt\/[a-zA-Z](?:\/|$)/u.test(currentRoot) || /^(?:[a-zA-Z]:[\\/]|\\\\)/u.test(currentRoot)) {
-      return normalizeWindowsFilesystemPath(currentRoot);
-    }
-    // A native WSL checkout (for example /home/alice/repo) is not a path a
-    // Windows service can execute or import from. Keep service assets bound to
-    // the canonical Windows checkout rather than emitting an invalid \home path.
-    return canonical + sep;
+    const myelinBin = relocated
+      ? normalizeWindowsFilesystemPath(managedBinDir, { rejectPosix: true })
+      : '$env:USERPROFILE\\.myelin\\bin';
+    return {
+      posixExport: '',
+      posixMyelinDirExport: '',
+      windowsMyelinDirExport: relocated
+        ? `$env:MYELIN_DIR = ${powershellSingleQuote(normalizeWindowsFilesystemPath(managed.root, { rejectPosix: true }))}`
+        : '',
+      windowsPathDirs: [
+        '$env:USERPROFILE\\.local\\bin',
+        myelinBin,
+        '$env:APPDATA\\uv\\bin',
+        '$env:LOCALAPPDATA\\uv\\bin',
+        '$env:APPDATA\\npm',
+      ],
+    };
   }
-  return currentRoot;
+  // A relocated managed bin dir is arbitrary user-supplied text; splice it into
+  // the PATH export as a single-quoted literal (closing/reopening the outer
+  // double quotes) so `$(…)`, backticks, `"`, and `$VAR` in the path can never
+  // be executed or expanded when the profile is sourced. The default form keeps
+  // `$HOME/.myelin/bin` unquoted so the shell still expands `$HOME`.
+  const posixExport = relocated
+    ? `\nexport PATH="$HOME/.local/bin:"${posixSingleQuote(managedBinDir)}":$PATH"`
+    : '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"';
+  return {
+    posixExport,
+    posixMyelinDirExport: relocated
+      ? `\nexport MYELIN_DIR=${posixSingleQuote(managed.root)}`
+      : '',
+    windowsMyelinDirExport: '',
+    windowsPathDirs: [],
+  };
+}
+
+/**
+ * Render the PowerShell `$PROFILE` PATH-prepend lines from the
+ * {@link managedProfilePathBlock} `windowsPathDirs`. Each entry is either:
+ *   - a trusted `$env:`-prefixed variable reference (e.g. `$env:USERPROFILE\.local\bin`)
+ *     that MUST expand — emitted inside a double-quoted PowerShell string, or
+ *   - a relocated managed bin dir, which is MYELIN_DIR-derived arbitrary user
+ *     text — emitted as an inert single-quoted PowerShell literal via
+ *     {@link powershellSingleQuote} so `$(...)`, backticks, and `$VAR` in the
+ *     path can never be executed/expanded when the profile is sourced.
+ * A relocated managed path is always a drive/UNC filesystem path (never
+ * `$env:`-prefixed), so the classification can never be spoofed into executing
+ * a command-substitution vector.
+ */
+export function renderWindowsProfilePathLines(windowsPathDirs = []) {
+  return windowsPathDirs
+    .map((p) => {
+      const expr = String(p).startsWith('$env:') ? `"${p}"` : powershellSingleQuote(p);
+      return `if ($env:PATH -notlike ('*' + ${expr} + '*')) { $env:PATH = ${expr} + ';' + $env:PATH }`;
+    })
+    .join('\n');
+}
+
+/**
+ * The Windows registry (HKCU\Environment) MYELIN_DIR entry, as a spreadable map.
+ * Returns `{ MYELIN_DIR: <native Windows root> }` ONLY when the managed root is
+ * genuinely relocated; a default install returns `{}` so no absolute MYELIN_DIR
+ * is persisted and services fall back to `~/.myelin`. The value is the NATIVE
+ * Windows form of the resolved root — a mounted `/mnt/<drive>/…` WSL path is
+ * converted to `<Drive>:\…` so Explorer-spawned Windows processes (which never
+ * see the WSL mount namespace) resolve the real root.
+ */
+export function managedRegistryMyelinDirVar({ os, home = homedir(), env = process.env } = {}) {
+  if (!isManagedRootRelocated({ home, env, platform: os })) return {};
+  const { root } = managedPaths({ home, env, platform: os });
+  return { MYELIN_DIR: normalizeWindowsFilesystemPath(root, { rejectPosix: true }) };
+}
+
+export function resolveManagedRuntime({
+  home = homedir(),
+  rootDir,
+  os,
+  readCurrentReleaseFn = readCurrentRelease,
+  runtimePathsFn = runtimePaths,
+  stageMainRuntimeFn = null,
+  repoUrl = MANAGED_MAIN_REPO_URL,
+} = {}) {
+  let currentRelease = readCurrentReleaseFn({ home, rootDir });
+  if (!currentRelease?.runtimeRoot) {
+    if (!stageMainRuntimeFn) {
+      throw new Error('no current managed runtime configured');
+    }
+
+    stageMainRuntimeFn({ home, rootDir, repoUrl });
+    currentRelease = readCurrentReleaseFn({ home, rootDir });
+    if (!currentRelease?.runtimeRoot) {
+      throw new Error('managed runtime bootstrap did not select a current release');
+    }
+  }
+
+  const paths = runtimePathsFn({ home, rootDir });
+  const binDir = joinManaged(paths.root, 'bin');
+  return {
+    runtimeRoot: currentRelease.runtimeRoot,
+    launcherPath: paths.launcherPath,
+    commandPath: joinManaged(binDir, os === 'windows' ? 'myelin.cmd' : 'myelin'),
+  };
+}
+
+function runtimeBridgePaths(home, rootDir) {
+  const { runtimeBridgeRoot: root } = managedPaths({ home, rootDir });
+  // Extend the (possibly relocated, possibly cross-style) managed bridge root
+  // in its OWN separator style via joinManaged — a host-native join would
+  // splice mismatched separators onto a relocated root of the opposite style
+  // (e.g. `D:\managed\runtime-bridge/src/cli/index.mjs`).
+  return {
+    root,
+    cliPath: joinManaged(root, 'src', 'cli', 'index.mjs'),
+    mitmAddonPath: joinManaged(root, 'src', 'mitm', 'copilot_addon.py'),
+    gitExtraPath: joinManaged(root, 'src', 'mcp', 'git-extra.py'),
+  };
+}
+
+function renderManagedCliBridgeSource() {
+  return `#!/usr/bin/env node
+import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, win32 as win32Path, posix as posixPath } from 'node:path';
+
+const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+const BACKSLASH = String.fromCharCode(92);
+
+// Mirror src/shared/myelin-paths.mjs isWindowsStylePath / resolveMyelinRoot so
+// this generated bridge canonicalizes an explicit MYELIN_DIR exactly like the
+// installer: expand a leading ~ / ~/ / ~BACKSLASH against home, root a relative
+// value at home (never cwd), pass an absolute value through, blank => default.
+function isWindowsStylePath(p) {
+  if (typeof p !== 'string' || p.length === 0) return false;
+  if (p.length >= 3 && /[A-Za-z]/.test(p.charAt(0)) && p.charAt(1) === ':' && (p.charAt(2) === '/' || p.charAt(2) === BACKSLASH)) return true;
+  if (p.startsWith(BACKSLASH + BACKSLASH) || p.startsWith('//')) return true;
+  if (p.startsWith('/')) return false;
+  return p.includes(BACKSLASH);
+}
+
+function resolveManagedRoot(home) {
+  const raw = process.env.MYELIN_DIR;
+  if (typeof raw !== 'string' || !raw.trim()) return join(home, '.myelin');
+  const homeModule = isWindowsStylePath(home) ? win32Path : posixPath;
+  if (raw === '~') return home;
+  if (raw.length >= 2 && raw.charAt(0) === '~' && (raw.charAt(1) === '/' || raw.charAt(1) === BACKSLASH)) {
+    return homeModule.join(home, raw.slice(2));
+  }
+  const rawModule = isWindowsStylePath(raw) ? win32Path : posixPath;
+  if (rawModule.isAbsolute(raw)) return raw;
+  return homeModule.join(home, raw);
+}
+
+function readCurrentRelease(home) {
+  const root = resolveManagedRoot(home);
+  const currentPointerPath = join(root, 'current.json');
+  const releasesDir = join(root, 'releases');
+
+  try {
+    const parsed = JSON.parse(readFileSync(currentPointerPath, 'utf8'));
+    if (
+      !parsed
+      || typeof parsed !== 'object'
+      || parsed.version !== 1
+      || typeof parsed.releaseId !== 'string'
+      || !RELEASE_ID_RE.test(parsed.releaseId)
+    ) {
+      return null;
+    }
+
+    const runtimeRoot = join(releasesDir, parsed.releaseId);
+    if (normalizedRuntimeRoot(parsed.runtimeRoot) !== normalizedRuntimeRoot(runtimeRoot)) {
+      return null;
+    }
+
+    return {
+      version: 1,
+      releaseId: parsed.releaseId,
+      runtimeRoot,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizedRuntimeRoot(value) {
+  const raw = String(value ?? '');
+  const isWindowsDriveRoot = raw.length >= 3
+    && raw.charAt(1) === ':'
+    && (raw.charAt(2) === '/' || raw.charAt(2) === String.fromCharCode(92))
+    && /[a-z]/i.test(raw.charAt(0));
+  const normalized = raw.split(String.fromCharCode(92)).join('/');
+  const segments = normalized.split('/');
+  const drive = segments[2] ?? '';
+  if (segments[0] === '' && segments[1] === 'mnt' && drive.length === 1 && /[a-z]/i.test(drive)) {
+    const rest = segments.slice(3).join('/').split('/').join(String.fromCharCode(92));
+    return (drive.toUpperCase() + ':' + String.fromCharCode(92) + rest).toLowerCase();
+  }
+  return isWindowsDriveRoot || process.platform === 'win32'
+    ? raw.split('/').join(String.fromCharCode(92)).toLowerCase()
+    : raw;
+}
+
+try {
+  const currentRelease = readCurrentRelease(homedir());
+  if (!currentRelease?.runtimeRoot) {
+    throw new Error('no current managed runtime configured');
+  }
+
+  const entrypoint = join(currentRelease.runtimeRoot, 'src', 'cli', 'index.mjs');
+  if (!existsSync(entrypoint)) {
+    throw new Error(\`managed runtime entrypoint missing: \${entrypoint}\`);
+  }
+
+  const child = spawnSync(process.execPath, [entrypoint, ...process.argv.slice(2)], { stdio: 'inherit' });
+  if (child.error) throw child.error;
+  process.exit(child.status ?? 1);
+} catch (error) {
+  console.error(\`[myelin] \${error.message}\`);
+  process.exit(1);
+}
+`;
+}
+
+function renderManagedPythonBridgeSource(relativeTargetPath, mode) {
+  return `#!/usr/bin/env python3
+import json
+import ntpath
+import os
+from pathlib import Path
+import posixpath
+import re
+import runpy
+import sys
+
+TARGET_PATH = ${JSON.stringify(relativeTargetPath)}
+MODE = ${JSON.stringify(mode)}
+RELEASE_ID_RE = re.compile(r'^main-[0-9a-f]{7,64}$')
+
+def is_windows_style_path(p):
+    if not isinstance(p, str) or len(p) == 0:
+        return False
+    if len(p) >= 3 and p[0].isascii() and p[0].isalpha() and p[1] == ':' and p[2] in ('/', chr(92)):
+        return True
+    if p.startswith(chr(92) + chr(92)) or p.startswith('//'):
+        return True
+    if p.startswith('/'):
+        return False
+    return chr(92) in p
+
+# Mirror src/shared/myelin-paths.mjs resolveMyelinRoot: expand a leading
+# ~ / ~/ / ~BACKSLASH against home, root a relative MYELIN_DIR at home (never
+# cwd), pass an absolute value through, blank/absent => <home>/.myelin.
+def resolve_managed_root(home):
+    raw = os.environ.get('MYELIN_DIR')
+    if not (raw and raw.strip()):
+        return os.path.join(home, '.myelin')
+    home_module = ntpath if is_windows_style_path(home) else posixpath
+    if raw == '~':
+        return home
+    if len(raw) >= 2 and raw[0] == '~' and raw[1] in ('/', chr(92)):
+        rest = raw[2:]
+        return home if rest == '' else home_module.join(home, rest)
+    raw_module = ntpath if is_windows_style_path(raw) else posixpath
+    if raw_module.isabs(raw):
+        return raw
+    return home_module.join(home, raw)
+
+def normalized_runtime_root(value):
+    raw = str(value)
+    is_windows_drive_root = len(raw) >= 3 and raw[1] == ':' and raw[2] in ('/', chr(92)) and raw[0].isalpha()
+    if is_windows_drive_root:
+        return raw.replace('/', chr(92)).casefold()
+    normalized = raw.replace(chr(92), '/')
+    parts = normalized.split('/')
+    drive = parts[2] if len(parts) > 2 else ''
+    if len(parts) >= 3 and parts[0] == '' and parts[1] == 'mnt' and len(drive) == 1 and drive.isalpha():
+        rest = '/'.join(parts[3:]).replace('/', chr(92))
+        return (drive.upper() + ':' + chr(92) + rest).casefold()
+    return os.path.normcase(os.path.normpath(raw))
+
+def resolve_target():
+    root = Path(resolve_managed_root(str(Path.home())))
+    current_path = root / 'current.json'
+    releases_dir = root / 'releases'
+    try:
+        current = json.loads(current_path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise RuntimeError(f'could not read {current_path}: {exc}') from exc
+
+    release_id = current.get('releaseId')
+    version = current.get('version')
+    if (
+        version != 1
+        or not isinstance(release_id, str)
+        or RELEASE_ID_RE.fullmatch(release_id) is None
+    ):
+        raise RuntimeError(f'invalid managed runtime pointer: {current_path}')
+
+    runtime_root = releases_dir / release_id
+    if normalized_runtime_root(current.get('runtimeRoot')) != normalized_runtime_root(runtime_root):
+        raise RuntimeError(f'invalid managed runtime pointer: {current_path}')
+
+    target = runtime_root / Path(TARGET_PATH)
+    if not target.is_file():
+        raise RuntimeError(f'managed runtime target missing: {target}')
+    return target
+
+try:
+    target = resolve_target()
+    if MODE == 'module':
+        globals().update(runpy.run_path(str(target)))
+    else:
+        runpy.run_path(str(target), run_name='__main__')
+except Exception as exc:
+    print(f'[myelin] {exc}', file=sys.stderr)
+    raise SystemExit(1)
+`;
+}
+
+export function writeManagedRuntimeBridge({
+  home = homedir(),
+  rootDir,
+  mkdirSyncFn = mkdirSync,
+  writeFileSyncFn = writeFileSync,
+} = {}) {
+  const paths = runtimeBridgePaths(home, rootDir);
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'cli'), { recursive: true });
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'mitm'), { recursive: true });
+  mkdirSyncFn(joinManaged(paths.root, 'src', 'mcp'), { recursive: true });
+  writeFileSyncFn(paths.cliPath, renderManagedCliBridgeSource(), 'utf8');
+  writeFileSyncFn(paths.mitmAddonPath, renderManagedPythonBridgeSource('src/mitm/copilot_addon.py', 'module'), 'utf8');
+  writeFileSyncFn(paths.gitExtraPath, renderManagedPythonBridgeSource('src/mcp/git-extra.py', 'script'), 'utf8');
+  return paths;
 }
 
 /**
  * Return the path to the Myelin mitmproxy addon script.
- * Resolves relative to the myelin repo root so it works on all platforms.
+ * Resolves through the stable runtime bridge so updates follow current.json.
  */
-export function mitmAddonPath(home, os) {
-  return join(resolveRepoRoot(home, os), 'src', 'mitm', 'copilot_addon.py');
+export function mitmAddonPath(home) {
+  return runtimeBridgePaths(home).mitmAddonPath;
 }
 
 /**
@@ -809,7 +1284,7 @@ export function mitmAddonPath(home, os) {
  * Solves Copilot launching MCP servers from a generic CWD instead of the project dir.
  */
 function writeSerenaWrapper(home, serenaBin) {
-  const binDir = join(home, '.myelin', 'bin');
+  const binDir = managedPaths({ home }).binDir;
   mkdirSync(binDir, { recursive: true });
   if (process.platform === 'win32') {
     const ps1 = join(binDir, 'serena-mcp.ps1');
@@ -837,7 +1312,7 @@ while [ "$dir" != "/" ]; do
 done
 exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
 `, 'utf8');
-  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  try { chmodSync(sh, 0o755); } catch {}
   return sh;
 }
 
@@ -847,7 +1322,7 @@ exec "${serenaBin}" start-mcp-server --project "$dir" "$@"
  * even when the client spawns MCP servers from a generic working directory.
  */
 function writeCodegraphWrapper(home, codegraphBin) {
-  const binDir = join(home, '.myelin', 'bin');
+  const binDir = managedPaths({ home }).binDir;
   mkdirSync(binDir, { recursive: true });
   if (process.platform === 'win32') {
     const ps1 = join(binDir, 'codegraph-mcp.ps1');
@@ -878,7 +1353,7 @@ done
 cd "$dir" || exit 1
 exec "${codegraphBin}" mcp "$@"
 `, 'utf8');
-  try { execSync(`chmod +x "${sh}"`, { stdio: 'pipe' }); } catch {}
+  try { chmodSync(sh, 0o755); } catch {}
   return sh;
 }
 
@@ -981,7 +1456,10 @@ export function buildMitmServiceInstallOptions({
       : mitmAddonPathImpl(effectiveHome, os),
     envVars,
     upstreamProxy: String(corpProxy ?? '').replace(LOOPBACK_PROXY_PATTERN, '').trim(),
-    logPath: os === 'windows' ? normalizeWindowsFilesystemPath(join(effectiveHome, '.myelin', 'mitmproxy.log')) : join(effectiveHome, '.myelin', 'mitmproxy.log'),
+    logPath: joinManaged(managedPaths({
+      home: effectiveHome,
+      platform: os === 'windows' ? 'windows' : os,
+    }).root, 'mitmproxy.log'),
     home: effectiveHome,
     egressPort,
     manager: winManager,
@@ -1145,6 +1623,212 @@ async function ensureMitmCA(home, mitmdumpBin) {
 }
 
 /**
+ * Ownership-verified shutdown of legacy Myelin-managed proxy processes during
+ * the one-time ~/.tokenstack → ~/.myelin migration.
+ *
+ * The previous implementation ran `Stop-Process -Name headroom,mitmdump`,
+ * which name-kills *any* process sharing those names — including a user's own
+ * unrelated headroom/mitmproxy install. This replacement never name-kills:
+ * it only stops a process when (a) its pid was persisted by Myelin under the
+ * legacy managed directory, (b) the process is still live (has a StartTime),
+ * and (c) the process is genuinely running *from* the managed directory being
+ * migrated (command-line / executable-path ownership — mirrors the
+ * headroomLiteMatchesManagedPid guard in src/cli/restart.mjs). A same-named
+ * process installed elsewhere can never satisfy (c), so it is left untouched.
+ */
+function legacyManagedPidFiles(oldDir) {
+  return [
+    join(oldDir, 'services', 'myelin-headroom', 'headroom.pid'),
+    join(oldDir, 'services', 'myelin-copilot-headroom', 'copilot-headroom.pid'),
+    join(oldDir, 'services', 'myelin-mitmproxy', 'mitm.pid'),
+    join(oldDir, 'state', 'headroom-lite', 'headroom-lite.pid'),
+  ];
+}
+
+function legacyProcessInfo(pid, { execSyncImpl = execSync, powershellExe } = {}) {
+  try {
+    const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+    const script = [
+      `$proc = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction SilentlyContinue`,
+      'if (-not $proc) { return }',
+      '@{ command = $proc.CommandLine; executablePath = $proc.ExecutablePath; startTime = if ($proc.CreationDate) { $proc.CreationDate.ToString("o") } else { "" } } | ConvertTo-Json -Compress',
+    ].join('; ');
+    const out = execSyncImpl(`${ps} -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').trim();
+    return out ? JSON.parse(out) : null;
+  } catch {
+    return null;
+  }
+}
+
+function legacyManagedProcessIsOwned(processInfo, managedRoot) {
+  if (!processInfo) return false;
+  // Require a live process (StartTime present) to avoid acting on a stale or
+  // torn pid record, then verify command-path ownership under the managed dir.
+  if (!processInfo.startTime) return false;
+  return [processInfo.command, processInfo.executablePath].some((value) =>
+    pathReferencesManagedDir(value, managedRoot)
+  );
+}
+
+/**
+ * Does `value` (a process command line or executable path) reference a file that
+ * lives INSIDE `dir`, matched at a PATH-COMPONENT boundary? A plain substring
+ * check wrongly treats a sibling like `...\uv\tools-backup\semble.exe` as owned
+ * by `...\uv\tools` (the prefix `tools` is a substring of `tools-backup`).
+ * Require `dir` to be followed by a path separator (or to equal the value
+ * exactly) after normalizing separators AND case, so `...\uv\tools` matches only
+ * a genuine `...\uv\tools\<child>` and never `...\uv\tools-backup\...`.
+ */
+function pathReferencesManagedDir(value, dir) {
+  const normalize = (s) => String(s ?? '').replace(/[\\/]+/g, '/').toLowerCase();
+  const needle = normalize(dir).replace(/\/+$/u, '');
+  if (!needle) return false;
+  const hay = normalize(value);
+  return hay === needle || hay.includes(`${needle}/`);
+}
+
+function defaultStopManagedPid(pid, { execSyncImpl = execSync, powershellExe } = {}) {
+  const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+  // Stop strictly by pid — never by process name.
+  execSyncImpl(`${ps} -NoProfile -Command "Stop-Process -Id ${pid} -Force -ErrorAction Stop"`, { stdio: 'pipe' });
+}
+
+export function stopLegacyManagedProxies({
+  os,
+  oldDir,
+  execSyncImpl = execSync,
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  powershellExe,
+  processInfoFn = (pid) => legacyProcessInfo(pid, { execSyncImpl, powershellExe }),
+  stopPidFn = (pid) => defaultStopManagedPid(pid, { execSyncImpl, powershellExe }),
+} = {}) {
+  const stopped = [];
+  const skipped = [];
+  if (os !== 'windows' || !oldDir) return { stopped, skipped };
+
+  const seen = new Set();
+  for (const pidFile of legacyManagedPidFiles(oldDir)) {
+    let pid = null;
+    try {
+      if (!existsSyncImpl(pidFile)) continue;
+      pid = Number(
+        String(readFileSyncImpl(pidFile, 'utf8') ?? '')
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find(Boolean) ?? '',
+      );
+    } catch {
+      continue;
+    }
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+
+    const info = processInfoFn(pid);
+    if (!legacyManagedProcessIsOwned(info, oldDir)) {
+      skipped.push({ pid, reason: 'not a verified Myelin-managed process' });
+      continue;
+    }
+
+    try {
+      stopPidFn(pid);
+      stopped.push(pid);
+    } catch (error) {
+      skipped.push({ pid, reason: `failed to stop pid ${pid}: ${error?.message?.split?.('\n')?.[0] ?? error}` });
+    }
+  }
+
+  return { stopped, skipped };
+}
+
+/**
+ * Ownership-verified shutdown of a uv-tool-managed MCP process (serena-agent /
+ * semble) so a Windows in-place `uv tool install` can replace files the running
+ * server holds open — WITHOUT ever name-killing.
+ *
+ * The previous implementation ran `Get-Process -Name 'serena-agent' |
+ * Stop-Process -Force`, which kills ANY process sharing that name, including a
+ * user's own unrelated build. This replacement instead:
+ *   (a) resolves the uv tool install location (`uv tool dir`); if it cannot be
+ *       resolved, it does NOTHING (best-effort no-op) rather than name-killing;
+ *   (b) enumerates same-named processes and keeps only those that are LIVE
+ *       (StartTime present) AND whose command line / executable path runs FROM
+ *       the uv tool dir — a same-named process installed elsewhere can never
+ *       satisfy this, so it is left untouched;
+ *   (c) stops each verified process strictly by PID (never by name).
+ */
+function defaultUvToolDir({ execSyncImpl = execSync } = {}) {
+  try {
+    const out = execSyncImpl('uv tool dir', { stdio: ['ignore', 'pipe', 'pipe'] });
+    const dir = String(out ?? '').toString().replace(/^\uFEFF/, '').trim();
+    return dir || null;
+  } catch {
+    return null;
+  }
+}
+
+function defaultUvToolProcessList(name, { execSyncImpl = execSync, powershellExe } = {}) {
+  try {
+    const ps = powershellExe ?? powerShellExecutable({ windowsInterop: true });
+    const script = [
+      `$procs = Get-CimInstance Win32_Process -Filter "Name = '${name}.exe' OR Name = '${name}'" -ErrorAction SilentlyContinue`,
+      'if (-not $procs) { return }',
+      '@($procs | ForEach-Object { @{ pid = $_.ProcessId; command = $_.CommandLine; executablePath = $_.ExecutablePath; startTime = if ($_.CreationDate) { $_.CreationDate.ToString("o") } else { "" } } }) | ConvertTo-Json -Compress',
+    ].join('; ');
+    const out = execSyncImpl(`${ps} -NoProfile -Command "${script.replace(/"/g, '\\"')}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').trim();
+    if (!out) return [];
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return [];
+  }
+}
+
+export function stopManagedUvToolProcess(name, {
+  os,
+  execSyncImpl = execSync,
+  powershellExe,
+  toolDirFn = () => defaultUvToolDir({ execSyncImpl }),
+  processListFn = (n) => defaultUvToolProcessList(n, { execSyncImpl, powershellExe }),
+  isOwnedFn = legacyManagedProcessIsOwned,
+  stopPidFn = (pid) => defaultStopManagedPid(pid, { execSyncImpl, powershellExe }),
+} = {}) {
+  const stopped = [];
+  const skipped = [];
+  if (os !== 'windows' || !name) return { stopped, skipped };
+
+  // Cannot verify ownership → refuse to touch anything (never blind name-kill).
+  const toolDir = toolDirFn();
+  if (!toolDir) return { stopped, skipped, unverified: true };
+
+  const seen = new Set();
+  for (const info of processListFn(name)) {
+    const pid = Number(info?.pid);
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+
+    if (!isOwnedFn(info, toolDir)) {
+      skipped.push({ pid, reason: 'not a verified uv-tool-managed process' });
+      continue;
+    }
+
+    try {
+      stopPidFn(pid);
+      stopped.push(pid);
+    } catch (error) {
+      skipped.push({ pid, reason: `failed to stop pid ${pid}: ${error?.message?.split?.('\n')?.[0] ?? error}` });
+    }
+  }
+
+  return { stopped, skipped };
+}
+
+/**
  * Copilot/Claude wrappers are now defined in ./service/wrappers.mjs so they
  * can be unit-tested for env-var isolation. Never set provider env vars
  * globally (shell profile / Windows registry) — always via these wrappers.
@@ -1168,14 +1852,26 @@ async function main() {
   const os       = detectOS();
   const shell    = detectShell();
   const home     = homedir();
+  const managed = managedPaths({ home, env: process.env });
   const claudeCC = !flags['copilot-only'];
   const copilot  = !flags['claude-only'];
 
   console.log('\n🧬 Myelin Installer — ' + os + '\n');
 
+  // Relocation-migration decision (detection only): if the user moved the
+  // managed root via MYELIN_DIR but the default ~/.myelin still holds the
+  // release/config state and the new root is empty, surface that so its history
+  // and config can be carried over.
+  try {
+    const relocation = planManagedRelocationMigration({ home, env: process.env, platform: os });
+    if (relocation.shouldMigrate) {
+      warn(`relocated MYELIN_DIR (${relocation.to}) is empty but ${relocation.from} holds managed state — migrate releases/current.json/config to preserve history`);
+    }
+  } catch {}
+
   // Migrate ~/.tokenstack → ~/.myelin (one-time)
   const oldDir = join(home, '.tokenstack');
-  const newDir = join(home, '.myelin');
+  const newDir = managed.root;
   // Also handle the case where Move-Item put .tokenstack *inside* .myelin
   const nestedOld = join(newDir, '.tokenstack');
   const runningFromOld = process.argv[1]?.startsWith(oldDir);
@@ -1213,10 +1909,23 @@ async function main() {
   }
 
   if (existsSync(oldDir) && !existsSync(newDir) && !runningFromOld) {
-    // On Windows, running processes lock the venv dir — stop them first
+    // On Windows, running processes lock the venv dir — stop them first, but
+    // ONLY Myelin-managed processes verified by persisted pid + command-path
+    // ownership. Never name-kill (that could take out an unrelated headroom
+    // or mitmproxy the user installed themselves).
     if (os === 'windows') {
-      try { execSync('powershell -Command "Stop-Process -Name headroom,mitmdump -ErrorAction SilentlyContinue"', { stdio: 'pipe' }); } catch {}
-      await new Promise(r => setTimeout(r, 1000));
+      try {
+        const { stopped, skipped } = stopLegacyManagedProxies({ os, oldDir });
+        if (stopped.length) {
+          ok(`Stopped ${stopped.length} Myelin-managed legacy process(es) before migration`);
+          await new Promise(r => setTimeout(r, 1000));
+        }
+        for (const { pid, reason } of skipped) {
+          skip(`Left process ${pid} running (${reason})`);
+        }
+      } catch (e) {
+        warn(`Could not stop legacy managed processes: ${e.message.split('\n')[0]} — continuing`);
+      }
     }
     try {
       const { renameSync } = await import('node:fs');
@@ -1224,12 +1933,14 @@ async function main() {
       ok('Migrated ~/.tokenstack → ~/.myelin');
       didMigrate = true;
     } catch {
-      // Fallback: copy + delete (handles cross-device or locked files)
+      // Fallback: copy + delete (handles cross-device or locked files).
+      // Uses fs cp/rm APIs — never a shell — so the managed `newDir`
+      // (MYELIN_DIR-derived, may contain spaces/$()/quotes) is never parsed by
+      // any shell. cpSync recurses; this branch only runs when newDir is absent.
       try {
-        execSync(os === 'windows'
-          ? `robocopy "${oldDir}" "${newDir}" /E /MOVE /NFL /NDL /NJH /NJS`
-          : `cp -r "${oldDir}" "${newDir}" && rm -rf "${oldDir}"`,
-          { stdio: 'pipe', shell: true });
+        const { cpSync, rmSync } = await import('node:fs');
+        cpSync(oldDir, newDir, { recursive: true });
+        rmSync(oldDir, { recursive: true, force: true });
         ok('Migrated ~/.tokenstack → ~/.myelin (via copy)');
         didMigrate = true;
       } catch (e2) {
@@ -1252,10 +1963,10 @@ async function main() {
       // running from newRepoDir) will finish removing oldDir.
       if (existsSync(oldRepo) && !existsSync(newRepoDir)) {
         try {
-          execSync(os === 'windows'
-            ? `robocopy "${oldRepo}" "${newRepoDir}" /E /NFL /NDL /NJH /NJS`
-            : `cp -r "${oldRepo}" "${newRepoDir}"`,
-            { stdio: 'pipe', shell: true });
+          // fs cp (never a shell): the managed `newRepoDir` is MYELIN_DIR-derived
+          // and must never be spliced into a `cp`/`robocopy` shell command.
+          const { cpSync } = await import('node:fs');
+          cpSync(oldRepo, newRepoDir, { recursive: true });
           ok('Copied repo to ~/.myelin/repo (removing ~/.tokenstack next run)');
         } catch (e) {
           warn(`Could not pre-copy repo to ~/.myelin/repo: ${e.message.split('\n')[0]}`);
@@ -1315,7 +2026,7 @@ async function main() {
 
   if (flags.check) { printStateTable(tools, caBundles, corpProxy); process.exit(0); }
 
-  mkdirSync(join(home, '.myelin'), { recursive: true });
+  mkdirSync(managed.root, { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
   const initialEnginePlan = buildEngineInstancePlan(existingCfg);
   const initialPrimaryInstance = initialEnginePlan.instances.find(({ role }) => role === 'primary');
@@ -1323,7 +2034,7 @@ async function main() {
   const copilotHudEnabled = Boolean(existingCfg.copilot_hud?.enabled);
   const tokenOptimizerEnabled = existingCfg.observability?.token_optimizer === true;
   const codegraphEnabled = existingCfg.code_discovery?.codegraph === true;
-  const venv = join(home, '.myelin', 'venv');
+  const venv = managed.venvPath;
   // Gated on BOTH the config flag AND actual presence — a leftover global
   // install from a prior "enabled: true" run (or an unrelated `npm install -g
   // @optave/codegraph` on the machine) must never cause MCP registration
@@ -1361,6 +2072,14 @@ async function main() {
     return;
   }
 
+  const managedRuntime = resolveManagedRuntime({
+    home,
+    os,
+    stageMainRuntimeFn: stageMainRuntime,
+    repoUrl: resolveManagedMainRepoUrl(),
+  });
+  const runtimeBridge = writeManagedRuntimeBridge({ home });
+
 
   step('[1/7] Package manager...');
   await ensureUv();
@@ -1371,7 +2090,7 @@ async function main() {
   if (!tools.serena.installed) {
     console.log('  Installing Serena (oraios/serena)...');
     if (os === 'windows') {
-      try { execSync('powershell -Command "Get-Process -Name \'serena-agent\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      stopManagedUvToolProcess('serena-agent', { os });
       await new Promise(r => setTimeout(r, 500));
     }
     try {
@@ -1392,7 +2111,8 @@ async function main() {
   try {
     const serenaEnv = execSync('uv tool dir', { stdio: 'pipe' }).toString().trim();
     const bottlePath = join(serenaEnv, 'serena-agent');
-    execSync(`uv pip install --python "${bottlePath}" "bottle<0.13"`, { stdio: 'pipe' });
+    // execFileSync: bottlePath (uv-tool-dir-derived venv) is a literal argv element, never shell-parsed
+    execFileSync('uv', ['pip', 'install', '--python', bottlePath, 'bottle<0.13'], { stdio: 'pipe' });
   } catch {}
   // Serena opens a browser tab/window every time its MCP server starts by
   // default (web_dashboard_open_on_launch: true) - quality-of-life fix,
@@ -1405,7 +2125,7 @@ async function main() {
   if (!tools.semble.installed) {
     console.log('  Installing Semble...');
     if (os === 'windows') {
-      try { execSync('powershell -Command "Get-Process -Name \'semble\' -ErrorAction SilentlyContinue | Stop-Process -Force"', { stdio: 'pipe' }); } catch {}
+      stopManagedUvToolProcess('semble', { os });
       await new Promise(r => setTimeout(r, 500));
     }
     let sembleInstalled = false;
@@ -1518,6 +2238,7 @@ async function main() {
     installTokenOptimizerForCopilot({
       os,
       exec: (command, options = {}) => execSync(command, { stdio: 'inherit', ...options }),
+      execFile: (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options }),
       log: (message = '') => console.log(`  ${message}`),
       warn,
     });
@@ -1544,10 +2265,8 @@ async function main() {
   if (existingCfg.budget_routing?.litellm) {
     step('LiteLLM budget router...');
     try {
-      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
-        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
-      }
-      execSync(`uv pip install --python "${venv}" "litellm[proxy]>=1.92"`, { stdio: 'inherit' });
+      ensureManagedVenv(venv);
+      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92');
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
@@ -1599,12 +2318,10 @@ async function main() {
   if (installsPythonHeadroomPackage) {
     if (!tools.headroom.installed) {
       console.log('  Installing headroom...');
-      if (!existsSync(join(venv, 'pyvenv.cfg'))) {
-        execSync(`uv venv "${venv}"`, { stdio: 'pipe' });
-      }
-      // Single quotes break on Windows cmd — use double quotes or no quotes
-      const headroomPkg = os === 'windows' ? '"headroom-ai[all]"' : "'headroom-ai[all]'";
-      execSync(`uv pip install --python "${venv}" ${headroomPkg}`, { stdio: 'inherit' });
+      ensureManagedVenv(venv);
+      // execFileSync passes the spec as a literal argv element, so the `[all]`
+      // extras marker is never shell-globbed on any platform — no per-OS quoting.
+      installPipPackageInManagedVenv(venv, 'headroom-ai[all]');
       ok('headroom installed (headroom-ai from PyPI)');
     } else {
       skip(`headroom (${tools.headroom.version})`);
@@ -1762,15 +2479,12 @@ async function main() {
     toolPaths.codegraphWrapper = writeCodegraphWrapper(home, toolPaths.codegraph);
   }
 
-  const memoryFile = os === 'windows'
-    ? join(home, '.myelin', 'memory.jsonl').replace(/\//g, '\\')
-    : join(home, '.myelin', 'memory.jsonl');
-  const repoRoot = resolveRepoRoot(home, os);
+  const memoryFile = joinManaged(managed.root, 'memory.jsonl');
   const gitExtraEnabled = existingCfg.code_discovery?.mcp_git_extra !== false;
   const gitExtraServer = gitExtraEnabled
     ? {
         command: os === 'windows' ? 'python' : 'python3',
-        args: [join(repoRoot, 'src', 'mcp', 'git-extra.py')],
+        args: [runtimeBridge.gitExtraPath],
       }
     : undefined;
 
@@ -1884,7 +2598,7 @@ async function main() {
       const res = ensureSafeRtkCopilotHook({
         home,
         nodePath: process.execPath,
-        repoRoot: resolveRepoRoot(home, os),
+        repoRoot: runtimeBridge.root,
         mode: rtkActive ? 'active' : 'inactive',
       });
       if (res.action === 'wrote-guarded') ok('~/.copilot/hooks/rtk-rewrite.json (fail-open guard)');
@@ -1910,7 +2624,7 @@ stack (Serena + Semble registration/indexing for the current git repo).
 
 1. Run \`myelin init $ARGUMENTS\` via the terminal/Bash tool. If the \`myelin\`
    alias isn't on PATH yet in this session, fall back to
-   \`node "${resolveRepoRoot(home, os)}src/cli/index.mjs" init $ARGUMENTS\`.
+   \`"${managedRuntime.commandPath}" init $ARGUMENTS\`.
 2. Stream the command's output back to the user.
 3. If it reports warnings or failures, summarize them clearly and suggest
    \`myelin verify\` as a follow-up health check.
@@ -1949,22 +2663,21 @@ ${initSkillBody}`);
     if (os === 'windows') mkdirSync(join(profilePath, '..'), { recursive: true });
     const existing = existsSync(profilePath) ? readFileSync(profilePath, 'utf8') : '';
     const certLines = Object.entries(sslEnv)
-      .map(([k, v]) => `export ${k}=${v}`)
+      .map(([k, v]) => `export ${k}=${posixSingleQuote(v)}`)
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
     const copilotAlias = buildCopilotWrapper({ os });
     const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
-    const repoRoot = resolveRepoRoot(home, os);
-    const myelinCmd = os === 'windows'
-      ? `function global:myelin { node "${repoRoot}src/cli/index.mjs" @args }`
-      : `alias myelin="node ${repoRoot}src/cli/index.mjs"`;
-    const extraPath = os === 'windows' ? '' : '\nexport PATH="$HOME/.local/bin:$HOME/.myelin/bin:$PATH"';
+    const myelinCmd = managedMyelinCommandLine({ os, commandPath: managedRuntime.commandPath });
+    const profilePathBlock = managedProfilePathBlock({ os, home });
+    const extraPath = profilePathBlock.posixExport;
+    const myelinDirExport = profilePathBlock.posixMyelinDirExport;
 
     // On Windows, add key bin dirs to process.env.PATH now so tool invocations work
     if (os === 'windows') {
       const winPaths = [
         join(home, '.local', 'bin'),
-        join(home, '.myelin', 'bin'),
+        managed.binDir,
         join(home, 'AppData', 'Roaming', 'uv', 'bin'),
         join(home, 'AppData', 'Local', 'uv', 'bin'),
         join(home, 'AppData', 'Roaming', 'npm'),
@@ -1985,18 +2698,18 @@ ${initSkillBody}`);
       // deliberately NOT set in $PROFILE — they live only inside the _copilot
       // and _claude wrappers so they can't cross-contaminate each other.
       const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
-      const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = "${v}"`).join('\n');
-      const psPaths = [
-        `$env:USERPROFILE\\.local\\bin`,
-        `$env:USERPROFILE\\.myelin\\bin`,
-        `$env:APPDATA\\uv\\bin`,
-        `$env:LOCALAPPDATA\\uv\\bin`,
-        `$env:APPDATA\\npm`,
-      ].map(p => `if ($env:PATH -notlike "*${p}*") { $env:PATH = "${p};$env:PATH" }`).join('\n');
-      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      // Only a genuinely relocated root persists $env:MYELIN_DIR (escaped,
+      // native Windows form) so a new PowerShell session resolves the same
+      // managed root the baked-in PATH points at. A default install emits none.
+      const psMyelinDir = profilePathBlock.windowsMyelinDirExport
+        ? `${profilePathBlock.windowsMyelinDirExport}\n`
+        : '';
+      const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = ${powershellSingleQuote(v)}`).join('\n');
+      const psPaths = renderWindowsProfilePathLines(profilePathBlock.windowsPathDirs);
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
@@ -2036,7 +2749,7 @@ ${initSkillBody}`);
   // isn't writable (some corp machines) — the shell alias/PS module above
   // remains the reliable baseline either way.
   {
-    const linkResult = linkGlobalBin({ repoRoot: resolveRepoRoot(home, os).replace(/[\\/]$/, ''), os });
+    const linkResult = linkGlobalBin({ home, os });
     if (linkResult.linked) {
       ok(`myelin linked globally via npm (${linkResult.binDir})`);
     } else {
@@ -2067,6 +2780,13 @@ ${initSkillBody}`);
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
+      // Persist the NATIVE Windows form of a relocated MYELIN_DIR so new
+      // Explorer-spawned windows resolve the same managed root. Under WSL the
+      // running process sees a mounted `/mnt/<drive>/…` path; the registry (a
+      // Windows-native store) must carry `<Drive>:\…`, never the raw POSIX mount
+      // path. Only a genuinely relocated root is persisted — a default install
+      // leaves MYELIN_DIR unset so services fall back to `~/.myelin`.
+      ...managedRegistryMyelinDirVar({ os, home, env: process.env }),
       ...sslEnv,
     };
     if (setUserEnvVars(registryVars)) {

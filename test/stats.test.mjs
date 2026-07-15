@@ -6,6 +6,7 @@ import {
   collectWideLocalStatsSections,
   getWideStatsHint,
   isAliveRoot,
+  mitmproxyLogPath,
   renderLocalStatsRows,
   runStats,
 } from '../src/cli/stats.mjs';
@@ -415,5 +416,21 @@ describe('renderLocalStatsRows', () => {
       available: false,
       rows: [['Status', 'unavailable']],
     });
+  });
+});
+
+describe('mitmproxyLogPath — managed root relocation (MYELIN_DIR)', () => {
+  it('honors MYELIN_DIR when set', () => {
+    assert.equal(
+      mitmproxyLogPath({ home: '/home/u', env: { MYELIN_DIR: '/custom/mroot' }, platform: 'linux' }),
+      '/custom/mroot/mitmproxy.log',
+    );
+  });
+
+  it('defaults to <home>/.myelin/mitmproxy.log', () => {
+    assert.equal(
+      mitmproxyLogPath({ home: '/home/u', env: {}, platform: 'linux' }),
+      '/home/u/.myelin/mitmproxy.log',
+    );
   });
 });

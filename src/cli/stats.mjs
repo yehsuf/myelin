@@ -1,12 +1,16 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
 import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
 
 const SEP = '─'.repeat(60);
 const WIDE_DISCOVERY_HINT = 'More detail: myelin stats --wide';
+
+export function mitmproxyLogPath({ home = homedir(), env = process.env, platform = process.platform } = {}) {
+  return joinManaged(managedPaths({ home, env, platform }).root, 'mitmproxy.log');
+}
 
 function probe(url, timeoutMs = 2000) {
   try {
@@ -269,6 +273,7 @@ export async function runStats({ wide = false } = {}, {
   pathExists = existsSync,
   readFile = readFileSync,
   homeDir = homedir(),
+  env = process.env,
 } = {}) {
   const cfg = await loadConfigFn();
   const sections = [];
@@ -290,7 +295,7 @@ export async function runStats({ wide = false } = {}, {
   const mitmPort = cfg?.proxy?.mitm?.port ?? 8888;
   if (mitmEnabled) {
     const mitmAlive = probeRoot(mitmPort, 'mitmproxy');
-    const logPath = join(homeDir, '.myelin', 'mitmproxy.log');
+    const logPath = mitmproxyLogPath({ home: homeDir, env });
     sections.push({
       title: `mitmproxy  (:${mitmPort})  — Copilot CLI`,
       print(logFn) {

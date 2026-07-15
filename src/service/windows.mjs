@@ -1,5 +1,5 @@
 import { execFileSync, execSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, posix as pathPosix, win32 as pathWin32 } from 'node:path';
 import { headroomHealthUrl } from '../tools/headroom.mjs';
@@ -7,6 +7,7 @@ import { installWinsw, winswFilesystemPath } from '../tools/winsw.mjs';
 import { powerShellExecutable } from '../detect/os.mjs';
 import { isWsl } from '../detect/wsl.mjs';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
+import { managedPaths, joinManaged, resolveMyelinRoot } from '../shared/myelin-paths.mjs';
 
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const HEADROOM_KEY = 'MyelinHeadroom';
@@ -113,13 +114,15 @@ function legacyEngineInstance({
   envVars = {},
   logPath,
   home,
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const winHome = defaultWindowsHome(home);
+  const root = managedPaths({ home: winHome, env, platform: 'windows' }).root;
   const id = `${engine}-${role}`;
   const stateDir = role === 'primary'
-    ? winswServiceDir({ id: HEADROOM_SERVICE_ID, home: winHome })
-    : pathWin32.join(winHome, '.myelin', 'copilot-headroom');
+    ? winswServiceDir({ id: HEADROOM_SERVICE_ID, home: winHome, env })
+    : joinManaged(root, 'copilot-headroom');
   return {
     engine,
     role,
@@ -127,7 +130,7 @@ function legacyEngineInstance({
     id,
     legacy: true,
     stateDir,
-    logPath: logPath ?? pathWin32.join(winHome, '.myelin', `${id}.log`),
+    logPath: logPath ?? joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -150,6 +153,7 @@ export function runPs(script, {
   stdio = 'pipe',
   powershellExe = powerShellExecutable(),
   home = homedir(),
+  env = process.env,
   isWslImpl = isWsl,
   defaultWindowsHomeImpl = defaultWindowsHome,
   processId = process.pid,
@@ -157,13 +161,17 @@ export function runPs(script, {
   mkdirSyncImpl = mkdirSync,
   writeFileSyncImpl = writeFileSync,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   unlinkSyncImpl = unlinkSync,
 } = {}) {
   const wsl = isWslImpl();
   const windowsHome = defaultWindowsHomeImpl(home);
-  const nativeStateDir = isWindowsAbsolutePath(windowsHome)
-    ? pathWin32.join(windowsHome, '.myelin', 'state')
-    : join(home, '.myelin', 'state');
+  const managedStateDir = managedPaths({
+    home: windowsHome,
+    env,
+    platform: 'windows',
+  }).serviceStatePath;
+  const nativeStateDir = normalizeWindowsFilesystemPath(managedStateDir, { rejectPosix: true });
   const stateDir = wsl ? winswFilesystemPathFor(nativeStateDir, { isWslImpl }) : nativeStateDir;
   const filename = `myelin-${processId}-${nowImpl()}.ps1`;
   const tmp = wsl ? pathPosix.join(stateDir, filename) : join(stateDir, filename);
@@ -171,10 +179,42 @@ export function runPs(script, {
   mkdirSyncImpl(stateDir, { recursive: true });
   writeFileSyncImpl(tmp, script, 'utf8');
   try {
-    execSyncImpl(withPowerShell(`-ExecutionPolicy Bypass -File "${powershellScriptPath}"`, powershellExe), { stdio });
+    // Arg-array exec (never a command STRING): the MYELIN_DIR-derived managed
+    // script path is a literal `-File` argument, so neither PowerShell/shell
+    // parsing nor cmd.exe %VAR% expansion is ever applied to it.
+    execFileSyncImpl(
+      powershellExe,
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', powershellScriptPath],
+      { stdio },
+    );
   } finally {
     try { unlinkSyncImpl(tmp); } catch {}
   }
+}
+
+/**
+ * Injection-safe PowerShell command execution.
+ *
+ * Runs `powershellExe -NoProfile -Command <command>` via an ARGUMENT ARRAY
+ * (execFileSync) — never a shell command STRING. On WSL `process.platform` is
+ * `'linux'`, so `execSync('powershell.exe ... -Command "& { <script> }"')` is
+ * handed to `/bin/sh -c` FIRST. `/bin/sh` sees the PowerShell single-quoted
+ * managed/MYELIN_DIR-derived paths as ordinary text inside its own double
+ * quotes and command-substitutes any `$(...)`/backtick sequences in them
+ * (both are legal Windows filename chars, survive `escapePs`, and MYELIN_DIR is
+ * untrusted) BEFORE PowerShell ever runs — arbitrary code execution. Passing
+ * the whole command as ONE literal argv element means no shell (`/bin/sh` on
+ * WSL/Linux, or `cmd.exe` on Windows) re-parses it on any platform; only
+ * PowerShell interprets it, where the single-quoting is sufficient.
+ */
+function runPsCommand(command, {
+  powershellExe = powerShellExecutable(),
+  execFileSyncImpl = execFileSync,
+  prefixArgs = ['-NoProfile', '-Command'],
+  stdio,
+} = {}) {
+  const options = stdio === undefined ? {} : { stdio };
+  return execFileSyncImpl(powershellExe, [...prefixArgs, command], options);
 }
 
 function escapePs(value = '') {
@@ -286,9 +326,16 @@ exit 1`;
   );
 }
 
-function findWindowsHeadroom(serviceHome, execFileSyncImpl) {
-  const expectedPath = isNativeWindowsPath(serviceHome)
-    ? pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')
+function findWindowsHeadroom(serviceHome, execFileSyncImpl, env = process.env) {
+  const resolvedRoot = managedPaths({ home: serviceHome, env, platform: 'windows' }).root;
+  // A relocated MYELIN_DIR expressed as a WSL mount (/mnt/<drive>/...) maps to a
+  // native Windows path — convert it so the venv probe targets the real Windows
+  // venv instead of falling back to the Windows User-scope MYELIN_DIR.
+  const root = /^\/mnt\/[a-zA-Z](?:\/|$)/u.test(resolvedRoot)
+    ? normalizeWindowsFilesystemPath(resolvedRoot, { rejectPosix: false })
+    : resolvedRoot;
+  const expectedPath = isNativeWindowsPath(root)
+    ? joinManaged(root, 'venv', 'Scripts', 'headroom.exe')
     : null;
   const script = expectedPath
     ? `$path = ${psQuote(expectedPath)}
@@ -298,7 +345,9 @@ if (Test-Path -LiteralPath $path -PathType Leaf) {
 }
 exit 1`
     : `$home = [Environment]::GetFolderPath('UserProfile')
-$path = Join-Path $home '.myelin\\venv\\Scripts\\headroom.exe'
+$root = [Environment]::GetEnvironmentVariable('MYELIN_DIR', 'User')
+if (-not $root -or -not $root.Trim()) { $root = Join-Path $home '.myelin' }
+$path = Join-Path $root 'venv\\Scripts\\headroom.exe'
 if (Test-Path -LiteralPath $path -PathType Leaf) {
   [Console]::Out.Write($path)
   exit 0
@@ -317,6 +366,7 @@ export function resolveWindowsServiceExecutable({
   serviceHome,
   servicePlatform,
   wsl,
+  env = process.env,
 } = {}, {
   execFileSyncImpl = nodeExecFileSync,
 } = {}) {
@@ -351,7 +401,7 @@ export function resolveWindowsServiceExecutable({
   try {
     const resolved = engine === 'headroom_lite'
       ? findWindowsHeadroomLite(execFileSyncImpl)
-      : findWindowsHeadroom(serviceHome, execFileSyncImpl);
+      : findWindowsHeadroom(serviceHome, execFileSyncImpl, env);
     if (isNativeWindowsPath(resolved) && isRunnableWindowsExecutable(engine, resolved)) {
       return normalizeWindowsFilesystemPath(resolved);
     }
@@ -361,7 +411,7 @@ export function resolveWindowsServiceExecutable({
     ? 'Install headroom-lite.cmd or headroom-lite.exe in the Windows user PATH.'
     : `Install headroom-ai in the Windows Myelin venv${
       isNativeWindowsPath(serviceHome)
-        ? ` at ${pathWin32.join(serviceHome, '.myelin', 'venv', 'Scripts', 'headroom.exe')}`
+        ? ` at ${joinManaged(managedPaths({ home: serviceHome, env, platform: 'windows' }).root, 'venv', 'Scripts', 'headroom.exe')}`
         : ''
     }.`;
   throw new Error(`Unable to resolve a Windows-service executable for ${engine} from WSL. ${detail}`);
@@ -427,15 +477,22 @@ export function defaultWindowsHome(
   return windowsPath(wsl ? wslMountToWindowsPath(resolvedHome) : resolvedHome);
 }
 
-function defaultServiceEnv({ home, envVars = {} } = {}) {
+export function withForwardedMyelinDir(envVars = {}, env = process.env) {
+  const myelinDir = typeof env?.MYELIN_DIR === 'string' && env.MYELIN_DIR.trim()
+    ? normalizeWindowsFilesystemPath(env.MYELIN_DIR, { rejectPosix: true })
+    : undefined;
+  return myelinDir ? { MYELIN_DIR: myelinDir, ...envVars } : { ...envVars };
+}
+
+function defaultServiceEnv({ home, env = process.env, envVars = {} } = {}) {
   const winHome = defaultWindowsHome(home);
-  return {
+  return withForwardedMyelinDir({
     HOME: winHome,
     USERPROFILE: winHome,
     APPDATA: pathWin32.join(winHome, 'AppData', 'Roaming'),
     LOCALAPPDATA: pathWin32.join(winHome, 'AppData', 'Local'),
     ...envVars,
-  };
+  }, env);
 }
 
 function quoteWindowsArgument(value = '') {
@@ -487,8 +544,8 @@ function legacyRunKeyForService(id) {
   return null;
 }
 
-function winswLogDir({ id, home, logPath } = {}) {
-  if (!logPath) return pathWin32.join(winswServiceDir({ id, home }), 'logs');
+function winswLogDir({ id, home, logPath, env = process.env } = {}) {
+  if (!logPath) return joinManaged(winswServiceDir({ id, home, env }), 'logs');
   const normalized = windowsPath(logPath);
   return pathWin32.extname(normalized) ? pathWin32.dirname(normalized) : normalized;
 }
@@ -547,19 +604,19 @@ function portFromArgString(argStr = '') {
 }
 
 export function managedHeadroomLauncherPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
+  return joinManaged(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'start-headroom.ps1');
 }
 
 export function managedHeadroomPidPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
+  return joinManaged(winswServiceDir({ id: HEADROOM_SERVICE_ID, home }), 'headroom.pid');
 }
 
 export function managedMitmLauncherPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'start-mitmproxy.ps1');
+  return joinManaged(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'start-mitmproxy.ps1');
 }
 
 export function managedMitmPidPath({ home } = {}) {
-  return pathWin32.join(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
+  return joinManaged(winswServiceDir({ id: MITM_SERVICE_ID, home }), 'mitm.pid');
 }
 
 export function buildManagedHeadroomStopScript({ port, processExeName = 'headroom.exe', pidFilePath, launcherPath } = {}) {
@@ -619,7 +676,7 @@ function isWindowsAbsolutePath(filePath = '') {
 }
 
 function readWindowsFileText(filePath, {
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
@@ -636,10 +693,12 @@ function readWindowsFileText(filePath, {
   } catch {}
   if (!isWindowsAbsolutePath(filePath)) return '';
   try {
-    return execSyncImpl(
-      withPowerShell(`-NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`, powershellExe),
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
+    const command = `if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }`;
+    return runPsCommand(command, {
+      powershellExe,
+      execFileSyncImpl,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
   } catch {
     return '';
   }
@@ -729,6 +788,7 @@ export function stopManagedHeadroomProcess({
   processExeName = 'headroom.exe',
   home,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   headroomRunKeyStatusImpl = headroomRunKeyStatus,
   powershellExe = powerShellExecutable(),
 } = {}) {
@@ -745,34 +805,37 @@ export function stopManagedHeadroomProcess({
     // same executable, arguments, and port may belong to a user process.
     script += `\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
   }
-  script = script.replace(/"/g, '\\"');
-  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
+  runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' });
 }
 
 export function stopHeadroomProcessByExecutablePath({
   port,
   executablePath,
   processExeName = 'headroom.exe',
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
 } = {}) {
   const script = stopByPortScript(processExeName, port, {
     requiredArgs: ['proxy'],
     requiredExecutablePath: windowsPath(executablePath),
-  }).replace(/"/g, '\\"');
-  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
+  });
+  runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' });
 }
 
-export function winswServiceDir({ id, home } = {}) {
-  return pathWin32.join(defaultWindowsHome(home), '.myelin', 'services', id);
+export function winswServiceDir({ id, home, env = process.env } = {}) {
+  return joinManaged(resolveMyelinRoot({
+    home: defaultWindowsHome(home),
+    env,
+    platform: 'windows',
+  }), 'services', id);
 }
 
-export function winswExecutablePath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), `${id}.exe`);
+export function winswExecutablePath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), `${id}.exe`);
 }
 
-export function winswConfigPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), `${id}.xml`);
+export function winswConfigPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), `${id}.xml`);
 }
 
 export function windowsWatchdogTaskName({ id }) {
@@ -786,12 +849,12 @@ export function windowsWatchdogTaskName({ id }) {
   return `Myelin ${title} Watchdog`;
 }
 
-function winswWatchdogScriptPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.ps1');
+function winswWatchdogScriptPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), 'watchdog.ps1');
 }
 
-function winswWatchdogLogPath({ id, home } = {}) {
-  return pathWin32.join(winswServiceDir({ id, home }), 'watchdog.log');
+function winswWatchdogLogPath({ id, home, env = process.env } = {}) {
+  return joinManaged(winswServiceDir({ id, home, env }), 'watchdog.log');
 }
 
 export function generateWinswConfigXml({
@@ -919,6 +982,40 @@ export function uninstallWindowsWatchdogTask({
   return { taskName, scriptPath, logPath };
 }
 
+export function isWindowsSharingViolation(err) {
+  if (!err) return false;
+  const code = err.code;
+  if (code === 'EBUSY' || code === 'EPERM' || code === 'EACCES') return true;
+  const numeric = [err.winError, err.errno].filter((v) => typeof v === 'number');
+  if (numeric.some((v) => v === 32 || v === 5 || v === -32 || v === -5 || v === -4082)) return true;
+  const msg = String(err.message ?? '');
+  return /(?:error|err)\s*(?:32|5)\b|sharing violation|being used by another process|access is denied|resource busy/i.test(msg);
+}
+
+async function replaceFileWithRetry({
+  from,
+  to,
+  renameSyncImpl,
+  sleepImpl,
+  attempts = 6,
+  backoffMs = 200,
+}) {
+  let lastErr;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      renameSyncImpl(from, to);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // Only a Windows sharing violation (the old service still holding the exe
+      // handle) is worth polling for — anything else is a hard failure.
+      if (!isWindowsSharingViolation(err) || attempt === attempts - 1) throw err;
+      await sleepImpl(backoffMs * (attempt + 1));
+    }
+  }
+  throw lastErr;
+}
+
 export async function installWinswService({
   id,
   name,
@@ -929,6 +1026,7 @@ export async function installWinswService({
   logPath,
   workingDirectory,
   home,
+  env = process.env,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
   isWslImpl = isWsl,
@@ -937,33 +1035,38 @@ export async function installWinswService({
   existsSyncImpl = existsSync,
   copyFileSyncImpl = copyFileSync,
   writeFileSyncImpl = writeFileSync,
+  renameSyncImpl = renameSync,
+  unlinkSyncImpl = unlinkSync,
+  sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  replaceAttempts = 6,
+  replaceBackoffMs = 200,
   runPsFn = runPs,
 }) {
   const winHome = defaultWindowsHome(home);
-  const serviceDir = winswServiceDir({ id, home: winHome });
-  const serviceExePath = winswExecutablePath({ id, home: winHome });
-  const configPath = winswConfigPath({ id, home: winHome });
-  const logDir = winswLogDir({ id, home: winHome, logPath });
+  const serviceDir = winswServiceDir({ id, home: winHome, env });
+  const serviceExePath = winswExecutablePath({ id, home: winHome, env });
+  const configPath = winswConfigPath({ id, home: winHome, env });
+  const logDir = winswLogDir({ id, home: winHome, logPath, env });
   const legacyRunKey = legacyRunKeyForService(id);
   const serviceFilesystemDir = winswFilesystemPathFor(serviceDir, { isWslImpl });
   const serviceFilesystemExePath = winswFilesystemPathFor(serviceExePath, { isWslImpl });
   const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
   const logFilesystemDir = winswFilesystemPathFor(logDir, { isWslImpl });
 
+  const stagedExePath = `${serviceFilesystemExePath}.new`;
+  const stagedConfigPath = `${configFilesystemPath}.new`;
+  const backupExePath = `${serviceFilesystemExePath}.bak`;
+  const backupConfigPath = `${configFilesystemPath}.bak`;
+
   mkdirSyncImpl(serviceFilesystemDir, { recursive: true });
   mkdirSyncImpl(logFilesystemDir, { recursive: true });
 
-  if (existsSyncImpl(serviceFilesystemExePath)) {
-    try {
-      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
-    } catch {}
-  }
-
-  const winsw = await installWinswImpl({ home: winHome, wsl: isWslImpl() });
-  copyFileSyncImpl(
-    winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl }),
-    serviceFilesystemExePath,
-  );
+  // 1. Fetch WinSW and stage the new exe + config ALONGSIDE the (possibly still
+  //    running) service. Never touch the live files while the old service may
+  //    still hold an open handle on <id>.exe.
+  const winsw = await installWinswImpl({ home: winHome, env, wsl: isWslImpl() });
+  const winswSource = winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl });
+  copyFileSyncImpl(winswSource, stagedExePath);
 
   const xml = generateWinswConfigXml({
     id,
@@ -971,21 +1074,97 @@ export async function installWinswService({
     description,
     executable: windowsPath(executable),
     arguments: serviceArguments,
-    logPath: windowsPath(logDir),
+    logPath: logDir,
     workingDirectory: workingDirectory ? windowsPath(workingDirectory) : undefined,
-    envVars: defaultServiceEnv({ home: winHome, envVars }),
+    envVars: defaultServiceEnv({ home: winHome, env, envVars }),
     onFailureDelays,
     resetFailure,
   });
-  writeFileSyncImpl(configFilesystemPath, xml, 'utf8');
-  runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+  writeFileSyncImpl(stagedConfigPath, xml, 'utf8');
+
+  // 2. Back up and stop/uninstall any previous service so it releases the exe
+  //    handle. The backup lets us restore the host on failure — never leave it
+  //    serviceless.
+  const hadPrevious = existsSyncImpl(serviceFilesystemExePath);
+  let backedUpExe = false;
+  let backedUpConfig = false;
+  if (hadPrevious) {
+    try { copyFileSyncImpl(serviceFilesystemExePath, backupExePath); backedUpExe = true; } catch {}
+    if (existsSyncImpl(configFilesystemPath)) {
+      try { copyFileSyncImpl(configFilesystemPath, backupConfigPath); backedUpConfig = true; } catch {}
+    }
+    try {
+      runPsFn(generateWinswUninstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+    } catch {}
+  }
+
+  // 3. Promote the staged files onto the live paths. Retry the rename on a
+  //    sharing violation (errors 32/5) with backoff while the old process
+  //    finishes releasing the handle.
+  try {
+    await replaceFileWithRetry({
+      from: stagedExePath,
+      to: serviceFilesystemExePath,
+      renameSyncImpl,
+      sleepImpl,
+      attempts: replaceAttempts,
+      backoffMs: replaceBackoffMs,
+    });
+    await replaceFileWithRetry({
+      from: stagedConfigPath,
+      to: configFilesystemPath,
+      renameSyncImpl,
+      sleepImpl,
+      attempts: replaceAttempts,
+      backoffMs: replaceBackoffMs,
+    });
+  } catch (err) {
+    // Restore the previous service so the host is never left serviceless.
+    if (backedUpExe) {
+      try { renameSyncImpl(backupExePath, serviceFilesystemExePath); } catch {}
+    }
+    if (backedUpConfig) {
+      try { renameSyncImpl(backupConfigPath, configFilesystemPath); } catch {}
+    }
+    if (hadPrevious) {
+      try {
+        runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+      } catch {}
+    }
+    try { unlinkSyncImpl(stagedExePath); } catch {}
+    try { unlinkSyncImpl(stagedConfigPath); } catch {}
+    throw err;
+  }
+
+  // 4. Install + start the new service INSIDE rollback handling. If this final
+  //    step fails after the old service was already uninstalled (step 2), the
+  //    host would otherwise be left serviceless — so on failure restore the
+  //    backed-up exe/xml and re-register (install + start) the previous service.
+  try {
+    runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+  } catch (err) {
+    if (backedUpExe) {
+      try { renameSyncImpl(backupExePath, serviceFilesystemExePath); } catch {}
+    }
+    if (backedUpConfig) {
+      try { renameSyncImpl(backupConfigPath, configFilesystemPath); } catch {}
+    }
+    if (hadPrevious) {
+      try {
+        runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+      } catch {}
+    }
+    throw err;
+  }
+  if (backedUpExe) { try { unlinkSyncImpl(backupExePath); } catch {} }
+  if (backedUpConfig) { try { unlinkSyncImpl(backupConfigPath); } catch {} }
   return { id, serviceExePath, configPath, logDir };
 }
 
 export function winswServiceStatus({
   id,
   home,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   powershellExe = powerShellExecutable(),
   isWslImpl = isWsl,
@@ -1000,7 +1179,10 @@ export function winswServiceStatus({
 
   let raw = '';
   try {
-    raw = execSyncImpl(withPowerShell(`-Command "& ${psQuote(serviceExePath)} status ${psQuote(configPath)}"`, powershellExe), {
+    raw = runPsCommand(`& ${psQuote(serviceExePath)} status ${psQuote(configPath)}`, {
+      powershellExe,
+      execFileSyncImpl,
+      prefixArgs: ['-Command'],
       stdio: ['ignore', 'pipe', 'pipe'],
     }).toString().trim();
   } catch (error) {
@@ -1089,6 +1271,64 @@ function engineInstanceRunKeyStatus(runKey, { execSyncImpl = execSync, powershel
 
 function engineInstanceLauncherPath(runKeyValue, fallbackPath) {
   return String(runKeyValue ?? '').match(/-File\s+"([^"]+)"/i)?.[1] ?? fallbackPath;
+}
+
+/**
+ * Extract the launcher/executable a Windows Run-key command line actually
+ * invokes. Handles both managed forms:
+ *   - `powershell.exe ... -File "<launcher>.ps1"` (current launcher form), and
+ *   - `"<...>headroom.exe" proxy --port N` / bare `<...>headroom.exe proxy ...`
+ *     (legacy direct-exe form).
+ * `-File` is matched first so the powershell host exe is never mistaken for the
+ * launcher. Returns null when nothing path-like can be extracted.
+ */
+export function runKeyLauncherPath(runKeyValue = '') {
+  const value = String(runKeyValue ?? '');
+  const fileMatch = value.match(/-File\s+"([^"]+)"/i) ?? value.match(/-File\s+'([^']+)'/i);
+  if (fileMatch) return fileMatch[1];
+  const trimmed = value.trim();
+  const quoted = trimmed.match(/^"([^"]+)"/);
+  if (quoted) return quoted[1];
+  const bare = trimmed.match(/^([^"\s]+)/);
+  return bare ? bare[1] : null;
+}
+
+/**
+ * Does a discovered Run-key command line invoke a launcher/executable that lives
+ * UNDER the current managed root? A stale Run key left over from an earlier
+ * default `~/.myelin` install (or a different relocated root) points at a
+ * launcher outside the current root and must NOT be trusted as "registered".
+ * Comparison is case-insensitive on native Windows form with collapsed
+ * separators and no trailing slash.
+ */
+export function launcherOwnedByManagedRoot({
+  runKeyValue = '',
+  launcherPath,
+  managedRoot,
+  home,
+  env = process.env,
+} = {}) {
+  const root = managedRoot
+    ?? resolveMyelinRoot({ home: defaultWindowsHome(home), env, platform: 'windows' });
+  const candidate = launcherPath ?? runKeyLauncherPath(runKeyValue);
+  if (!candidate || !root) return false;
+  const nativeRoot = collapseRedundantBackslashes(normalizeWindowsFilesystemPath(root, { rejectPosix: false }))
+    .replace(/[\\/]+$/u, '')
+    .toLowerCase();
+  const nativeCandidate = collapseRedundantBackslashes(normalizeWindowsFilesystemPath(candidate, { rejectPosix: false }))
+    .toLowerCase();
+  if (!nativeRoot || !nativeCandidate) return false;
+  return nativeCandidate === nativeRoot || nativeCandidate.startsWith(`${nativeRoot}\\`);
+}
+
+/**
+ * Ownership decision for a discovered Run key: 'absent' (nothing registered),
+ * 'keep' (launcher belongs to the current managed root), or 'reregister' (a
+ * foreign/stale launcher — re-register against the current root).
+ */
+export function runKeyOwnershipDecision({ runKeyValue = '', managedRoot, home, env = process.env } = {}) {
+  if (!String(runKeyValue ?? '').trim()) return 'absent';
+  return launcherOwnedByManagedRoot({ runKeyValue, managedRoot, home, env }) ? 'keep' : 'reregister';
 }
 
 export function generateEngineInstanceRunScript({ instance, envVars = {}, ...options }) {
@@ -1236,7 +1476,7 @@ Write-Host "[myelin] ${paths.name} started (hidden)"
 `;
 }
 
-export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, ...options }) {
+export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home, env = process.env, ...options }) {
   const identity = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
   const launch = commandForWindowsExecutable(
@@ -1253,6 +1493,7 @@ export function generateEngineInstanceWinswConfig({ instance, envVars = {}, home
     workingDirectory: normalizeWindowsFilesystemPath(instance.stateDir),
     envVars: defaultServiceEnv({
       home,
+      env,
       envVars: { ...command.env, ...envVars, ...instance.env },
     }),
   });
@@ -1262,6 +1503,7 @@ export async function installEngineInstance(instance, {
   manager = 'registry',
   envVars = {},
   home,
+  env = process.env,
   runPsFn = runPs,
   ...options
 } = {}) {
@@ -1271,9 +1513,9 @@ export async function installEngineInstance(instance, {
     normalizeWindowsFilesystemPath(command.executable),
     command.arguments,
   );
-  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
+  const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
   if (manager !== 'winsw') {
-    runPsFn(generateEngineInstanceRunScript({ instance, envVars, ...options }), { home });
+    runPsFn(generateEngineInstanceRunScript({ instance, envVars: mergedEnv, ...options }), { home, env });
     return { ok: true, manager: 'registry', id: identity.id };
   }
   return installWinswService({
@@ -1286,12 +1528,14 @@ export async function installEngineInstance(instance, {
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
     home,
+    env,
   });
 }
 
 export function engineInstanceStatus(instance, {
   manager = 'registry',
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl,
@@ -1302,7 +1546,7 @@ export function engineInstanceStatus(instance, {
   const paths = engineInstancePaths(instance);
   if (manager === 'winsw') {
     return {
-      ...winswServiceStatus({ id: paths.id, home, execSyncImpl, existsSyncImpl, powershellExe, isWslImpl }),
+      ...winswServiceStatus({ id: paths.id, home, execFileSyncImpl, existsSyncImpl, powershellExe, isWslImpl }),
       healthUrl: instance.healthUrl,
     };
   }
@@ -1317,7 +1561,7 @@ export function engineInstanceStatus(instance, {
     }
     const launcherPath = engineInstanceLauncherPath(runKeyStatus.raw, paths.launcherPath);
     const launcherScript = readWindowsScriptText(launcherPath, {
-      execSyncImpl,
+      execFileSyncImpl,
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
@@ -1333,7 +1577,7 @@ export function engineInstanceStatus(instance, {
     const launcherPort = launcherPortFromScript(launcherScript);
     const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(executable);
     const pidText = trimPowershellOutput(readWindowsFileText(paths.pidPath, {
-      execSyncImpl,
+      execFileSyncImpl,
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
@@ -1392,11 +1636,11 @@ if ($proc) {
 } else { 'Stopped' }`
           : `if ($proc -and ${identityCheck}) { 'Running' } else { 'Stopped' }`,
       ].join('\n');
-    const escapedScript = script.replace(/"/g, '\\"');
-    const raw = trimPowershellOutput(execSyncImpl(
-      withPowerShell(`-NoProfile -Command "& { ${escapedScript} }"`, powershellExe),
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    ).toString());
+    const raw = trimPowershellOutput(runPsCommand(`& { ${script} }`, {
+      powershellExe,
+      execFileSyncImpl,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString());
     return { ...parseManagedHeadroomStatus(raw), label: paths.id, healthUrl: instance.healthUrl };
   } catch {
     return { running: false, state: 'Unknown', raw: '', label: paths.id, healthUrl: instance.healthUrl };
@@ -1407,7 +1651,7 @@ function ownedWinswEngineInstance(instance, paths, {
   home,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   isWslImpl = isWsl,
 } = {}) {
@@ -1415,7 +1659,7 @@ function ownedWinswEngineInstance(instance, paths, {
   const config = readWindowsFileText(configPath, {
     existsSyncImpl,
     readFileSyncImpl,
-    execSyncImpl,
+    execFileSyncImpl,
     powershellExe,
     isWslImpl,
   });
@@ -1601,6 +1845,7 @@ export function removeEngineInstance(instance, {
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   uninstallWinswServiceImpl = uninstallWinswService,
   uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
@@ -1629,7 +1874,7 @@ export function removeEngineInstance(instance, {
       home,
       existsSyncImpl,
       readFileSyncImpl,
-      execSyncImpl,
+      execFileSyncImpl,
       powershellExe,
       isWslImpl,
     })) {
@@ -1739,14 +1984,14 @@ export function parseLegacyMitmRunKeyValue(runKeyValue = '') {
 
 function readManagedMitmIdentity({
   home,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
 } = {}) {
   const launcherPath = managedMitmLauncherPath({ home });
   const launcherScript = readWindowsScriptText(launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -1821,6 +2066,7 @@ function parseManagedHeadroomRunKeyValue(runKeyValue = '') {
 function readManagedHeadroomIdentity({
   home = defaultWindowsHome(),
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = headroomRunKeyStatus,
@@ -1833,7 +2079,7 @@ function readManagedHeadroomIdentity({
   let argStr = parsedRunKey.argStr ?? '';
   const launcherPath = parsedRunKey.launcherPath ?? '';
   const launcherScript = readWindowsScriptText(launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -1854,6 +2100,7 @@ function readManagedHeadroomIdentity({
 
 function readManagedCopilotHeadroomIdentity({
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = copilotHeadroomRunKeyStatus,
@@ -1864,7 +2111,7 @@ function readManagedCopilotHeadroomIdentity({
   let executablePath = parsedRunKey.executablePath ?? '';
   let argStr = parsedRunKey.argStr ?? '';
   const launcherScript = readWindowsScriptText(parsedRunKey.launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -1979,7 +2226,7 @@ export function spawnDetachedService(taskName, exe, argStr, { runPsFn = runPs, t
   // We write a .bat launcher that sets the vars before starting the exe,
   // then use that .bat as the scheduled task action — simple and debuggable.
   const hasTaskEnv = Object.keys(taskEnv).length > 0;
-  const stateDir = join(homedir(), '.myelin', 'state');
+  const stateDir = managedPaths({ home: homedir() }).serviceStatePath;
   const launcherBat = join(stateDir, `${safeName}-launcher.bat`);
   const safeLauncher = escapePs(launcherBat);
 
@@ -2200,7 +2447,7 @@ export function removeMitmService({
   home,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   uninstallWinswServiceImpl = uninstallWinswService,
   runPsFn = runPs,
@@ -2211,7 +2458,7 @@ export function removeMitmService({
   const config = readWindowsFileText(configPath, {
     existsSyncImpl,
     readFileSyncImpl,
-    execSyncImpl,
+    execFileSyncImpl,
     powershellExe,
     isWslImpl,
   });
@@ -2226,9 +2473,10 @@ export function removeMitmService({
   return removed || manager === 'registry';
 }
 
-export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort, manager = 'registry' }) {
+export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry' }) {
+  const persistedEnv = withForwardedMyelinDir(envVars, env);
   if (manager !== 'winsw') {
-    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars, egressPort, home }), { home });
+    runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, home }), { home, env });
     return { ok: true, manager: 'registry' };
   }
   return installWinswService({
@@ -2236,10 +2484,11 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
     name: 'Myelin Mitmproxy',
     description: 'Myelin mitmproxy LLM compression proxy',
     executable: mitmdumpBin,
-    arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars, egressPort, upstreamProxy }),
-    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
+    arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, upstreamProxy }),
+    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
     logPath,
     home,
+    env,
   });
 }
 
@@ -2247,6 +2496,7 @@ export function mitmServiceStatus({
   manager = 'registry',
   home,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
@@ -2256,14 +2506,14 @@ export function mitmServiceStatus({
     try {
       const identity = readManagedMitmIdentity({
         home,
-        execSyncImpl,
+        execFileSyncImpl,
         existsSyncImpl,
         readFileSyncImpl,
         powershellExe,
       });
       const pidText = identity
         ? trimPowershellOutput(readWindowsFileText(managedMitmPidPath({ home }), {
-            execSyncImpl,
+            execFileSyncImpl,
             existsSyncImpl,
             readFileSyncImpl,
             powershellExe,
@@ -2275,15 +2525,15 @@ export function mitmServiceStatus({
           executablePath: identity.executablePath,
           argStr: identity.argumentList,
           launcherPath: identity.launcherPath,
-        }).replace(/"/g, '\\"');
-        const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
+        });
+        const raw = runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' }).toString();
         return parseManagedMitmStatus(raw);
       }
       const runKeyStatus = mitmRunKeyStatus({ execSyncImpl, powershellExe });
       const legacyIdentity = parseLegacyMitmRunKeyValue(runKeyStatus.raw);
       if (!legacyIdentity) return { running: false, state: 'Stopped', raw: '' };
-      const script = buildLegacyMitmStatusScript(legacyIdentity).replace(/"/g, '\\"');
-      const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
+      const script = buildLegacyMitmStatusScript(legacyIdentity);
+      const raw = runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' }).toString();
       return parseManagedMitmStatus(raw);
     } catch {
       return { running: false, state: 'Unknown' };
@@ -2292,7 +2542,7 @@ export function mitmServiceStatus({
   return winswServiceStatus({
     id: MITM_SERVICE_ID,
     home,
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     powershellExe,
     isWslImpl,

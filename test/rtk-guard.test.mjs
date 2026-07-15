@@ -14,6 +14,7 @@ import {
   isRawUnsafeRtkHook,
   isGuardedRtkHook,
   copilotRtkHookPath,
+  resolveMyelinRepoRoot,
   toPosixPath,
 } from '../src/tools/rtk.mjs';
 
@@ -64,7 +65,7 @@ describe('runRtkGuard (fail-open)', () => {
 describe('resolveRtkBinary', () => {
   it('prefers the first existing candidate', () => {
     const home = '/home/x';
-    const hit = join(home, '.myelin', 'bin', 'rtk');
+    const hit = '/home/x/.myelin/bin/rtk';
     assert.equal(resolveRtkBinary({ home, plat: 'linux', env: {}, exists: (p) => p === hit }), hit);
   });
   it('falls back to bare rtk when nothing is found', () => {
@@ -74,6 +75,16 @@ describe('resolveRtkBinary', () => {
     const cands = rtkBinaryCandidates({ home: 'C:\\u', plat: 'win32', env: { RTK_BIN: 'D:\\rtk.exe' } });
     assert.equal(cands[0], 'D:\\rtk.exe');
     assert.ok(cands.some((c) => c.endsWith('rtk.exe')));
+  });
+  it('derives the managed bin candidate from MYELIN_DIR when relocated', () => {
+    const cands = rtkBinaryCandidates({ home: '/home/x', plat: 'linux', env: { MYELIN_DIR: '/custom/mroot' } });
+    assert.ok(cands.includes('/custom/mroot/bin/rtk'), cands.join(','));
+    // The default ~/.myelin/bin path must NOT leak in once relocated.
+    assert.ok(!cands.some((c) => c.includes('/.myelin/bin')), cands.join(','));
+  });
+  it('defaults the managed bin candidate to <home>/.myelin/bin when MYELIN_DIR is unset', () => {
+    const cands = rtkBinaryCandidates({ home: '/home/x', plat: 'linux', env: {} });
+    assert.ok(cands.includes('/home/x/.myelin/bin/rtk'), cands.join(','));
   });
 });
 
@@ -109,6 +120,40 @@ describe('buildGuardedRtkCopilotHook', () => {
   it('is classified guarded, not unsafe', () => {
     assert.equal(isGuardedRtkHook(cfg), true);
     assert.equal(isRawUnsafeRtkHook(cfg), false);
+  });
+});
+
+describe('resolveMyelinRepoRoot', () => {
+  it('defaults the RTK hook target to the managed runtime bridge instead of a checkout', () => {
+    const resolved = resolveMyelinRepoRoot({ home: '/home/alice', plat: 'linux', exists: () => false });
+
+    assert.equal(resolved, '/home/alice/.myelin/runtime-bridge/');
+    assert.ok(!resolved.includes('/.myelin/repo'));
+    assert.ok(!resolved.startsWith(fileURLToPath(new URL('..', import.meta.url))));
+  });
+
+  it('honours an explicit rootDir for the managed runtime bridge', () => {
+    const resolved = resolveMyelinRepoRoot({ home: '/home/alice', rootDir: '/managed/root', plat: 'linux', exists: () => false });
+    assert.equal(resolved, '/managed/root/runtime-bridge/');
+  });
+
+  it('honours MYELIN_DIR from the environment', () => {
+    const resolved = resolveMyelinRepoRoot({ home: '/home/alice', env: { MYELIN_DIR: '/env/root' }, plat: 'linux', exists: () => false });
+    assert.equal(resolved, '/env/root/runtime-bridge/');
+  });
+
+  it('extends + terminates a cross-style relocated root in the root\'s own style', () => {
+    // Windows-style MYELIN_DIR resolved on a POSIX host must stay fully
+    // backslashed — the probe join and the trailing separator both follow the
+    // bridge root's own style, never `plat`. A `plat`-driven join would have
+    // produced `D:\managed\runtime-bridge/` (mixed separators).
+    const win = resolveMyelinRepoRoot({ home: '/home/alice', env: { MYELIN_DIR: 'D:\\managed' }, plat: 'linux', exists: () => false });
+    assert.equal(win, 'D:\\managed\\runtime-bridge\\');
+    assert.ok(!win.includes('/'), win);
+    // POSIX MYELIN_DIR resolved on a Windows host stays fully forward-slashed.
+    const posix = resolveMyelinRepoRoot({ home: 'C:\\Users\\alice', env: { MYELIN_DIR: '/srv/managed' }, plat: 'win32', exists: () => false });
+    assert.equal(posix, '/srv/managed/runtime-bridge/');
+    assert.ok(!posix.includes('\\'), posix);
   });
 });
 
@@ -208,6 +253,24 @@ describe('ensureSafeRtkCopilotHook', () => {
       assert.equal(isGuardedRtkHook(JSON.parse(readFileSync(p, 'utf8'))), true);
       // already guarded → noop
       assert.equal(ensureSafeRtkCopilotHook({ home, mode: 'heal-only' }).action, 'noop');
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it('heal-only: defaults rewritten hooks to the managed runtime bridge', () => {
+    const home = tmpHome('heal-default-root');
+    try {
+      const p = copilotRtkHookPath(home);
+      mkdirSync(join(home, '.copilot', 'hooks'), { recursive: true });
+      writeFileSync(p, raw);
+
+      const res = ensureSafeRtkCopilotHook({ home, nodePath: '/usr/bin/node', mode: 'heal-only' });
+
+      assert.equal(res.action, 'healed-raw');
+      const healed = JSON.parse(readFileSync(p, 'utf8'));
+      const bash = healed.hooks.preToolUse[0].bash;
+      assert.match(bash, /\/\.myelin\/runtime-bridge\/src\/cli\/index\.mjs/);
+      assert.ok(!bash.includes('/.myelin/repo'));
+      assert.ok(!bash.includes(toPosixPath(fileURLToPath(new URL('..', import.meta.url)))));
     } finally { rmSync(home, { recursive: true, force: true }); }
   });
 });

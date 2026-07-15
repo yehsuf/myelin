@@ -45,6 +45,33 @@ describe('buildServiceEnginePlan', () => {
 import { buildEngineInstancePlan } from '../src/config/engine-runtime.mjs';
 
 describe('buildEngineInstancePlan', () => {
+  it('routes engine state and logs through the relocated managed root', () => {
+    const previousRoot = process.env.MYELIN_DIR;
+    process.env.MYELIN_DIR = '/custom/myelin';
+    try {
+      const plan = buildEngineInstancePlan({
+        proxy: {
+          engine: 'headroom',
+          headroom: { port: 8787 },
+        },
+      }, { home: '/home/alice', os: 'linux' });
+
+      assert.deepEqual(plan.instances[0], {
+        engine: 'headroom',
+        role: 'primary',
+        port: 8787,
+        id: 'headroom-primary',
+        stateDir: '/custom/myelin/state/headroom-primary',
+        logPath: '/custom/myelin/headroom-primary.log',
+        healthUrl: 'http://127.0.0.1:8787/health',
+        env: {},
+      });
+    } finally {
+      if (previousRoot === undefined) delete process.env.MYELIN_DIR;
+      else process.env.MYELIN_DIR = previousRoot;
+    }
+  });
+
   it('creates two Lite descriptors without a Python service', () => {
     const plan = buildEngineInstancePlan({
       proxy: {

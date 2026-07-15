@@ -9,6 +9,7 @@ import { renderManagedBlock } from '../config/instruction-snippets.mjs';
 import { writeManagedSection } from '../config/managed-section.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from '../service/serena-config.mjs';
 import { ensureSafeRtkCopilotHook } from '../tools/rtk.mjs';
+import { managedPaths } from '../shared/myelin-paths.mjs';
 
 function findGitRoot(dir) {
   let d = dir;
@@ -90,7 +91,7 @@ function noProxyEnv() {
   const env = { ...process.env };
   delete env.HTTPS_PROXY; delete env.https_proxy;
   delete env.HTTP_PROXY;  delete env.http_proxy;
-  const validCaBundle = join(homedir(), '.myelin', 'ca-bundle.pem');
+  const validCaBundle = managedPaths({ home: homedir() }).caBundlePath;
   if (existsSync(validCaBundle)) {
     for (const v of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'HEADROOM_CA_BUNDLE']) {
       env[v] = validCaBundle; // always set — never rely on the parent shell having it right
@@ -478,7 +479,7 @@ function _loadConfigSync() {
   // rarely present at this stage, so a plain sync read/parse keeps this
   // dependency-free rather than threading an async loadConfig() through.
   if (_cachedCfg) return _cachedCfg;
-  const configPath = join(homedir(), '.myelin', 'config.yaml');
+  const configPath = managedPaths({ home: homedir() }).configPath;
   let userConfig = {};
   if (existsSync(configPath)) {
     try { userConfig = parseYaml(readFileSync(configPath, 'utf8')) ?? {}; }

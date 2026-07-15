@@ -22,14 +22,33 @@ program.command('diagnose')
   });
 
 program.command('update')
-  .description('Update all Myelin tools')
-  .option('--check', 'Show what would be updated without making changes')
-  .option('--self', 'Update Myelin itself (git pull + npm install)')
-  .option('-f, --force', 'Skip the uncommitted-changes safety check and force self-update anyway')
+  .description('Update the managed Myelin runtime and tools')
+  .option('--check', 'Preview external-tool updates without staging or activating')
+  .option('--download-only', 'Stage and validate the latest release without activating it')
+  .option('--self', 'Deprecated: use `myelin update`')
   .action(async (opts) => {
-    const { runUpdate, runSelfUpdate } = await import('./update.mjs');
-    if (opts.self) { await runSelfUpdate({ force: opts.force }); return; }
-    await runUpdate({ check: opts.check });
+    const { runDeprecatedSelfUpdate, runManagedUpdate } = await import('./update.mjs');
+    if (opts.self) {
+      const result = runDeprecatedSelfUpdate();
+      process.exit(result.exitCode);
+    }
+    try {
+      const result = await runManagedUpdate({ check: opts.check, downloadOnly: opts.downloadOnly });
+      process.exit(result.status === 'failed' ? 1 : 0);
+    } catch (err) {
+      console.error(`✗ ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+program.command('self')
+  .description('Manage the Myelin runtime')
+  .command('update')
+  .description('Deprecated: use `myelin update`')
+  .action(async () => {
+    const { runDeprecatedNestedSelfUpdate } = await import('./update.mjs');
+    const result = runDeprecatedNestedSelfUpdate();
+    process.exit(result.exitCode);
   });
 
 program.command('stats')

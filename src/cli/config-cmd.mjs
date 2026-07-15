@@ -3,7 +3,7 @@ import { loadConfig, readUserConfig, DEFAULT_CONFIG_PATH } from '../config/reade
 import { setConfigValue, getConfigValue, writeConfig } from '../config/writer.mjs';
 import { DEFAULT_CONFIG, pruneUnknownKeys, listUnknownKeyPaths } from '../config/schema.mjs';
 import { dump } from 'js-yaml';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 
@@ -13,6 +13,16 @@ export function defaultConfigEditor(platform = process.platform) {
 
 export function configEditorName(platform = process.platform, editorOverride = process.env.EDITOR) {
   return editorOverride ?? defaultConfigEditor(platform);
+}
+
+// Build an execFileSync-safe { command, args } from an editor string and config path.
+// The MYELIN_DIR-derived configPath is always passed as a literal argv element — never
+// concatenated into a shell string — so `"`, `$()`, `;`, spaces etc. cannot be shell-parsed.
+export function buildConfigEditCommand(editor, configPath) {
+  const parts = String(editor ?? '').split(/\s+/).filter(Boolean);
+  const command = parts[0] ?? '';
+  const args = [...parts.slice(1), configPath];
+  return { command, args };
 }
 
 export function platformConfigBanner(
@@ -116,7 +126,8 @@ export function configCommand() {
     .description('Open configuration in $EDITOR')
     .action(() => {
       const editor = configEditorName();
-      try { execSync(`${editor} ${DEFAULT_CONFIG_PATH}`, { stdio: 'inherit' }); }
+      const { command, args } = buildConfigEditCommand(editor, DEFAULT_CONFIG_PATH);
+      try { execFileSync(command, args, { stdio: 'inherit' }); }
       catch (e) { console.error(`Could not open editor: ${e.message}`); process.exit(1); }
     });
 

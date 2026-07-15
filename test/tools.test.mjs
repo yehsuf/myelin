@@ -1,12 +1,36 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { isAbsolute, join, posix } from 'node:path';
+
+// A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
+// behavioral shell test on this so full coverage still runs on POSIX while the
+// suite stays green on a real Windows host.
+function hasPosixSh() {
+  if (process.platform === 'win32') return false;
+  try {
+    const r = spawnSync('sh', ['-c', 'exit 0']);
+    return !r.error && r.status === 0;
+  } catch {
+    return false;
+  }
+}
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
-import { parseHeadroomVersion, headroomHealthUrl } from '../src/tools/headroom.mjs';
+import { parseHeadroomVersion, headroomHealthUrl, installHeadroom } from '../src/tools/headroom.mjs';
 import * as winswTools from '../src/tools/winsw.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
+import { writeManagedLauncher } from '../src/runtime/launcher.mjs';
+import { linkGlobalBin } from '../src/service/npmlink.mjs';
+
+function makeTempHome(name) {
+  const home = join(process.cwd(), '.test-artifacts', `${name}-${process.pid}-${randomBytes(4).toString('hex')}`);
+  rmSync(home, { recursive: true, force: true });
+  mkdirSync(home, { recursive: true });
+  return home;
+}
 
 describe('RTK version parsing', () => {
   it('parses version from rtk --version output', () => {
@@ -108,6 +132,47 @@ describe('detectWinsw', () => {
     );
   });
 
+  it('I5: returns a NATIVE D:\\ WinSW command path when the managed root is a mounted /mnt/d WSL path', () => {
+    const env = { MYELIN_DIR: '/mnt/d/managed' };
+    // PowerShell/WinSW consume the command path natively, so it MUST be D:\...
+    assert.equal(
+      winswBinPath({ home: '/home/alice', env }),
+      'D:\\managed\\bin\\winsw.exe',
+    );
+    // ...while the Node-filesystem view of that command path stays under /mnt/d.
+    assert.equal(
+      winswTools.winswFilesystemPath(winswBinPath({ home: '/home/alice', env }), { wsl: true }),
+      '/mnt/d/managed/bin/winsw.exe',
+    );
+  });
+
+  it('I5: downloads WinSW to the /mnt/d filesystem path while keeping the native D:\\ command path', async () => {
+    const filesystemOps = [];
+    const responses = [
+      {
+        ok: true,
+        json: async () => ({
+          assets: [{ name: 'WinSW-x64.exe', browser_download_url: 'https://example.test/winsw.exe' }],
+        }),
+      },
+      { ok: true, arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer },
+    ];
+    const result = await winswTools.downloadWinsw({
+      home: '/home/alice',
+      env: { MYELIN_DIR: '/mnt/d/managed' },
+      arch: 'x64',
+      wsl: true,
+      fetchImpl: async () => responses.shift(),
+      mkdirSyncImpl: (path) => filesystemOps.push({ op: 'mkdir', path }),
+      writeFileSyncImpl: (path) => filesystemOps.push({ op: 'write', path }),
+      chmodSyncImpl: (path) => filesystemOps.push({ op: 'chmod', path }),
+    });
+
+    assert.equal(result.path, 'D:\\managed\\bin\\winsw.exe');
+    assert.equal(result.filesystemPath, '/mnt/d/managed/bin/winsw.exe');
+    assert.ok(filesystemOps.every(({ path }) => path.startsWith('/mnt/d/')));
+  });
+
   it('downloads WinSW through its mounted filesystem path while retaining the Windows command path', async () => {
     const filesystemOps = [];
     const responses = [
@@ -155,6 +220,333 @@ describe('headroomHealthUrl', () => {
   });
   it('uses default 8787', () => {
     assert.equal(headroomHealthUrl(), 'http://127.0.0.1:8787/health');
+  });
+});
+
+describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', () => {
+  // A relocated MYELIN_DIR whose venv path carries shell metacharacters must be
+  // handed to `uv` as literal argv via execFileSync — never interpolated into an
+  // execSync shell string.
+  it('invokes uv with execFileSync ARGUMENT ARRAYS carrying the venv verbatim', () => {
+    const env = { MYELIN_DIR: '/srv/my "weird" $(calc) `bt` \'root\'' };
+    const calls = [];
+    const made = [];
+    installHeadroom({
+      home: '/home/tester',
+      env,
+      mkdirSyncImpl: (p) => { made.push(p); },
+      existsSyncImpl: () => true,
+      execFileSyncImpl: (file, args) => { calls.push({ file, args }); return Buffer.from(''); },
+    });
+
+    const venv = `${env.MYELIN_DIR}/venv`;
+    assert.equal(calls.length, 2, 'exactly the venv-create and pip-install calls');
+    // uv venv <venv>
+    assert.equal(calls[0].file, 'uv');
+    assert.deepEqual(calls[0].args, ['venv', venv]);
+    // uv pip install --python <venv> headroom-ai[all]
+    assert.equal(calls[1].file, 'uv');
+    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]']);
+    // Every arg is a discrete element; no arg is a composed shell command.
+    for (const c of calls) {
+      assert.ok(Array.isArray(c.args));
+      assert.ok(!c.args.some((a) => /uv (venv|pip)/.test(a)), 'no shell command string may be built');
+    }
+    // The venv element is byte-for-byte the MYELIN_DIR-derived path.
+    assert.equal(calls[0].args[1], venv);
+    assert.equal(calls[1].args[3], venv);
+  });
+});
+
+describe('writeManagedLauncher', () => {
+  it('writes a POSIX launcher that invokes node with the managed launcher', () => {
+    const home = makeTempHome('managed-launcher-posix');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+      const launcherSource = readFileSync(result.launcherPath, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin'));
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcher.includes('node'));
+      assert.ok(launcher.includes('myelin-launcher.mjs'));
+      assert.ok(launcherSource.includes("current.json"));
+      assert.ok(launcherSource.includes('spawnSync(process.execPath'));
+      assert.ok(!launcher.includes(repoEntrypoint));
+      assert.ok(!launcher.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('bakes the absolute node binary into the POSIX shim (no bare node)', () => {
+    const home = makeTempHome('managed-launcher-posix-nodebin');
+    try {
+      const nodeBin = '/opt/nvm/versions/node/v20.11.0/bin/node';
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(nodeBin), `shim should embed ${nodeBin}: ${launcher}`);
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcher), `shim must not exec bare node: ${launcher}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults the POSIX shim node path to process.execPath (absolute)', () => {
+    const home = makeTempHome('managed-launcher-posix-execpath');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(process.execPath), `shim should embed ${process.execPath}: ${launcher}`);
+      // The intent is "an absolute node path is embedded". process.execPath is a
+      // Windows path on win32 and a POSIX path elsewhere — assert absoluteness in
+      // the host-native style so this holds on every host (not just POSIX).
+      assert.ok(isAbsolute(process.execPath), 'process.execPath must be absolute');
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcher));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('bakes the absolute node binary into the Windows shim (no bare node)', () => {
+    const home = makeTempHome('managed-launcher-windows-nodebin');
+    try {
+      const nodeBin = 'C:\\Program Files\\nodejs\\node.exe';
+      const result = writeManagedLauncher({ home, os: 'windows', nodeBin });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+
+      assert.ok(launcher.includes(nodeBin), `shim should embed ${nodeBin}: ${launcher}`);
+      assert.ok(!/(?:^|\r?\n)node\s+"/m.test(launcher), `shim must not invoke bare node: ${launcher}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('writes a Windows launcher that invokes node with the managed launcher', () => {
+    const home = makeTempHome('managed-launcher-windows');
+    try {
+      const result = writeManagedLauncher({ home, os: 'windows' });
+      const launcher = readFileSync(result.commandPath, 'utf8');
+      const launcherSource = readFileSync(result.launcherPath, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin.cmd'));
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcher.includes('node'));
+      assert.ok(launcher.includes('myelin-launcher.mjs'));
+      assert.ok(launcherSource.includes("current.json"));
+      assert.ok(launcherSource.includes('spawnSync(process.execPath'));
+      assert.ok(!launcher.includes(repoEntrypoint));
+      assert.ok(!launcher.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Security regression (fix-review #1): a relocated MYELIN_DIR containing shell
+  // metacharacters must be an inert single-quoted literal in the generated POSIX
+  // shim — never executed/expanded when the shim runs.
+  it('POSIX shim single-quotes the launcher path so $(...)/`/$VAR can not run', () => {
+    const home = makeTempHome('managed-launcher-posix-inject');
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin: '/usr/bin/node' });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // The launcher path is inside single quotes (closing the outer context),
+      // never a double-quoted string that /bin/sh would expand.
+      assert.ok(/exec '\/usr\/bin\/node' '.*myelin-launcher\.mjs' "\$@"/.test(shim), shim);
+      assert.ok(!shim.includes('"' + result.launcherPath + '"'), `launcher path must not be double-quoted: ${shim}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('POSIX shim is behaviorally inert: a $(touch) in the managed root never executes', { skip: !hasPosixSh() }, () => {
+    const artifacts = makeTempHome('managed-launcher-posix-behavioral');
+    try {
+      // A managed root literally named with a command substitution (no slash so
+      // it is a single valid directory component). If the shim double-quoted it,
+      // /bin/sh would run `touch pwned` while expanding the exec argument.
+      const home = join(artifacts, 'root-$(touch pwned)');
+      mkdirSync(home, { recursive: true });
+      const result = writeManagedLauncher({ home, os: 'darwin', nodeBin: process.execPath });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // Run under sh with cwd=artifacts; node execs with a bogus path and errors
+      // (ignored). Only the command-substitution inertness matters here.
+      spawnSync('sh', ['-c', shim], { cwd: artifacts, stdio: 'ignore' });
+      assert.equal(existsSync(join(artifacts, 'pwned')), false, 'command substitution executed — injection!');
+    } finally {
+      rmSync(artifacts, { recursive: true, force: true });
+    }
+  });
+
+  it('Windows .cmd shim keeps $(...)/`/$VAR inert (cmd literal) and escapes %', () => {
+    const artifacts = makeTempHome('managed-launcher-windows-inject');
+    try {
+      // A real (POSIX) temp dir whose NAME carries the shell metacharacters, so
+      // the generated .cmd embeds them via the launcher path without needing a
+      // fake Windows filesystem on this host.
+      const home = join(artifacts, 'ev$(calc)`bt`$VAR%TEMP%');
+      mkdirSync(home, { recursive: true });
+      const result = writeManagedLauncher({ home, os: 'windows', nodeBin: 'C:\\Program Files\\nodejs\\node.exe' });
+      const shim = readFileSync(result.commandPath, 'utf8');
+      // cmd.exe does not expand $(...), backticks, or $VAR — they survive verbatim.
+      assert.ok(shim.includes('$(calc)'), shim);
+      assert.ok(shim.includes('`bt`'), shim);
+      assert.ok(shim.includes('$VAR'), shim);
+      // `%` is the one cmd expansion vector — it is escaped to `%%` so `%TEMP%`
+      // can never expand at batch parse time.
+      assert.ok(shim.includes('%%TEMP%%'), shim);
+      assert.ok(!/[^%]%TEMP%/.test(shim), `raw %TEMP% must not survive: ${shim}`);
+    } finally {
+      rmSync(artifacts, { recursive: true, force: true });
+    }
+  });
+
+  // Fix-review #3: under WSL the launcher classifies the OS as 'windows' but
+  // process.execPath (/usr/bin/node) and a $HOME-derived launcherPath are POSIX
+  // paths native cmd.exe cannot run. The generated .cmd must carry NATIVE Windows
+  // paths (/mnt/<drive>/... -> <Drive>:\...) or refuse rather than emit a broken shim.
+  //
+  // Host-independence: the `wsl: true` argument is the EXPLICIT injected signal
+  // that drives both the /mnt/<drive>→<Drive>:\ conversion AND the POSIX path
+  // building — writeManagedLauncher never reads ambient process.platform for
+  // these paths. So this asserts identically on macOS, Linux, AND a real Windows
+  // host (where process.platform === 'win32' would otherwise have pre-mangled
+  // `/mnt/d/...` into `\mnt\d\...` before conversion could run).
+  it('WSL: bakes native Windows paths (/mnt/d -> D:\\) into the .cmd shim', () => {
+    const written = {};
+    const result = writeManagedLauncher({
+      home: '/mnt/d/Users/tester',
+      os: 'windows',
+      wsl: true,
+      nodeBin: '/mnt/d/tools/nodejs/node.exe',
+      mkdirSyncFn() {},
+      chmodSyncFn() {},
+      writeFileSyncFn(path, content) { written[path] = content; },
+    });
+    const shim = written[result.commandPath];
+    assert.ok(shim, 'command shim should be rendered');
+    assert.ok(shim.includes('"D:\\tools\\nodejs\\node.exe"'), `node path should be native: ${shim}`);
+    assert.ok(
+      shim.includes('"D:\\Users\\tester\\.myelin\\bin\\myelin-launcher.mjs"'),
+      `launcher path should be native: ${shim}`,
+    );
+    // No unrunnable POSIX/WSL mount fragments leak into the native cmd shim.
+    assert.ok(!shim.includes('/mnt/'), `no /mnt/ path may survive: ${shim}`);
+    assert.ok(!shim.includes('/usr/'), `no /usr/ path may survive: ${shim}`);
+    // Regression guard for the Windows-host mangling: an ambient win32 join would
+    // have turned the launcher path into `\mnt\d\...` (backslash form) instead of
+    // converting it to `D:\...`. That backslash-mount form must never appear.
+    assert.ok(!shim.includes('\\mnt\\'), `no backslash-mangled \\mnt\\ path may survive: ${shim}`);
+  });
+
+  it('WSL: refuses to emit a .cmd when node/launcher paths have no native equivalent', () => {
+    // The `wsl: true` signal forces POSIX path building + rejectPosix regardless
+    // of the host, so this refusal is deterministic on macOS, Linux, and Windows.
+    // A pure POSIX node path (/usr/bin/node) cannot be run by native cmd.exe.
+    assert.throws(
+      () => writeManagedLauncher({
+        home: '/home/tester',
+        os: 'windows',
+        wsl: true,
+        nodeBin: '/usr/bin/node',
+        mkdirSyncFn() {},
+        chmodSyncFn() {},
+        writeFileSyncFn() {},
+      }),
+      /cannot generate a native Windows launcher/,
+    );
+
+    // Even with a convertible node, a POSIX ($HOME-derived) launcher path is
+    // rejected. On a real Windows host an ambient win32 join would have mangled
+    // `/home/tester/...` into `\home\tester\...` (which normalizeWindowsFilesystem
+    // -Path would wrongly accept); the injected `wsl: true` keeps it POSIX so the
+    // rejectPosix guard fires.
+    assert.throws(
+      () => writeManagedLauncher({
+        home: '/home/tester',
+        os: 'windows',
+        wsl: true,
+        nodeBin: '/mnt/d/tools/nodejs/node.exe',
+        mkdirSyncFn() {},
+        chmodSyncFn() {},
+        writeFileSyncFn() {},
+      }),
+      /cannot generate a native Windows launcher/,
+    );
+  });
+
+  it('WSL refusal fails fast: no launcher or command file is written', () => {
+    const written = [];
+    assert.throws(() => writeManagedLauncher({
+      home: '/home/tester',
+      os: 'windows',
+      wsl: true,
+      nodeBin: '/usr/bin/node',
+      mkdirSyncFn() {},
+      chmodSyncFn() {},
+      writeFileSyncFn(path) { written.push(path); },
+    }));
+    assert.deepEqual(written, [], 'no partial files should be written on refusal');
+  });
+  it('writes a stable launcher into a writable global bin dir', () => {
+    const home = makeTempHome('managed-global-link');
+    const prefix = join(home, 'global-prefix');
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+      const expectedBinDir = posix.join(prefix, 'bin');
+      const linkedLauncher = join(expectedBinDir, 'myelin');
+      const launcherText = readFileSync(linkedLauncher, 'utf8');
+      const repoEntrypoint = join(process.cwd(), 'src', 'cli', 'index.mjs');
+
+      assert.equal(result.linked, true);
+      assert.equal(result.binDir, expectedBinDir);
+      assert.equal(result.commandPath, linkedLauncher);
+      assert.equal(result.launcherPath, join(home, '.myelin', 'bin', 'myelin-launcher.mjs'));
+      assert.ok(launcherText.includes('myelin-launcher.mjs'));
+      assert.ok(!launcherText.includes(repoEntrypoint));
+      assert.ok(!launcherText.includes('npm link'));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('links a shim that invokes an absolute node path, not bare node', () => {
+    const home = makeTempHome('managed-global-link-nodebin');
+    const prefix = join(home, 'global-prefix');
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+      const launcherText = readFileSync(result.commandPath, 'utf8');
+
+      assert.equal(result.linked, true);
+      assert.ok(launcherText.includes(process.execPath), `linked shim should embed ${process.execPath}: ${launcherText}`);
+      assert.ok(!/(?:^|\n)\s*exec\s+node\s/m.test(launcherText), `linked shim must not exec bare node: ${launcherText}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to ~/.myelin/bin when the global prefix is not writable', { skip: process.platform === 'win32' }, () => {
+    const home = makeTempHome('managed-global-fallback');
+    const prefix = join(home, 'readonly-prefix');
+    const binDir = join(prefix, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    chmodSync(binDir, 0o555);
+    try {
+      const result = linkGlobalBin({ home, os: 'darwin', prefix });
+
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('no write access'));
+      assert.equal(result.binDir, join(home, '.myelin', 'bin'));
+      assert.equal(result.commandPath, join(home, '.myelin', 'bin', 'myelin'));
+      assert.ok(existsSync(result.commandPath));
+    } finally {
+      chmodSync(binDir, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 

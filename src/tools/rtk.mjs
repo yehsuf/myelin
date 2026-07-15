@@ -1,8 +1,9 @@
-import { execSync, spawnSync } from 'node:child_process';
+import { execSync, execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { homedir, platform as osPlatform, arch as osArch } from 'node:os';
+import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
+import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
 export const RTK_PINNED_VERSION = '0.43.0';
 
@@ -145,14 +146,20 @@ export function toPosixPath(p = '') {
   return String(p).replace(/\\/g, '/');
 }
 
-/** Absolute path (trailing slash) to the installed Myelin repo, preferring the
- *  canonical ~/.myelin/repo over the dev checkout, so the hook command keeps
- *  working regardless of which worktree init was run from. */
-export function resolveMyelinRepoRoot({ home = homedir(), plat = process.platform, exists = existsSync } = {}) {
-  const sep = plat === 'win32' ? '\\' : '/';
-  const canonical = join(home, '.myelin', 'repo');
-  try { if (exists(join(canonical, 'src', 'cli', 'index.mjs'))) return canonical + sep; } catch { /* fall through */ }
-  return fileURLToPath(new URL('../../', import.meta.url));
+/** Absolute path (trailing slash) to the managed runtime bridge, so the RTK
+ *  hook always re-enters Myelin through a current.json-validating bridge
+ *  instead of a checkout path. */
+export function resolveMyelinRepoRoot({ home = homedir(), rootDir, env = process.env, plat = process.platform, exists = existsSync } = {}) {
+  const bridgeRoot = managedPaths({ home, env, rootDir, platform: plat }).runtimeBridgeRoot;
+  // The bridge root can be a relocated MYELIN_DIR/rootDir whose separator style
+  // disagrees with `plat` (a Windows rootDir resolved on a POSIX host, or a
+  // POSIX MYELIN_DIR on a Windows host). Probe and terminate it in the root's
+  // OWN style so we never splice a mismatched separator (e.g.
+  // `D:\managed\runtime-bridge/src/...` or a trailing `/` on a backslash path).
+  const sep = isWindowsStylePath(bridgeRoot) ? '\\' : '/';
+  const probe = joinManaged(bridgeRoot, 'src', 'cli', 'index.mjs');
+  try { if (exists(probe)) return bridgeRoot + sep; } catch { /* fall through */ }
+  return bridgeRoot + sep;
 }
 
 export function copilotRtkHookPath(home = homedir()) {
@@ -171,12 +178,17 @@ export function copilotRtkHookPath(home = homedir()) {
  *      spawns hooks with (the original Windows failure: `rtk` off PATH -> 127).
  *   3. `2>/dev/null` — the guard's stderr is dropped; only a decision on stdout
  *      reaches Copilot.
+ *
+ * The node path and the managed-runtime CLI path are MYELIN_DIR-derived and thus
+ * arbitrary text; both are POSIX single-quoted so a relocated root containing
+ * `$(...)`, backticks, `$VAR`, or a quote is an inert literal that can never be
+ * executed or expanded when Copilot runs the hook.
  */
 export function buildRtkGuardBashCommand({ nodePath = process.execPath, repoRoot } = {}) {
   const root = repoRoot ?? resolveMyelinRepoRoot();
   const node = toPosixPath(nodePath);
   const cli = toPosixPath(root).replace(/\/?$/, '/') + 'src/cli/index.mjs';
-  return `"${node}" "${cli}" rtk-guard copilot 2>/dev/null; exit 0`;
+  return `${posixSingleQuote(node)} ${posixSingleQuote(cli)} rtk-guard copilot 2>/dev/null; exit 0`;
 }
 
 /** The full fail-open replacement for `~/.copilot/hooks/rtk-rewrite.json`.
@@ -314,32 +326,86 @@ export function runRtkInit(args, { cwd, env } = {}) {
   return { ok: child.status === 0, status: child.status ?? 0, output, error: null };
 }
 
-async function tryGithubRelease() {
-  try {
-    const { platform, arch } = await import('node:os').then(m => ({ platform: m.platform(), arch: m.arch() }));
-    const res = await fetch('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
-    const data = await res.json();
-    const binDir = join(homedir(), '.myelin', 'bin');
-    mkdirSync(binDir, { recursive: true });
+/**
+ * Build the argument-array exec plan for installing the RTK release binary. The
+ * MYELIN_DIR-derived `binDir` (and the release `url`) NEVER reach a shell string:
+ *   - POSIX: passed to `/bin/bash -c <script>` as POSITIONAL parameters ($1/$2),
+ *     so a `$(...)`/backtick/quote/space in the relocated bin dir is literal data.
+ *   - Windows: passed to PowerShell via the child ENV (`$env:*` reads a value as
+ *     a literal string, never code); execFileSync bypasses cmd.exe so no `%VAR%`
+ *     expansion applies either.
+ * Nothing is spliced into a shell/command string, so injection is impossible.
+ */
+export function buildRtkReleaseInstallPlan({ platform, binDir, url, powershellExe = 'powershell', baseEnv = process.env }) {
+  if (platform === 'win32') {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      '$zip = Join-Path $env:TEMP "rtk.zip"',
+      'Invoke-WebRequest $env:MYELIN_RTK_URL -OutFile $zip',
+      'Expand-Archive $zip -DestinationPath $env:MYELIN_RTK_BINDIR -Force',
+    ].join('; ');
+    return {
+      download: {
+        file: powershellExe,
+        args: ['-NoProfile', '-Command', script],
+        env: { ...baseEnv, MYELIN_RTK_URL: String(url), MYELIN_RTK_BINDIR: String(binDir) },
+      },
+      verify: null,
+    };
+  }
+  const script =
+    'set -e; url="$1"; dir="$2"; ' +
+    'curl -fsSL "$url" | tar -xz -C "$dir" && chmod +x "$dir/rtk"';
+  return {
+    download: {
+      file: '/bin/bash',
+      args: ['-c', script, 'myelin-rtk-install', String(url), String(binDir)],
+      env: baseEnv,
+    },
+    verify: {
+      file: 'rtk',
+      args: ['--version'],
+      env: { ...baseEnv, PATH: `${binDir}:${baseEnv.PATH ?? ''}` },
+    },
+  };
+}
 
+export async function tryGithubRelease({
+  fetchImpl = fetch,
+  home = homedir(),
+  platform = osPlatform(),
+  arch = osArch(),
+  mkdirSyncImpl = mkdirSync,
+  execFileSyncImpl = execFileSync,
+  env = process.env,
+  powershellExe = 'powershell',
+} = {}) {
+  try {
+    const res = await fetchImpl('https://api.github.com/repos/rtk-ai/rtk/releases/latest');
+    const data = await res.json();
+    const binDir = managedPaths({ home }).binDir;
+    mkdirSyncImpl(binDir, { recursive: true });
+
+    let url;
     if (platform === 'win32') {
       const asset = data.assets?.find(a => a.name.includes('windows') && a.name.endsWith('.zip'));
       if (!asset) return false;
-      execSync(`powershell -Command "Invoke-WebRequest '${asset.browser_download_url}' -OutFile $env:TEMP\\rtk.zip; Expand-Archive $env:TEMP\\rtk.zip -DestinationPath '${binDir}' -Force"`, { stdio: 'inherit' });
-      return true;
-    }
-
-    if (platform === 'linux') {
+      url = asset.browser_download_url;
+    } else if (platform === 'linux') {
       const archStr = arch === 'arm64' ? 'aarch64' : 'x86_64';
       const asset = data.assets?.find(a => a.name.includes(archStr) && a.name.includes('linux') && a.name.endsWith('.tar.gz'));
       if (!asset) return false;
-      execSync(`curl -fsSL '${asset.browser_download_url}' | tar -xz -C '${binDir}' && chmod +x '${join(binDir, 'rtk')}'`, { shell: true, stdio: 'inherit' });
-      // Add to PATH if not already there
-      try { execSync(`export PATH="${binDir}:$PATH" && rtk --version`, { shell: true, stdio: 'pipe' }); } catch {}
-      return true;
+      url = asset.browser_download_url;
+    } else {
+      return false;
     }
 
-    return false;
+    const plan = buildRtkReleaseInstallPlan({ platform, binDir, url, powershellExe, baseEnv: env });
+    execFileSyncImpl(plan.download.file, plan.download.args, { stdio: 'inherit', env: plan.download.env });
+    if (plan.verify) {
+      try { execFileSyncImpl(plan.verify.file, plan.verify.args, { stdio: 'pipe', env: plan.verify.env }); } catch {}
+    }
+    return true;
   } catch {
     return false;
   }

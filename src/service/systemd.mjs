@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
+import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
 
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
@@ -53,6 +54,132 @@ function systemdArgument(value) {
     .replace(/%/g, '%%')}"`;
 }
 
+/**
+ * Does an ExecStart/Environment token need double-quoting to survive systemd's
+ * word-splitting? Anything with whitespace (the actual token-splitter),
+ * quotes, backslashes, or the `$`/`%` expansion sigils must be quoted+escaped;
+ * a plain path/flag stays bare so simple units render human-readably (and so
+ * historical `ExecStart=/bin/foo proxy --port N` assertions keep matching).
+ */
+function needsSystemdQuoting(value) {
+  const str = String(value ?? '');
+  return str === '' || /[\s"'\\$%]/u.test(str);
+}
+
+/** Quote+escape an ExecStart token only when systemd word-splitting would
+ *  otherwise mangle it (e.g. a path like `/srv/Myelin Data/headroom`). */
+function systemdExecToken(value) {
+  return needsSystemdQuoting(value) ? systemdArgument(value) : String(value ?? '');
+}
+
+/**
+ * Escape a value for a double-quoted systemd `Environment="KEY=VALUE"` line.
+ * `\` and `"` are escaped for the double-quoted context; `%` is doubled so a
+ * literal percent is not mistaken for a `%`-specifier at unit load. `$` is left
+ * verbatim — Environment= assignments are NOT subject to `$`/`${}` expansion
+ * (that only happens on the command line), so doubling it would corrupt paths.
+ */
+function systemdEnvironmentValue(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/%/g, '%%');
+}
+
+/**
+ * Render a single `Environment=` line. A value that would break systemd's
+ * space-separated assignment parsing (whitespace/quote/backslash/percent, or an
+ * empty value) is wrapped in double quotes as `Environment="KEY=VALUE"`; a
+ * simple value stays bare as `Environment=KEY=VALUE` for readability and
+ * backward compatibility.
+ */
+function systemdEnvironmentLine(key, value) {
+  const raw = String(value ?? '');
+  if (needsSystemdQuoting(raw)) {
+    return `Environment="${key}=${systemdEnvironmentValue(raw)}"`;
+  }
+  return `Environment=${key}=${raw}`;
+}
+
+function systemdEnvironmentLines(env = {}) {
+  return Object.entries(env).map(([k, v]) => systemdEnvironmentLine(k, v)).join('\n');
+}
+
+/**
+ * Count the words systemd would parse from an ExecStart value, honoring
+ * double-quote grouping and backslash escapes. Used to prove a rendered
+ * ExecStart never accidentally splits a single token (path with a space) into
+ * several.
+ */
+function systemdExecWordCount(execValue) {
+  const str = String(execValue ?? '');
+  let count = 0;
+  let inWord = false;
+  let inQuote = false;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (c === '\\') {
+      if (!inWord) { inWord = true; count++; }
+      i++; // skip the escaped character
+      continue;
+    }
+    if (c === '"') {
+      inQuote = !inQuote;
+      if (!inWord) { inWord = true; count++; }
+      continue;
+    }
+    if (!inQuote && /\s/u.test(c)) {
+      inWord = false;
+      continue;
+    }
+    if (!inWord) { inWord = true; count++; }
+  }
+  return count;
+}
+
+function hasBalancedSystemdQuotes(execValue) {
+  const str = String(execValue ?? '');
+  let inQuote = false;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (c === '\\') { i++; continue; }
+    if (c === '"') inQuote = !inQuote;
+  }
+  return !inQuote;
+}
+
+/**
+ * Build the ExecStart token list into a single line, quoting each token via
+ * `tokenFn`, then self-validate that systemd would parse back exactly the same
+ * number of tokens (i.e. no unquoted space silently split a path). Throws
+ * before the unit is ever written.
+ */
+function renderSystemdExecStart(tokens, tokenFn = systemdExecToken) {
+  const rendered = tokens.map(tokenFn).join(' ');
+  if (systemdExecWordCount(rendered) !== tokens.length) {
+    throw new Error(`systemd ExecStart rendering would mis-split a token: ${rendered}`);
+  }
+  return rendered;
+}
+
+/**
+ * Validate a fully-rendered systemd unit before it is written/replaced: every
+ * `ExecStart=` line must have balanced double-quotes so no exec token carries an
+ * unquoted space that would break the restarted unit definition. Returns the
+ * unit unchanged on success; throws otherwise.
+ */
+export function validateSystemdUnit(unit) {
+  const text = String(unit ?? '');
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('ExecStart=')) continue;
+    const value = line.slice('ExecStart='.length);
+    if (!hasBalancedSystemdQuotes(value)) {
+      throw new Error(`Invalid systemd ExecStart (unbalanced quoting, exec token would split): ${line}`);
+    }
+  }
+  return unit;
+}
+
 function legacyEngineInstance({
   instance,
   engine = 'headroom',
@@ -60,16 +187,18 @@ function legacyEngineInstance({
   port,
   envVars = {},
   home = homedir(),
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const id = `${engine}-${role}`;
+  const root = managedPaths({ home, env }).root;
   return {
     engine,
     role,
     port,
     id,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -96,7 +225,8 @@ export function generateSystemdUnit(opts = {}) {
  */
 export function generateCopilotHeadroomUnit(opts = {}) {
   const selectedEngine = opts.engine ?? 'headroom';
-  const stateDir = opts.workingDirectory ?? join(homedir(), '.myelin', 'state', `${selectedEngine}-copilot`);
+  const root = managedPaths({ home: opts.home ?? homedir(), env: opts.env }).root;
+  const stateDir = opts.workingDirectory ?? joinManaged(root, 'state', `${selectedEngine}-copilot`);
   return generateEngineInstanceUnit({
     ...opts,
     instance: opts.instance ?? {
@@ -105,7 +235,7 @@ export function generateCopilotHeadroomUnit(opts = {}) {
       port: opts.port,
       id: `${selectedEngine}-copilot`,
       stateDir,
-      logPath: join(homedir(), '.myelin', `${selectedEngine}-copilot.log`),
+      logPath: joinManaged(root, `${selectedEngine}-copilot.log`),
       healthUrl: `http://127.0.0.1:${opts.port}/health`,
       env: opts.envVars ?? {},
     },
@@ -113,20 +243,68 @@ export function generateCopilotHeadroomUnit(opts = {}) {
   });
 }
 
-export function generateEngineInstanceUnit({ instance, envVars = {}, ...options }) {
+/**
+ * Reject a value destined for a raw (unquoted) systemd directive body when it
+ * carries a control character. A newline/CR in a MYELIN_DIR-derived
+ * WorkingDirectory/StandardOutput/StandardError/ExecStart path would start a NEW
+ * unit line — injecting arbitrary directives that sail past
+ * {@link validateSystemdUnit} (its quote-balance check treats a newline as a
+ * plain line break). The whole C0 range + DEL have no legitimate place in a
+ * service path, so throw before the unit is ever rendered.
+ * @param {unknown} value
+ * @param {string} label
+ */
+function assertNoSystemdControlChars(value, label) {
+  const str = String(value ?? '');
+  const match = /[\u0000-\u001F\u007F]/u.exec(str);
+  if (match) {
+    const code = match[0].charCodeAt(0).toString(16).padStart(2, '0');
+    throw new Error(
+      `Refusing to render systemd unit: ${label} contains control character U+00${code.toUpperCase()} `
+      + `(newline/CR/etc.) that could inject unit directives: ${JSON.stringify(str)}`,
+    );
+  }
+}
+
+/**
+ * Guard EVERY environment key AND value spliced into `Environment=` lines. A
+ * newline in a MYELIN_DIR-derived (or otherwise forwarded) env key/value would
+ * otherwise start a NEW unit line — injecting arbitrary directives that sail
+ * past {@link validateSystemdUnit} (whose quote-balance check treats a newline
+ * as a plain line break). Applied to the fully-merged env of BOTH unit
+ * generators before any line is rendered.
+ * @param {Record<string, unknown>} mergedEnv
+ */
+function assertNoSystemdEnvControlChars(mergedEnv = {}) {
+  for (const [key, value] of Object.entries(mergedEnv)) {
+    assertNoSystemdControlChars(key, `Environment key ${JSON.stringify(key)}`);
+    assertNoSystemdControlChars(value, `Environment value for key ${JSON.stringify(key)}`);
+  }
+}
+
+export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
-  const mergedEnv = { ...command.env, ...envVars, ...instance.env };
-  const envLines = Object.entries(mergedEnv).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  // Guard every value spliced into a raw directive body (WorkingDirectory,
+  // StandardOutput/Error, ExecStart tokens). A newline in the managed root would
+  // otherwise inject directives that pass validateSystemdUnit's quote-balance.
+  assertNoSystemdControlChars(instance.stateDir, 'WorkingDirectory');
+  assertNoSystemdControlChars(instance.logPath, 'StandardOutput/StandardError path');
+  assertNoSystemdControlChars(command.executable, 'ExecStart executable');
+  command.args.forEach((arg, i) => assertNoSystemdControlChars(arg, `ExecStart argument[${i}]`));
+  const mergedEnv = withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env);
+  assertNoSystemdEnvControlChars(mergedEnv);
+  const envLines = systemdEnvironmentLines(mergedEnv);
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
+  const execStart = instance.engine === 'headroom_lite'
+    ? renderSystemdExecStart([command.executable, ...command.args], systemdArgument)
+    : renderSystemdExecStart([command.executable, ...command.args]);
   return `[Unit]
 Description=${description} (${serviceId})
 After=network.target
 
 [Service]
-ExecStart=${instance.engine === 'headroom_lite'
-    ? [command.executable, ...command.args].map(systemdArgument).join(' ')
-    : `${command.executable}${command.args.length ? ` ${command.args.join(' ')}` : ''}`}
+ExecStart=${execStart}
 WorkingDirectory=${instance.stateDir}
 StandardOutput=append:${instance.logPath}
 StandardError=append:${instance.logPath}
@@ -146,7 +324,7 @@ export function engineInstanceUnitPath(instance) {
 
 export function installEngineInstance(instance, options = {}) {
   const { serviceId } = engineInstanceIdentity(instance);
-  const content = generateEngineInstanceUnit({ instance, ...options });
+  const content = validateSystemdUnit(generateEngineInstanceUnit({ instance, ...options }));
   const p = engineInstanceUnitPath(instance);
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
@@ -174,16 +352,19 @@ export function removeEngineInstance(instance) {
   execSync('systemctl --user daemon-reload');
 }
 
-export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {} }) {
+export function generateMitmUnit({ mitmdumpBin, port, addonPath, args, envVars = {}, env = process.env }) {
   const execArgs = args ?? ['--listen-port', String(port), '-s', addonPath];
-  const envLines = Object.entries(envVars).map(([k, v]) => `Environment=${k}=${v}`).join('\n');
+  const mergedEnv = withForwardedMyelinDir(envVars, env);
+  assertNoSystemdEnvControlChars(mergedEnv);
+  const envLines = systemdEnvironmentLines(mergedEnv);
   const unsetLines = buildServiceEnvUnsetLines({ os: 'linux' });
+  const execStart = renderSystemdExecStart([mitmdumpBin, ...execArgs]);
   return `[Unit]
 Description=Myelin mitmproxy LLM compression proxy
 After=network.target myelin-headroom.service
 
 [Service]
-ExecStart=${mitmdumpBin} ${execArgs.join(' ')}
+ExecStart=${execStart}
 Restart=always
 RestartSec=10
 ${unsetLines}
@@ -217,7 +398,7 @@ export function copilotHeadroomServiceStatus(opts = {}) {
   return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env }) {
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
@@ -227,10 +408,11 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
   if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
   args.push('--ignore-hosts', String.raw`.*\.akamai\.com|.*\.corp\.akamai\.com|.*\.akamaized\.net|.*\.akamaihd\.net`);
-  const content = generateMitmUnit({
+  const content = validateSystemdUnit(generateMitmUnit({
     mitmdumpBin, port, addonPath, args,
     envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
-  });
+    env,
+  }));
   const p = mitmUnitPath();
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   writeFileSync(p, content, 'utf8');

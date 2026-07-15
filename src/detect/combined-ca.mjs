@@ -9,7 +9,7 @@
  */
 import { execSync as _execSync } from 'node:child_process';
 import { readFileSync as _readFileSync, writeFileSync as _writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { managedPaths } from '../shared/myelin-paths.mjs';
 import { detectOS as _detectOS } from './os.mjs';
 
 // PowerShell script: build X509Chain to api.github.com and print intermediate
@@ -58,6 +58,7 @@ export function base64ToPem(b64) {
  * @param {string} home  home directory
  * @param {object} opts
  * @param {boolean} [opts.force=false]  skip dedup check
+ * @param {object} [opts.env]  environment used to resolve the managed root (MYELIN_DIR)
  * @param {function} [opts.execSyncImpl]
  * @param {function} [opts.readFileSyncImpl]
  * @param {function} [opts.writeFileSyncImpl]
@@ -68,6 +69,7 @@ export async function buildCombinedCaCert(
   home,
   {
     force = false,
+    env = process.env,
     execSyncImpl = _execSync,
     readFileSyncImpl = _readFileSync,
     writeFileSyncImpl = _writeFileSync,
@@ -75,7 +77,7 @@ export async function buildCombinedCaCert(
   } = {},
 ) {
   if (!rootCaPath) return null;
-  const combinedPath = join(home, '.myelin', 'ca-bundle.pem');
+  const combinedPath = managedPaths({ home, env }).caBundlePath;
   const os = detectOSImpl();
 
   try {

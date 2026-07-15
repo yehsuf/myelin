@@ -1,3 +1,5 @@
+import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
+
 export function selectedEngine(config = {}) {
   return config?.proxy?.engine === 'headroom_lite' ? 'headroom_lite' : 'headroom';
 }
@@ -24,7 +26,6 @@ export function buildServiceEnginePlan(config = {}) {
 }
 
 import { homedir } from 'node:os';
-import { join, win32 as pathWin32 } from 'node:path';
 import { detectOS } from '../detect/os.mjs';
 import { resolveMitmCompression } from './compression-env.mjs';
 import { defaultWindowsHome } from '../service/windows.mjs';
@@ -37,10 +38,10 @@ function normalizePort(value, label) {
   return n;
 }
 
-function buildEngineInstance({ engine, role, port, egressPort, config, home, joinPath }) {
+function buildEngineInstance({ engine, role, port, egressPort, config, root }) {
   const id = `${engine}-${role}`;
-  const stateDir = joinPath(home, '.myelin', 'state', id);
-  const logPath = joinPath(home, '.myelin', `${id}.log`);
+  const stateDir = joinManaged(root, 'state', id);
+  const logPath = joinManaged(root, `${id}.log`);
   const healthUrl = `http://127.0.0.1:${port}/health`;
   let env = {};
   if (engine === 'headroom_lite' && role === 'copilot') {
@@ -83,7 +84,10 @@ export function buildEngineInstancePlan(config = {}, {
 } = {}) {
   const engine = selectedEngine(config);
   const descriptorHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
-  const joinPath = os === 'windows' ? pathWin32.join : join;
+  const root = managedPaths({
+    home: descriptorHome,
+    platform: os === 'windows' ? 'windows' : os,
+  }).root;
 
   const rawPrimaryPort = selectedEnginePort(config);
   const copilot = config.proxy?.copilot_headroom ?? {};
@@ -114,14 +118,14 @@ export function buildEngineInstancePlan(config = {}, {
     assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
 
     const instances = [
-      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config, home: descriptorHome, joinPath }),
-      buildEngineInstance({ engine, role: 'copilot', port: copilotPort, egressPort, config, home: descriptorHome, joinPath }),
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config, root }),
+      buildEngineInstance({ engine, role: 'copilot', port: copilotPort, egressPort, config, root }),
     ];
     return { engine, instances };
   } else {
     assertNoPlanPortCollisions(primaryPort, null, mitmPort, null);
     const instances = [
-      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort: null, config, home: descriptorHome, joinPath }),
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort: null, config, root }),
     ];
     return { engine, instances };
   }

@@ -1,9 +1,11 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
+import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
+import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
 const LABEL      = 'com.myelin.headroom';
 const MITM_LABEL = 'com.myelin.mitmproxy';
@@ -60,16 +62,18 @@ function legacyEngineInstance({
   envVars = {},
   logPath,
   home = homedir(),
+  env = process.env,
 } = {}) {
   if (instance) return instance;
   const id = `${engine}-${role}`;
+  const root = managedPaths({ home, env }).root;
   return {
     engine,
     role,
     port,
     id,
-    stateDir: join(home, '.myelin', 'state', id),
-    logPath: logPath ?? join(home, '.myelin', `${id}.log`),
+    stateDir: joinManaged(root, 'state', id),
+    logPath: logPath ?? joinManaged(root, `${id}.log`),
     healthUrl: `http://127.0.0.1:${port}/health`,
     env: envVars,
   };
@@ -101,7 +105,38 @@ function xmlEscape(s) {
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Write a plist safely: render to a `<path>.candidate`, validate it with
+ * `plutil -lint` (via an injected exec impl so unit tests never shell out), and
+ * ONLY on success atomically rename the candidate over the destination. On
+ * failure the candidate is removed and the error is thrown WITHOUT touching the
+ * existing (healthy) plist — so the installer never boots out a working job and
+ * then fails to bootstrap a broken replacement.
+ */
+export function writeValidatedPlist({
+  path,
+  content,
+  writeFileSyncImpl = writeFileSync,
+  renameSyncImpl = renameSync,
+  unlinkSyncImpl = unlinkSync,
+  execFileSyncImpl = execFileSync,
+  plutilPath = 'plutil',
+} = {}) {
+  const candidate = `${path}.candidate`;
+  writeFileSyncImpl(candidate, content, 'utf8');
+  try {
+    execFileSyncImpl(plutilPath, ['-lint', candidate], { stdio: 'ignore' });
+  } catch (err) {
+    try { unlinkSyncImpl(candidate); } catch {}
+    const detail = String(err?.message ?? err).split('\n')[0];
+    throw new Error(`Refusing to install invalid plist at ${path}: plutil -lint failed: ${detail}`);
+  }
+  renameSyncImpl(candidate, path);
+  return path;
 }
 
 export function generatePlist(opts = {}) {
@@ -130,7 +165,7 @@ export function mitmPlistPath(home = homedir()) {
  *  filter). */
 export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory }) {
   const envEntries = Object.entries(envVars)
-    .map(([k, v]) => `        <key>${k}</key>\n        <string>${xmlEscape(v)}</string>`)
+    .map(([k, v]) => `        <key>${xmlEscape(k)}</key>\n        <string>${xmlEscape(v)}</string>`)
     .join('\n');
   const progArgs = shWrappedProgramArgs(command, args);
   const argItems = progArgs
@@ -144,7 +179,7 @@ export function generateGenericPlist({ label, command, args = [], envVars = {}, 
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${label}</string>
+    <string>${xmlEscape(label)}</string>
     <key>ProgramArguments</key>
     <array>
 ${argItems}
@@ -160,21 +195,21 @@ ${envEntries}
     <key>ThrottleInterval</key>
     <integer>10</integer>
     <key>StandardOutPath</key>
-    <string>${logPath ?? '/tmp/myelin.log'}</string>
+    <string>${xmlEscape(logPath ?? '/tmp/myelin.log')}</string>
     <key>StandardErrorPath</key>
-    <string>${logPath ?? '/tmp/myelin.log'}</string>${workingDirEntry}
+    <string>${xmlEscape(logPath ?? '/tmp/myelin.log')}</string>${workingDirEntry}
 </dict>
 </plist>`;
 }
 
-export function generateEngineInstancePlist({ instance, envVars = {}, ...options }) {
+export function generateEngineInstancePlist({ instance, envVars = {}, env = process.env, ...options }) {
   const { label } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
   return generateGenericPlist({
     label,
     command: command.command,
     args: command.args,
-    envVars: { ...command.env, ...envVars, ...instance.env },
+    envVars: withForwardedMyelinDir({ ...command.env, ...envVars, ...instance.env }, env),
     logPath: instance.logPath,
     workingDirectory: instance.stateDir,
   });
@@ -191,7 +226,10 @@ export function installEngineInstance(instance, options = {}) {
   const content = generateEngineInstancePlist({ instance, ...options });
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  writeFileSync(p, content, 'utf8');
+  // Validate + atomically replace BEFORE booting out the running job, so an
+  // invalid plist (bad XML from a `&`/`<` path) can never leave the host with a
+  // booted-out job and no working replacement.
+  writeValidatedPlist({ path: p, content });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
@@ -232,7 +270,7 @@ export function removeEngineInstance(instance) {
  *  redirects (arrival-port gating in the addon itself), it only owns real
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, upstreamProxy, egressPort }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort }) {
   const p = mitmPlistPath();
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
@@ -273,15 +311,15 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     label: MITM_LABEL,
     command: mitmdumpBin,
     args,
-    envVars: {
+    envVars: withForwardedMyelinDir({
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
-    },
-    logPath: logPath ?? join(home ?? homedir(), '.myelin', 'mitmproxy.log'),
+    }, env),
+    logPath: logPath ?? joinManaged(managedPaths({ home: home ?? homedir(), env }).root, 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
-  writeFileSync(p, content, 'utf8');
+  writeValidatedPlist({ path: p, content });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${MITM_LABEL}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
@@ -346,10 +384,10 @@ export function copilotHeadroomServiceStatus(opts = {}) {
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
+export function generateLaunchdWatchdogScript({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
   const la = join(home, 'Library', 'LaunchAgents');
-  const watchdogLog = join(home, '.myelin', 'watchdog.log');
+  const watchdogLog = joinManaged(managedPaths({ home, env }).root, 'watchdog.log');
   const checks = [
     ...(mitmPort != null ? [`check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`] : []),
     ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
@@ -374,7 +412,7 @@ check_and_revive() {
   launchctl bootout "gui/$UID_N/$label" 2>/dev/null
   sleep 1
   launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null
-  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> "${watchdogLog}"
+  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> ${posixSingleQuote(watchdogLog)}
 }
 
 ${checks.join('\n')}
@@ -392,42 +430,43 @@ ${checks.join('\n')}
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
+export function installWatchdog({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
   home = home ?? homedir();
-  const binDir = join(home, '.myelin', 'bin');
+  const root = managedPaths({ home, env }).root;
+  const binDir = joinManaged(root, 'bin');
   mkdirSync(binDir, { recursive: true });
-  const scriptPath = join(binDir, 'watchdog.sh');
+  const scriptPath = joinManaged(binDir, 'watchdog.sh');
   const la = join(home, 'Library', 'LaunchAgents');
-  const watchdogLog = join(home, '.myelin', 'watchdog.log');
+  const watchdogLog = joinManaged(root, 'watchdog.log');
 
-  const script = generateLaunchdWatchdogScript({ home, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
+  const script = generateLaunchdWatchdogScript({ home, env, headroomPort, mitmPort, copilotHeadroomPort, egressPort });
   writeFileSync(scriptPath, script, 'utf8');
-  execSync(`chmod +x "${scriptPath}"`);
+  chmodSync(scriptPath, 0o755);
 
   const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>${WATCHDOG_LABEL}</string>
+    <string>${xmlEscape(WATCHDOG_LABEL)}</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>${scriptPath}</string>
+        <string>${xmlEscape(scriptPath)}</string>
     </array>
     <key>StartInterval</key>
     <integer>90</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${watchdogLog}</string>
+    <string>${xmlEscape(watchdogLog)}</string>
     <key>StandardErrorPath</key>
-    <string>${watchdogLog}</string>
+    <string>${xmlEscape(watchdogLog)}</string>
 </dict>
 </plist>`;
   const plistPathW = join(la, `${WATCHDOG_LABEL}.plist`);
   mkdirSync(la, { recursive: true });
-  writeFileSync(plistPathW, plistContent, 'utf8');
+  writeValidatedPlist({ path: plistPathW, content: plistContent });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${WATCHDOG_LABEL}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
