@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG = {
     // hint if the `headroom-lite` binary isn't installed.
     headroom_lite: {
       enabled: true,
-      port: 8790,
+      port: 8787,  // Shared with primary engine — single canonical port (compression.port)
     },
     mitm: {
       enabled: true,

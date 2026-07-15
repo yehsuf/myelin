@@ -18,15 +18,21 @@ export function isCompressionDisabled(config = {}) {
 }
 
 export function selectedEnginePort(config = {}) {
-  return selectedEngine(config) === 'headroom_lite'
-    ? (config?.proxy?.headroom_lite?.port ?? 8790)
+  // compression.port is the canonical single shared port — it wins when explicitly set.
+  // Falls back to the per-engine legacy alias for raw configs that haven't gone through
+  // loadConfig's projection. Default for both engines is 8787; the old headroom-lite
+  // default of 8790 is retired in favour of the shared port.
+  if (config?.compression?.port != null) return config.compression.port;
+  const engine = selectedEngine(config);
+  return engine === 'headroom_lite'
+    ? (config?.proxy?.headroom_lite?.port ?? 8787)
     : (config?.proxy?.headroom?.port ?? 8787);
 }
 
 export function buildServiceEnginePlan(config = {}) {
   const engine = selectedEngine(config);
   const headroomPort = config?.proxy?.headroom?.port ?? 8787;
-  const headroomLitePort = config?.proxy?.headroom_lite?.port ?? 8790;
+  const headroomLitePort = config?.proxy?.headroom_lite?.port ?? 8787;
 
   if (isCompressionDisabled(config)) {
     return {
@@ -34,7 +40,10 @@ export function buildServiceEnginePlan(config = {}) {
       // Nominal port of the engine that WOULD run; kept valid so downstream
       // MITM env stays a real number even though no engine service runs
       // (compression is off, so the addon never calls this port).
-      selectedPort: engine === 'headroom_lite' ? headroomLitePort : headroomPort,
+      // Nominal port of the engine that WOULD run; kept valid so downstream
+      // MITM env stays a real number even though no engine service runs.
+      // Uses the same canonical resolution as selectedEnginePort.
+      selectedPort: selectedEnginePort(config),
       headroomPort,
       headroomLitePort,
       shouldRunManagedHeadroom: false,
@@ -44,7 +53,7 @@ export function buildServiceEnginePlan(config = {}) {
 
   return {
     selectedEngine: engine,
-    selectedPort: engine === 'headroom_lite' ? headroomLitePort : headroomPort,
+    selectedPort: selectedEnginePort(config),
     headroomPort,
     headroomLitePort,
     shouldRunManagedHeadroom: engine === 'headroom',
