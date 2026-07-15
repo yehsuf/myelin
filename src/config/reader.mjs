@@ -103,6 +103,21 @@ function deriveCanonicalCompression(merged, userConfig) {
     }
     const compression = mergeDeep(DEFAULT_CONFIG.compression, userCompression);
     const userProxy = isPlainObject(userConfig.proxy) ? userConfig.proxy : {};
+
+    // Reverse reconciliation (mirror of proxyAliasFor's `ifUnset`): when the
+    // user toggled the Copilot proxy via the LEGACY `proxy.copilot_headroom.enabled`
+    // key but did NOT set the canonical `compression.copilot_proxy.enabled`, the
+    // legacy value must flow INTO the canonical block. The update orchestrator
+    // reads the canonical `compression.copilot_proxy.enabled` (see
+    // update/engine-selection.mjs resolveCompressionConfig); without this it
+    // would see the canonical default and stop a Copilot proxy the user
+    // explicitly enabled.
+    const userCopilot = isPlainObject(userProxy.copilot_headroom) ? userProxy.copilot_headroom : {};
+    const userCanonicalCopilot = isPlainObject(userCompression.copilot_proxy) ? userCompression.copilot_proxy : {};
+    if (Object.hasOwn(userCopilot, 'enabled') && !Object.hasOwn(userCanonicalCopilot, 'enabled')) {
+      compression.copilot_proxy = { ...compression.copilot_proxy, enabled: userCopilot.enabled === true };
+    }
+
     return { compression, proxyOverride: proxyAliasFor(backend, compression, userProxy) };
   }
 

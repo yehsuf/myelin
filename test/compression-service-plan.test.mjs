@@ -11,6 +11,7 @@ import {
 import { resolveMitmCompression } from '../src/config/compression-env.mjs';
 import { applyServiceEngineInstallPlan, resolveProxyEnvPort } from '../src/install.mjs';
 import { runRestart } from '../src/cli/restart.mjs';
+import { resolveCompressionConfig } from '../src/update/engine-selection.mjs';
 
 const TEST_DIR = join(homedir(), '.tokenstack-service-plan-test');
 
@@ -153,5 +154,24 @@ describe('canonical compression.* drives the install/restart service plan', () =
     assert.equal(typeof envPort, 'number');
     assert.ok(Number.isInteger(envPort) && envPort > 0, `expected a real port, got ${envPort}`);
     assert.equal(String(envPort) === 'null', false);
+  });
+
+  it('reconciles an explicit legacy copilot toggle into resolved compression.copilot_proxy so update keeps it', async () => {
+    // User enabled the Copilot proxy via the legacy key while selecting a
+    // canonical backend but NOT setting compression.copilot_proxy.enabled.
+    // The resolved canonical block (which the update orchestrator reads via
+    // resolveCompressionConfig) must reflect the enable, or update stops it.
+    const cfg = await load(
+      'compression:\n  backend: headroom-lite\nproxy:\n  copilot_headroom:\n    enabled: true\n',
+    );
+    assert.equal(cfg.compression.copilot_proxy.enabled, true);
+    assert.equal(resolveCompressionConfig(cfg).copilotProxy.enabled, true);
+
+    // A legacy explicit disable must likewise flow into the canonical block.
+    const off = await load(
+      'compression:\n  backend: headroom-lite\nproxy:\n  copilot_headroom:\n    enabled: false\n',
+    );
+    assert.equal(off.compression.copilot_proxy.enabled, false);
+    assert.equal(resolveCompressionConfig(off).copilotProxy.enabled, false);
   });
 });
