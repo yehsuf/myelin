@@ -423,7 +423,8 @@ describe('runUpdate', () => {
     );
 
     const out = consoleCapture.logs.join('\n');
-    assert.match(out, /--python "\/custom\/mroot\/venv" --upgrade "headroom-ai\[all\]"/);
+    assert.match(out, /--python "\/custom\/mroot\/venv" "headroom-ai\[all\]==0\.31\.0"/);
+    assert.ok(!out.includes('--upgrade'), out);
     assert.ok(!out.includes('/.myelin/venv'), out);
   });
 
@@ -469,7 +470,7 @@ describe('runUpdate', () => {
     assert.equal(execFileCalls.length, 1, 'headroom upgrade runs exactly one arg-array exec');
     assert.equal(execFileCalls[0].file, 'uv');
     assert.deepEqual(execFileCalls[0].args, [
-      'pip', 'install', '--python', `${evilRoot}/venv`, '--upgrade', 'headroom-ai[all]',
+      'pip', 'install', '--python', `${evilRoot}/venv`, 'headroom-ai[all]==0.31.0',
     ]);
     // The relocated venv is one opaque argv element — the $()/backtick/quote is inert data.
     assert.equal(execFileCalls[0].args[3], `${evilRoot}/venv`);

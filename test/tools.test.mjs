@@ -19,7 +19,7 @@ function hasPosixSh() {
 }
 import { detectRtkHookArtifacts, getRtkVersionStatus, parseRtkVersion, RTK_PINNED_VERSION, rtkInstallStrategy } from '../src/tools/rtk.mjs';
 import { buildGuardedRtkCopilotHook } from '../src/tools/rtk.mjs';
-import { parseHeadroomVersion, headroomHealthUrl, installHeadroom } from '../src/tools/headroom.mjs';
+import { parseHeadroomVersion, headroomHealthUrl, installHeadroom, HEADROOM_AI_VERSION, HEADROOM_AI_SPEC } from '../src/tools/headroom.mjs';
 import * as winswTools from '../src/tools/winsw.mjs';
 import { detectWinsw, getWinswVersionStatus, parseWinswVersion, selectWinswAsset, WINSW_PINNED_VERSION, winswBinPath, winswReleaseApiUrl } from '../src/tools/winsw.mjs';
 import { writeManagedLauncher } from '../src/runtime/launcher.mjs';
@@ -223,6 +223,17 @@ describe('headroomHealthUrl', () => {
   });
 });
 
+describe('HEADROOM_AI_SPEC (pinned classic-headroom version)', () => {
+  it('pins headroom-ai[all] to a fixed version', () => {
+    assert.equal(HEADROOM_AI_VERSION, '0.31.0');
+    assert.equal(HEADROOM_AI_SPEC, 'headroom-ai[all]==0.31.0');
+  });
+  it('is a single argv element (no shell metacharacters / spaces)', () => {
+    assert.ok(!/\s/.test(HEADROOM_AI_SPEC));
+    assert.match(HEADROOM_AI_SPEC, /^headroom-ai\[all\]==\d+\.\d+\.\d+$/);
+  });
+});
+
 describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', () => {
   // A relocated MYELIN_DIR whose venv path carries shell metacharacters must be
   // handed to `uv` as literal argv via execFileSync — never interpolated into an
@@ -244,9 +255,9 @@ describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', (
     // uv venv <venv>
     assert.equal(calls[0].file, 'uv');
     assert.deepEqual(calls[0].args, ['venv', venv]);
-    // uv pip install --python <venv> headroom-ai[all]
+    // uv pip install --python <venv> headroom-ai[all]==0.31.0 (pinned)
     assert.equal(calls[1].file, 'uv');
-    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]']);
+    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]==0.31.0']);
     // Every arg is a discrete element; no arg is a composed shell command.
     for (const c of calls) {
       assert.ok(Array.isArray(c.args));

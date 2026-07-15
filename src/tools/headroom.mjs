@@ -3,6 +3,13 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
 
+// Pin the classic Python headroom package to a fixed version for reproducible
+// installs. Single source of truth referenced by install.mjs and update.mjs so
+// the pin can never drift across call sites. HEADROOM_AI_SPEC is a single argv
+// element (no shell parsing of the `[all]`/`==` markers).
+export const HEADROOM_AI_VERSION = '0.31.0';
+export const HEADROOM_AI_SPEC = `headroom-ai[all]==${HEADROOM_AI_VERSION}`;
+
 export function parseHeadroomVersion(raw = '') {
   const m = raw.match(/(\d+\.\d+\.\d+)/);
   return m ? m[1] : null;
@@ -43,7 +50,7 @@ export async function installHeadroom({
   // into a shell string. A relocated root containing `"`, `$(...)`, backticks or
   // `'` therefore cannot break out into command execution.
   execFileSyncImpl('uv', ['venv', venv], { stdio: 'inherit' });
-  execFileSyncImpl('uv', ['pip', 'install', '--python', venv, 'headroom-ai[all]'], { stdio: 'inherit' });
+  execFileSyncImpl('uv', ['pip', 'install', '--python', venv, HEADROOM_AI_SPEC], { stdio: 'inherit' });
   const binPath = headroomBinPath({ home, env });
   return { binPath, ok: existsSyncImpl(binPath) };
 }
