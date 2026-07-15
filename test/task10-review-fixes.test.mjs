@@ -1,7 +1,7 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 
 import {
   createUpdateLock,
@@ -402,7 +402,8 @@ describe('Task 10 finding 4: partial component stage never activates', { concurr
 
   it('reclaims an interrupted stage on retry instead of failing permanently', () => {
     const root = makeRoot();
-    const dest = componentVersionDir(root, 'semble', COMPONENTS.semble.version);
+    // Use posix.join to match stageComponent's platform:'linux' path construction
+    const dest = componentVersionDir(root, 'semble', COMPONENTS.semble.version, { join: posix.join });
     fs.mkdirSync(join(dest, 'bin'), { recursive: true });
     fs.writeFileSync(join(dest, 'bin', 'semble'), 'partial-corrupt');
     const result = stageSemble(root);
@@ -439,7 +440,7 @@ describe('Task 10 finding 4: partial component stage never activates', { concurr
 import { createPlatformServiceTransactionAdapter } from '../src/update/update-orchestrator.mjs';
 
 describe('Task 10 finding 6: macOS watchdog script participates in snapshot/rollback', { concurrency: false }, () => {
-  it('captures and restores ~/.myelin/bin/watchdog.sh alongside its launch agent', async () => {
+  it('captures and restores ~/.myelin/bin/watchdog.sh alongside its launch agent', { skip: process.platform === 'win32' }, async () => {
     const home = makeRoot();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.myelin.watchdog.plist');
     const scriptPath = join(home, '.myelin', 'bin', 'watchdog.sh');
@@ -464,7 +465,7 @@ describe('Task 10 finding 6: macOS watchdog script participates in snapshot/roll
     assert.equal(fs.readFileSync(plistPath, 'utf8'), 'ORIGINAL PLIST');
   });
 
-  it('removes a watchdog script the update newly created when rolling back', async () => {
+  it('removes a watchdog script the update newly created when rolling back', { skip: process.platform === 'win32' }, async () => {
     const home = makeRoot();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.myelin.watchdog.plist');
     const scriptPath = join(home, '.myelin', 'bin', 'watchdog.sh');
@@ -516,7 +517,6 @@ function stageReleaseArgs(root, { exec } = {}) {
     args: {
       target: { channel: 'stable', version: '1.1.0', source: { type: 'directory', path: source } },
       releasesRoot,
-      platform: 'linux',
       exec: exec ?? (() => ''),
     },
   };
@@ -548,7 +548,9 @@ describe('Task 10 finding 7: release stage is retryable after a rollback', { con
     assert.equal(fs.existsSync(join(releasesRoot, '1.1.0', 'package.json')), true);
     assert.equal(fs.existsSync(join(releasesRoot, '1.1.0', 'garbage.txt')), false);
     assert.deepEqual(commands, [
-      ['npm', ['ci', '--ignore-scripts=false']],
+      process.platform === 'win32'
+        ? ['cmd.exe', ['/d', '/s', '/c', 'npm "ci" "--ignore-scripts=false"']]
+        : ['npm', ['ci', '--ignore-scripts=false']],
       ['node', ['bin/myelin', '--version']],
       ['node', ['--test', 'test/component-manifest.test.mjs']],
     ]);
@@ -840,7 +842,7 @@ describe('Task 10 finding 10: staged apply uses validated managed component poin
       fs.mkdirSync(binDir, { recursive: true });
       fs.writeFileSync(join(binDir, 'headroom-lite'), '#!/bin/sh\necho staged\n');
     }
-    activateComponent({ root: componentsRoot, name, version, platform: 'linux', fs });
+    activateComponent({ root: componentsRoot, name, version, platform: 'linux', fs, durability: { fsyncFile: () => {}, fsyncDirectory: () => {} } });
     return versionDir;
   }
 
@@ -869,7 +871,7 @@ describe('Task 10 finding 10: staged apply uses validated managed component poin
 
     assert.equal(resolved.name, 'headroomLite');
     assert.equal(resolved.version, '0.31.0');
-    assert.equal(resolved.binPath, join(versionDir, 'node_modules', '.bin', 'headroom-lite'));
+    assert.equal(resolved.binPath, posix.join(versionDir, 'node_modules', '.bin', 'headroom-lite'));
   });
 
   it('throws when the pinned executable is missing rather than falling back to global tools', () => {
@@ -1059,7 +1061,7 @@ describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed poi
       fs.mkdirSync(binDir, { recursive: true });
       fs.writeFileSync(join(binDir, 'mitmdump'), '#!/bin/sh\necho staged-mitm\n');
     }
-    activateComponent({ root: componentsRoot, name: 'mitmproxy', version, platform: 'linux', fs });
+    activateComponent({ root: componentsRoot, name: 'mitmproxy', version, platform: 'linux', fs, durability: { fsyncFile: () => {}, fsyncDirectory: () => {} } });
     return versionDir;
   }
 
@@ -1075,7 +1077,7 @@ describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed poi
 
     assert.equal(resolved.name, 'mitmproxy');
     assert.equal(resolved.version, '12.2.3');
-    assert.equal(resolved.binPath, join(versionDir, 'bin', 'mitmdump'));
+    assert.equal(resolved.binPath, posix.join(versionDir, 'bin', 'mitmdump'));
   });
 
   it('throws instead of falling back to a global mitmdump when the pinned binary is missing', () => {
