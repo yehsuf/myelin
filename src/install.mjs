@@ -1554,7 +1554,7 @@ export function installCopilotSkills({
     const dir = join(skillsDir, 'myelin-compact');
     mkdirSyncImpl(dir, { recursive: true });
     writeFileSyncImpl(join(dir, 'SKILL.md'), COMPACT_SKILL_MD);
-    const src = join(repoRoot.replace(/[\\/]$/, ''), 'src', 'cli', 'compact-prepare.mjs');
+    const src = fileURLToPath(new URL('./cli/compact-prepare.mjs', import.meta.url));
     const dst = join(dir, 'compact-prepare.mjs');
     if (os === 'windows') {
       copyFileSyncImpl(src, dst);
