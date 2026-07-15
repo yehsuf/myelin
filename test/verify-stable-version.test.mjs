@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 
-const SCRIPT = new URL('../src/update/verify-stable-version.mjs', import.meta.url).pathname;
+const SCRIPT = fileURLToPath(new URL('../src/update/verify-stable-version.mjs', import.meta.url));
 
 function verify(version) {
   return spawnSync(process.execPath, [SCRIPT, version], { encoding: 'utf8' });

@@ -32,7 +32,7 @@ function lockRecord({ token, pid, startedAt, heartbeatAt }) {
   });
 }
 
-describe('Task 10 finding 1: stale reclaim marker recovery', () => {
+describe('Task 10 finding 1: stale reclaim marker recovery', { concurrency: false }, () => {
   it('acquires the lock past an orphaned stale reclaim marker left by a dead reclaimer', () => {
     const root = makeRoot();
     const lockPath = join(root, 'update.lock');
@@ -164,7 +164,7 @@ function stubbedTransactionOverrides(events = []) {
   };
 }
 
-describe('Task 10 finding 2: no-service topology health gate', () => {
+describe('Task 10 finding 2: no-service topology health gate', { concurrency: false }, () => {
   it('activates a disabled-compression / disabled-mitm plan without rolling back', async () => {
     const events = [];
     const deps = createUpdateDependencies({
@@ -212,7 +212,7 @@ function fakeSpawn(record) {
   };
 }
 
-describe('Task 10 finding 5: staged apply preserves install profile', () => {
+describe('Task 10 finding 5: staged apply preserves install profile', { concurrency: false }, () => {
   it('derives mcp profile for a disabled compression + disabled mitm topology', () => {
     assert.equal(
       deriveInstallProfile({ proxy: { compression: { enabled: false }, mitm: { enabled: false } } }),
@@ -292,7 +292,7 @@ const INSTALL_SOURCE = readFileSync(
   'utf8',
 );
 
-describe('Task 10 finding 3: no global component installs during update-apply', () => {
+describe('Task 10 finding 3: no global component installs during update-apply', { concurrency: false }, () => {
   it('ensureMitmproxy in detect-only mode never performs a global install', async () => {
     const execSyncCalls = [];
     const execFileSyncCalls = [];
@@ -383,7 +383,7 @@ function stageSemble(root, { exec } = {}) {
   });
 }
 
-describe('Task 10 finding 4: partial component stage never activates', () => {
+describe('Task 10 finding 4: partial component stage never activates', { concurrency: false }, () => {
   it('writes a durable completion marker only after a successful stage', () => {
     const root = makeRoot();
     const dest = componentVersionDir(root, 'semble', COMPONENTS.semble.version);
@@ -438,7 +438,7 @@ describe('Task 10 finding 4: partial component stage never activates', () => {
 
 import { createPlatformServiceTransactionAdapter } from '../src/update/update-orchestrator.mjs';
 
-describe('Task 10 finding 6: macOS watchdog script participates in snapshot/rollback', () => {
+describe('Task 10 finding 6: macOS watchdog script participates in snapshot/rollback', { concurrency: false }, () => {
   it('captures and restores ~/.myelin/bin/watchdog.sh alongside its launch agent', async () => {
     const home = makeRoot();
     const plistPath = join(home, 'Library', 'LaunchAgents', 'com.myelin.watchdog.plist');
@@ -516,12 +516,13 @@ function stageReleaseArgs(root, { exec } = {}) {
     args: {
       target: { channel: 'stable', version: '1.1.0', source: { type: 'directory', path: source } },
       releasesRoot,
+      platform: 'linux',
       exec: exec ?? (() => ''),
     },
   };
 }
 
-describe('Task 10 finding 7: release stage is retryable after a rollback', () => {
+describe('Task 10 finding 7: release stage is retryable after a rollback', { concurrency: false }, () => {
   it('reuses an already-staged valid release instead of failing on retry', async () => {
     const root = makeRoot();
     const { releasesRoot, args } = stageReleaseArgs(root);
@@ -612,12 +613,13 @@ function acquireForHeartbeat(root, flakyFs) {
     isPidAlive: () => true,
     randomToken: () => 'hb-owner-token',
     staleAfterMs: 100_000,
+    durability: { fsyncFile: () => {}, fsyncDirectory: () => {} },
   });
   const token = lock.acquire(lockPath);
   return { lock, token, lockPath, advance: value => { now = value; } };
 }
 
-describe('Task 10 finding 8: heartbeat survives transient I/O but stops on ownership loss', () => {
+describe('Task 10 finding 8: heartbeat survives transient I/O but stops on ownership loss', { concurrency: false }, () => {
   it('classifies ownership loss vs transient I/O (shared budget helper)', () => {
     const fenced = new Error('fenced'); fenced.code = 'ERR_UPDATE_FENCED';
     const io = new Error('io'); io.code = 'EIO';
@@ -743,7 +745,7 @@ describe('Task 10 finding 8: heartbeat survives transient I/O but stops on owner
   });
 });
 
-describe('Task 10 finding 9: no-service (mcp/minimal) topology is preserved across updates', () => {
+describe('Task 10 finding 9: no-service (mcp/minimal) topology is preserved across updates', { concurrency: false }, () => {
   function serviceSnapshot({ present }) {
     const fileState = exists => ({
       exists,
@@ -829,7 +831,7 @@ import {
 } from '../src/update/managed-service-binary.mjs';
 import { activateComponent } from '../src/update/version-store.mjs';
 
-describe('Task 10 finding 10: staged apply uses validated managed component pointers', () => {
+describe('Task 10 finding 10: staged apply uses validated managed component pointers', { concurrency: false }, () => {
   function pinComponent({ componentsRoot, name, version, createBin }) {
     const versionDir = componentVersionDir(componentsRoot, name, version);
     fs.mkdirSync(versionDir, { recursive: true });
@@ -918,7 +920,7 @@ describe('Task 10 finding 10: staged apply uses validated managed component poin
   });
 });
 
-describe('Task 10 finding 11: legacy migration is suppressed during a staged apply', () => {
+describe('Task 10 finding 11: legacy migration is suppressed during a staged apply', { concurrency: false }, () => {
   const installSource = readFileSync(
     fileURLToPath(new URL('../src/install.mjs', import.meta.url)),
     'utf8',
@@ -933,7 +935,7 @@ describe('Task 10 finding 11: legacy migration is suppressed during a staged app
   });
 });
 
-describe('Task 10 finding 12: staged apply does not mutate CA bundles', () => {
+describe('Task 10 finding 12: staged apply does not mutate CA bundles', { concurrency: false }, () => {
   const installSource = readFileSync(
     fileURLToPath(new URL('../src/install.mjs', import.meta.url)),
     'utf8',
@@ -963,7 +965,7 @@ describe('Task 10 finding 12: staged apply does not mutate CA bundles', () => {
 
 import { createTransactionAbort } from '../src/update/update-orchestrator.mjs';
 
-describe('Task 10 finding 13: terminal heartbeat failure aborts before further mutation', () => {
+describe('Task 10 finding 13: terminal heartbeat failure aborts before further mutation', { concurrency: false }, () => {
   it('fence rejects with ERR_UPDATE_ABORTED once the transaction is aborted, until recovery begins', async () => {
     let held = 0;
     const abort = createTransactionAbort({ assertHeld: async () => { held += 1; } });
@@ -1048,7 +1050,7 @@ describe('Task 10 finding 13: terminal heartbeat failure aborts before further m
 
 import { resolveManagedMitmBinary } from '../src/update/managed-service-binary.mjs';
 
-describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed pointer', () => {
+describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed pointer', { concurrency: false }, () => {
   function pinMitm({ componentsRoot, version, createBin }) {
     const versionDir = componentVersionDir(componentsRoot, 'mitmproxy', version);
     fs.mkdirSync(versionDir, { recursive: true });
@@ -1115,7 +1117,7 @@ describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed poi
   });
 });
 
-describe('Task 10 finding 15: staged apply does not delete legacy service definitions', () => {
+describe('Task 10 finding 15: staged apply does not delete legacy service definitions', { concurrency: false }, () => {
   const installSource = readFileSync(
     fileURLToPath(new URL('../src/install.mjs', import.meta.url)),
     'utf8',
@@ -1140,7 +1142,7 @@ describe('Task 10 finding 15: staged apply does not delete legacy service defini
   });
 });
 
-describe('Task 10 finding 16: abort waits for staged-child quiescence before rollback', () => {
+describe('Task 10 finding 16: abort waits for staged-child quiescence before rollback', { concurrency: false }, () => {
   const syncScheduler = {
     setTimeout: cb => { cb(); return { unref() {} }; },
     clearTimeout: () => {},
@@ -1244,7 +1246,7 @@ describe('Task 10 finding 16: abort waits for staged-child quiescence before rol
   });
 });
 
-describe('PR #23 finding 6: post-spawn journal-write failure must not race rollback against a live child', () => {
+describe('PR #23 finding 6: post-spawn journal-write failure must not race rollback against a live child', { concurrency: false }, () => {
   const syncScheduler = {
     setTimeout: cb => { cb(); return { unref() {} }; },
     clearTimeout: () => {},
@@ -1321,9 +1323,9 @@ describe('PR #23 finding 6: post-spawn journal-write failure must not race rollb
 
 });
 
-import { recoverUpdateJournal } from '../src/update/update-orchestrator.mjs';
+import { recoverUpdateJournal, createUpdateJournalStore } from '../src/update/update-orchestrator.mjs';
 
-describe('Task 10 finding 17: recovery refuses to restore while the staged child may be live', () => {
+describe('Task 10 finding 17: recovery refuses to restore while the staged child may be live', { concurrency: false }, () => {
   function transactionStubsWithRealJournal(events) {
     // Reuse the shared mutation stubs but keep the *real* durable journal store
     // (read/write/cleanup) so the round trip persists across recovery attempts.
@@ -1369,6 +1371,7 @@ describe('Task 10 finding 17: recovery refuses to restore while the staged child
     const deps = createUpdateDependencies({
       home,
       platform: 'linux',
+      journal: createUpdateJournalStore({ path: updatePaths(home).journalPath, fs, durability: { fsyncFile: () => {}, fsyncDirectory: () => {} } }),
       ...transactionStubsWithRealJournal(events),
     });
     deps.isStagedChildAlive = async () => childAlive;
@@ -1418,6 +1421,7 @@ describe('Task 10 finding 17: recovery refuses to restore while the staged child
     const deps = createUpdateDependencies({
       home,
       platform: 'linux',
+      journal: createUpdateJournalStore({ path: updatePaths(home).journalPath, fs, durability: { fsyncFile: () => {}, fsyncDirectory: () => {} } }),
       ...transactionStubsWithRealJournal(events),
     });
     // No isStagedChildAlive override: the default resolver must treat a missing

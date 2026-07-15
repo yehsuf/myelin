@@ -278,7 +278,7 @@ describe('provisionManagedCompressionComponent', () => {
     assert.equal(calls[0][0], 'stage');
     assert.equal(calls[0][1].name, 'headroomLite');
     assert.equal(calls[0][1].platform, 'linux');
-    assert.equal(calls[0][1].root, '/home/alice/.myelin/components');
+    assert.equal(calls[0][1].root, join('/home/alice', '.myelin', 'components'));
     assert.equal(calls[1][0], 'activate');
     assert.equal(calls[1][1].version, '0.31.0');
     assert.equal(calls[1][1].platform, 'linux');

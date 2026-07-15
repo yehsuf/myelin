@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { existsSync } from 'node:fs';
-import { win32 as pathWin32 } from 'node:path';
+import { win32 as pathWin32, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildCopilotHeadroomServiceInstallOptions } from '../src/install.mjs';
 import {
@@ -607,7 +607,7 @@ describe('runRestart descriptor plan', () => {
       assert.equal(restarted, true);
       assert.equal(events[0][0], 'resolve-managed');
       assert.equal(events[0][1].backend, 'headroom-lite');
-      assert.equal(events[0][1].componentsRoot, '/Users/alice/.myelin/components');
+      assert.equal(events[0][1].componentsRoot, join('/Users/alice', '.myelin', 'components'));
       assert.equal(events[1][0], 'remove');
       assert.equal(events[2][0], 'install');
       assert.equal(events[2][1].headroomLiteBin, '/Users/alice/.myelin/components/headroomLite/current/bin/headroom-lite');

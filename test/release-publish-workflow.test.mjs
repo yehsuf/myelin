@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import {
   loadWorkflow,
   findStepByName,
@@ -84,7 +85,7 @@ function runTrustGuard({ headRepo, baseRepo, headBranch, defaultBranch }) {
   });
 }
 
-test('publisher trust guard accepts only a same-repository run against the default branch', () => {
+test('publisher trust guard accepts only a same-repository run against the default branch', { skip: !existsSync('/bin/bash') }, () => {
   const trusted = runTrustGuard({
     headRepo: 'yehsuf/myelin', baseRepo: 'yehsuf/myelin', headBranch: 'main', defaultBranch: 'main',
   });
@@ -150,7 +151,7 @@ function runTagCheckStep(dir, version) {
   return runStepScriptWithGithubOutput(step.run, { cwd: dir, env: { VERSION: version } });
 }
 
-test('publisher permits retrying a release after a tag push when the tag matches HEAD, and rejects a tag pointing elsewhere', () => {
+test('publisher permits retrying a release after a tag push when the tag matches HEAD, and rejects a tag pointing elsewhere', { skip: !existsSync('/bin/bash') }, () => {
   // Case A: no tag pushed yet -- fresh release.
   {
     const { workDir } = makeTempGitRepo('publish-tagcheck-a-');
@@ -188,7 +189,7 @@ function runReleaseCheckStep(version, { releaseExists }) {
   });
 }
 
-test('publisher rejects retrying a release that has already been published', () => {
+test('publisher rejects retrying a release that has already been published', { skip: !existsSync('/bin/bash') }, () => {
   const missing = runReleaseCheckStep('1.2.3', { releaseExists: false });
   assert.equal(missing.status, 0, missing.stderr);
 

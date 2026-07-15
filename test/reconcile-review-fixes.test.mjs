@@ -29,7 +29,7 @@ afterEach(() => {
 // Finding 8: pin actions/checkout and actions/setup-node in the write-capable
 // publisher workflow to immutable 40-hex commit SHAs.
 // ---------------------------------------------------------------------------
-describe('finding 8: release publisher pins actions to immutable SHAs', () => {
+describe('finding 8: release publisher pins actions to immutable SHAs', { concurrency: false }, () => {
   const workflow = fs.readFileSync(
     join(repoRoot, '.github/workflows/release-publish.yml'),
     'utf8',
@@ -102,7 +102,7 @@ function winswExec(binary) {
   };
 }
 
-describe('finding 7: WinSW staging fails closed without a verified checksum', () => {
+describe('finding 7: WinSW staging fails closed without a verified checksum', { concurrency: false }, () => {
   const baseComponent = {
     kind: 'github-binary',
     repository: 'winsw/winsw',
@@ -193,7 +193,7 @@ import {
   UPDATE_LOCK_SCHEMA_VERSION,
 } from '../src/update/update-orchestrator.mjs';
 
-describe('finding 6: release preserves a concurrently reclaimed lock', () => {
+describe('finding 6: release preserves a concurrently reclaimed lock', { concurrency: false }, () => {
   it('does not unlink a lock that was reclaimed during release', () => {
     const root = makeRoot('lock6');
     const lockPath = join(root, 'update.lock');
@@ -266,7 +266,7 @@ describe('finding 6: release preserves a concurrently reclaimed lock', () => {
 //   P1 finds the moved record is not its own and attempts to restore it; this
 //   restore must NOT clobber P3's freshly acquired lock.
 // ---------------------------------------------------------------------------
-describe('finding 6 (critical): release never restores over an intervening acquisition', () => {
+describe('finding 6 (critical): release never restores over an intervening acquisition', { concurrency: false }, () => {
   it("preserves a third process's lock acquired while ours was moved aside", () => {
     const root = makeRoot('lock6c');
     const lockPath = join(root, 'update.lock');
@@ -427,7 +427,7 @@ import {
   resolveStoragePlatform,
 } from '../src/update/update-orchestrator.mjs';
 
-describe('finding 5: WSL update storage uses POSIX path semantics', () => {
+describe('finding 5: WSL update storage uses POSIX path semantics', { concurrency: false }, () => {
   it('maps a WSL (windows-bridged) platform to POSIX storage', () => {
     assert.equal(resolveStoragePlatform('windows', { wsl: true }), 'linux');
     assert.equal(resolveStoragePlatform('windows', { wsl: false }), 'windows');
@@ -456,7 +456,7 @@ describe('finding 5: WSL update storage uses POSIX path semantics', () => {
     return { deps, captured };
   }
 
-  it('threads POSIX storage platform into component staging checks', async () => {
+  it('threads POSIX storage platform into component staging checks', { skip: process.platform === 'win32' }, async () => {
     const { deps, captured } = stagingPathProbe('linux');
     await deps.isComponentStaged({ name: 'rtk', component: { version: '0.43.0' } });
     assert.equal(captured.length, 1);
@@ -485,7 +485,7 @@ import {
   resolveStagedCompressionBinary,
 } from '../src/install.mjs';
 
-describe('finding 1: staged-apply authorization is validated against the exported environment', () => {
+describe('finding 1: staged-apply authorization is validated against the exported environment', { concurrency: false }, () => {
   const validEnv = {
     MYELIN_UPDATE_TRANSACTION_TOKEN: 'tok-123',
     MYELIN_UPDATE_STAGED_RELEASE: '/opt/rel/current',
@@ -552,7 +552,7 @@ describe('finding 1: staged-apply authorization is validated against the exporte
   });
 });
 
-describe('finding 1: the mutation fence requires a held lock before any side effect', () => {
+describe('finding 1: the mutation fence requires a held lock before any side effect', { concurrency: false }, () => {
   it('throws when neither a staged token nor a global install lock is held', () => {
     const fence = createInstallMutationFence({
       nestedToken: null,
@@ -603,7 +603,7 @@ describe('finding 1: the mutation fence requires a held lock before any side eff
 // managed compression binary. When `proxy.compression.enabled === false` the
 // selected backend is 'disabled' and no compression executable may be resolved.
 // ---------------------------------------------------------------------------
-describe('finding 2: disabled compression stages no compression binary', () => {
+describe('finding 2: disabled compression stages no compression binary', { concurrency: false }, () => {
   it('returns null and never resolves a binary when compression is disabled', () => {
     let calls = 0;
     const bin = resolveStagedCompressionBinary({
@@ -663,7 +663,7 @@ describe('finding 2: disabled compression stages no compression binary', () => {
 // fence each numbered mutation phase. These are the sites the transaction relies
 // on to avoid mutating legacy/global state.
 // ---------------------------------------------------------------------------
-describe('finding 3: staged apply suppresses global component installs and fences each phase', () => {
+describe('finding 3: staged apply suppresses global component installs and fences each phase', { concurrency: false }, () => {
   const source = fs.readFileSync(join(repoRoot, 'src/install.mjs'), 'utf8');
 
   it('derives the global-install gate from --update-apply', () => {
