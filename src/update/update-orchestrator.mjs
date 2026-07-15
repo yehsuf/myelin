@@ -171,9 +171,21 @@ function fsyncDirectory(fs, path, platform) {
   }
 }
 
+function fsyncFile(fs, path, platform) {
+  try {
+    fsyncPath(fs, path);
+  } catch (error) {
+    // Windows: fsync on a read-only file descriptor (opened with 'r') returns
+    // EPERM because Windows does not allow fsync on non-write-mode handles.
+    // Skip silently — the OS write cache is flushed at a coarser granularity.
+    if (isWindows(platform) && ['EACCES', 'EPERM'].includes(error?.code)) return;
+    throw error;
+  }
+}
+
 function defaultDurability(fs, platform) {
   return {
-    fsyncFile: path => fsyncPath(fs, path),
+    fsyncFile: path => fsyncFile(fs, path, platform),
     fsyncDirectory: path => fsyncDirectory(fs, path, platform),
   };
 }
