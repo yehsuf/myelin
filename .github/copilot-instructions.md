@@ -24,9 +24,10 @@
 ## Standing rules
 - Never take a repo-changing, service-changing, or live-machine action without explicit unambiguous approval each time.
 - Every non-trivial change: implement → test → code review (3-model) → fix → merge.
-- Parallel agents MUST use separate workspaces/worktrees, never share a checkout directory.
+- ALL development — even a solo agent, even a one-line doc or config edit — happens inside a `~/myelin-agents/<agent>/` worktree. Parallel agents MUST use separate workspaces/worktrees, never share a checkout directory.
+- The canonical `~/tokenstack` checkout is a **reference clone that stays on clean `main`**. Never edit files, run experiments, or drop scratch in it — it must show a clean `git status` at all times.
 - Each agent develops inside its own workspace `~/myelin-agents/<agent>/` (one git worktree per repo). The source of truth is a **bare** canonical repo at `~/myelin-agents/.bare/<repo>.git` that is never worked in directly.
-- Scratch/tmp/experiment files NEVER go inside a repo working tree — put them in `~/myelin-agents/<agent>/scratch/` or `~/.copilot/session-state/<id>/files/`.
+- Scratch/tmp/experiment files NEVER go inside a repo working tree (including `~/tokenstack`) — put them in `~/myelin-agents/<agent>/scratch/` or `~/.copilot/session-state/<id>/files/`.
 - Never rewrite git history on shared branches (main, dev).
 
 ## Local development workspace
