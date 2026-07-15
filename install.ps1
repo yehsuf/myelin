@@ -83,10 +83,12 @@ function Stage-MainRuntime {
 
     try {
         Write-Host "[myelin] Staging main runtime..."
-        git clone --depth 1 --branch main $RepoUrl $stageDir
+        # Redirect stdout+stderr to Write-Host so git progress is visible but
+        # does NOT enter the PowerShell pipeline (which would pollute the return value).
+        git clone --depth 1 --branch main $RepoUrl $stageDir 2>&1 | Write-Host
         if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
 
-        $commit = (git -C $stageDir rev-parse --short=12 HEAD).Trim()
+        $commit = (git -C $stageDir rev-parse --short=12 HEAD 2>&1).Trim()
         if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
 
         $releaseId = "main-$commit"
@@ -99,7 +101,11 @@ function Stage-MainRuntime {
                 Write-Host "[myelin] Reusing managed runtime $releaseId"
                 Remove-Item -LiteralPath $stageDir -Recurse -Force
                 if ($Activate) { Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot }
-                return $runtimeRoot
+                # Use script-scoped variable — avoids pipeline-capture gotcha where
+                # any stdout produced inside the function would be captured as part
+                # of the return value when the caller does $x = Stage-MainRuntime.
+                $Script:RuntimeRoot = $runtimeRoot
+                return
             }
 
             Remove-Item -LiteralPath $runtimeRoot -Recurse -Force
@@ -107,9 +113,6 @@ function Stage-MainRuntime {
 
         Push-Location $stageDir
         try {
-            # Pipe to Write-Host so stdout goes to the terminal (host), not the
-            # PowerShell pipeline — otherwise npm/node output pollutes the
-            # function's implicit return value and $RuntimeRoot gets garbage.
             npm ci --ignore-scripts 2>&1 | Write-Host
             if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
@@ -122,7 +125,7 @@ function Stage-MainRuntime {
         Move-Item -LiteralPath $stageDir -Destination $runtimeRoot
         $stageDir = $null
         if ($Activate) { Write-CurrentReleasePointer -ReleaseId $releaseId -RuntimeRoot $runtimeRoot }
-        return $runtimeRoot
+        $Script:RuntimeRoot = $runtimeRoot
     } catch {
         if ($stageDir -and (Test-Path $stageDir)) {
             Remove-Item -LiteralPath $stageDir -Recurse -Force
@@ -138,8 +141,10 @@ try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRo
 try { Add-MpPreference -ControlledFolderAccessAllowedApplications "$env:SystemRoot\System32\robocopy.exe" -ErrorAction SilentlyContinue } catch {}
 try { Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -ErrorAction SilentlyContinue } catch {}
 
-$RuntimeRoot = $null
-Check-Node; Check-Git; $RuntimeRoot = Stage-MainRuntime
+$Script:RuntimeRoot = $null
+Check-Node; Check-Git; Stage-MainRuntime
+
+$RuntimeRoot = $Script:RuntimeRoot
 
 $a = @((Join-Path $RuntimeRoot "src\install.mjs"))
 if ($Check) { $a += "--check" }; if ($DryRun) { $a += "--dry-run" }; if ($Yes) { $a += "--yes" }
