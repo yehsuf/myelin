@@ -33,7 +33,7 @@ import {
 import { updatePaths } from '../update/update-orchestrator.mjs';
 import { resolveManagedCompressionBinary } from '../update/managed-service-binary.mjs';
 
-const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
+const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotCompression';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 
 function escapePs(value = '') {
@@ -907,7 +907,7 @@ export async function defaultRestartCopilotHeadroom({
     const { spawnDetachedService } = spawnDetachedServiceImpl
       ? { spawnDetachedService: spawnDetachedServiceImpl }
       : await import('../service/windows.mjs');
-    spawnDetachedService('MyelinCopilotHeadroom', launch.exe, launch.args);
+    spawnDetachedService('MyelinCopilotCompression', launch.exe, launch.args);
     log(`  ✓ copilot-headroom restarted (:${port})`);
   } catch (e) {
     warn(`  ⚠ copilot-headroom restart failed: ${e.message?.split('\n')[0] ?? e}`);

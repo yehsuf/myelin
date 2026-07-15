@@ -1,0 +1,618 @@
+.github/copilot-instructions.md                    |   10 +-
+ .github/workflows/release-publish.yml              |  112 +
+ .github/workflows/release-validation.yml           |   32 +
+ .superpowers/sdd/reconcile-report.md               |  273 ++
+ BACKLOG.md                                         |   31 -
+ CLAUDE.md                                          |  127 +-
+ README.md                                          |   44 +-
+ docs/settings-reference.md                         |   12 +-
+ .../2026-07-13-managed-update-implementation.md    |  713 -----
+ .../plans/2026-07-14-agent-workspace-model.md      |  290 ---
+ .../plans/2026-07-15-docs-cli-clarity.md           |  311 ---
+ .../2026-07-13-managed-runtime-installer-design.md |   63 -
+ .../specs/2026-07-13-managed-update-design.md      |  100 -
+ .../2026-07-14-agent-workspace-model-design.md     |  232 --
+ .../specs/2026-07-15-docs-cli-clarity-design.md    |   48 -
+ install.ps1                                        |  124 +-
+ install.sh                                         |  115 +-
+ src/cli/config-cmd.mjs                             |   15 +-
+ src/cli/index.mjs                                  |   56 +-
+ src/cli/init.mjs                                   |    5 +-
+ src/cli/restart.mjs                                |  126 +-
+ src/cli/rtk-guard.mjs                              |   10 +-
+ src/cli/stats.mjs                                  |    9 +-
+ src/cli/update.mjs                                 |  419 +--
+ src/config/compression.mjs                         |  161 ++
+ src/config/engine-runtime.mjs                      |   50 +-
+ src/config/reader.mjs                              |  153 +-
+ src/config/schema.mjs                              |   60 +-
+ src/detect/combined-ca.mjs                         |    6 +-
+ src/detect/tool-path.mjs                           |    5 +-
+ src/detect/tools.mjs                               |   18 +-
+ src/install.mjs                                    | 1454 ++++-------
+ src/runtime/launcher.mjs                           |  265 --
+ src/runtime/release-store.mjs                      |  137 -
+ src/runtime/stage-main.mjs                         |   92 -
+ src/service/compression-health.mjs                 |   73 +
+ src/service/compression-identities.mjs             |   80 +
+ src/service/compression-runtime.mjs                |  168 ++
+ src/service/launchd.mjs                            |  101 +-
+ src/service/litellm-service.mjs                    |   26 +-
+ src/service/npmlink.mjs                            |   72 +-
+ src/service/systemd.mjs                            |  216 +-
+ src/service/token-optimizer.mjs                    |   75 +-
+ src/service/windows.mjs                            |  442 +---
+ src/service/wrappers.mjs                           |   30 +
+ src/shared/myelin-paths.mjs                        |  225 --
+ src/shared/shell-quote.mjs                         |   30 -
+ src/tools/headroom.mjs                             |   55 +-
+ src/tools/rtk.mjs                                  |  120 +-
+ src/tools/winsw.mjs                                |   26 +-
+ src/update/component-installers.mjs                | 1098 ++++++++
+ src/update/component-manifest.mjs                  |  231 ++
+ src/update/engine-selection.mjs                    |  136 +
+ src/update/heartbeat-failure-budget.mjs            |   37 +
+ src/update/managed-service-binary.mjs              |  101 +
+ src/update/release-channels.mjs                    |  189 ++
+ src/update/release-store.mjs                       | 1295 ++++++++++
+ src/update/update-lock-heartbeat.mjs               |  142 +
+ src/update/update-orchestrator.mjs                 | 2732 ++++++++++++++++++++
+ src/update/verify-stable-version.mjs               |   23 +
+ src/update/version-store.mjs                       | 1276 +++++++++
+ test/combined-ca.test.mjs                          |   83 +-
+ test/component-installers.test.mjs                 |  863 +++++++
+ test/component-manifest.test.mjs                   |  229 ++
+ test/compression-config.test.mjs                   |  258 ++
+ test/compression-health.test.mjs                   |   77 +
+ test/compression-identities.test.mjs               |   71 +
+ test/compression-runtime.test.mjs                  |  304 +++
+ test/compression-service-plan.test.mjs             |  215 ++
+ test/config.test.mjs                               |  161 +-
+ test/detect-tool-path.test.mjs                     |   32 +-
+ test/detect.test.mjs                               |   36 +-
+ test/engine-runtime.test.mjs                       |   27 -
+ test/engine-selection.test.mjs                     |   73 +
+ test/init-tools.test.mjs                           |   11 -
+ test/install-managed-profile-hardening.test.mjs    |   79 -
+ test/install-profile-path.test.mjs                 |  436 ----
+ test/install.test.mjs                              |  566 ++--
+ test/litellm-service.test.mjs                      |   44 +-
+ test/myelin-paths.test.mjs                         |  412 ---
+ test/reconcile-review-fixes.test.mjs               |  695 +++++
+ test/release-channels.test.mjs                     |  139 +
+ test/release-publish-workflow.test.mjs             |  204 ++
+ test/release-store.test.mjs                        | 1681 ++++--------
+ test/release-validation-workflow.test.mjs          |   70 +
+ test/restart.test.mjs                              |  147 +-
+ test/rtk-guard.test.mjs                            |   65 +-
+ test/rtk-hook-injection.test.mjs                   |   84 -
+ test/rtk-release-install.test.mjs                  |   83 -
+ test/service-launchd-plist.test.mjs                |  127 -
+ test/service-runkey-ownership.test.mjs             |  126 -
+ test/service-systemd-quoting.test.mjs              |  267 --
+ test/service-winsw-reinstall.test.mjs              |  145 --
+ test/service.test.mjs                              |  444 +---
+ test/stats.test.mjs                                |   17 -
+ test/task10-review-fixes.test.mjs                  | 1441 +++++++++++
+ test/token-optimizer.test.mjs                      |  202 +-
+ test/tools.test.mjs                                |  409 +--
+ test/update-orchestrator.test.mjs                  |  878 +++++++
+ test/update.test.mjs                               | 1162 +--------
+ test/verify-stable-version.test.mjs                |   35 +
+ test/version-store.test.mjs                        | 1376 ++++++++++
+ test/workflow-test-helpers.mjs                     |   84 +
+ test/wrappers.test.mjs                             |   33 +-
+ 104 files changed, 17682 insertions(+), 10886 deletions(-)
+
+Changes:
+
+.github/copilot-instructions.md
+  @@ -24,17 +24,9 @@
+  -- ALL development — even a solo agent, even a one-line doc or config edit — happens inside a `~/myelin-agents/<agent>/` worktree. Parallel agents MUST use separate workspaces/worktrees, never share a checkout directory.
+  -- The canonical `~/tokenstack` checkout is a **reference clone that stays on clean `main`**. Never edit files, run experiments, or drop scratch in it — it must show a clean `git status` at all times.
+  -- Each agent develops inside its own workspace `~/myelin-agents/<agent>/` (one git worktree per repo). The source of truth is a **bare** canonical repo at `~/myelin-agents/.bare/<repo>.git` that is never worked in directly.
+  -- Scratch/tmp/experiment files NEVER go inside a repo working tree (including `~/tokenstack`) — put them in `~/myelin-agents/<agent>/scratch/` or `~/.copilot/session-state/<id>/files/`.
+  +- Parallel agents MUST use separate git worktrees, never share a checkout directory.
+   - Never rewrite git history on shared branches (main, dev).
+   
+  -## Local development workspace
+  -- Layout: `~/myelin-agents/.bare/<repo>.git` (bare canonical) + `~/myelin-agents/<agent>/<repo>/` (per-agent worktree) + `~/myelin-agents/<agent>/scratch/`.
+  -- Create a worktree: `git --git-dir="$HOME/myelin-agents/.bare/<repo>.git" worktree add ~/myelin-agents/<agent>/<repo> -b <branch> origin/main`.
+  -- Agent identity is the `<agent>` path segment (derived, no id file). See CLAUDE.md for full setup + the coordinated legacy-worktree retirement.
+  -
+   ## Technology
+   - Language / runtime: Node.js >=20, ESM only (.mjs extensions)
+   - Test command: node --test test/**/*.test.mjs
+  +1 -9
+
+.github/workflows/release-publish.yml
+  @@ -0,0 +1,112 @@
+  +name: Release Publish
+  +
+  +# Write-capable publisher. This workflow is stored only on the protected
+  +# default branch and is never directly dispatchable (no workflow_dispatch
+  +# trigger): it only reacts to `workflow_run` completion events for
+  +# "Release Validation". Per GitHub Actions semantics, a `workflow_run`
+  +# workflow always executes the copy of this file that lives on the
+  +# repository's default branch, regardless of which branch the triggering
+  +# run came from -- so an attacker branch cannot modify or remove this
+  +# workflow's trust checks and have that modification take effect. See
+  +# .superpowers/sdd/task-11-review.md (finding 4).
+  +on:
+  +  workflow_run:
+  +    workflows: ["Release Validation"]
+  +    types: [completed]
+  +
+  +permissions:
+  +  contents: read
+  +
+  +jobs:
+  +  publish:
+  +    if: >-
+  +      github.event.workflow_run.conclusion == 'success' &&
+  +      github.event.workflow_run.repository.full_name == github.repository &&
+  +      github.event.workflow_run.head_repository.full_name == github.repository &&
+  +      github.event.workflow_run.head_branch == github.event.repository.default_branch
+  +    runs-on: ubuntu-latest
+  +    permissions:
+  +      contents: write
+  +    env:
+  +      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  +    steps:
+  +      # Defense-in-depth: re-verify the trust boundary with a plain step,
+  +      # redundant with (and independent of) the job-level `if:` above, before
+  +      # checkout so no ref-controlled code has run yet.
+  +      - name: Verify the triggering run is trusted (default branch, same repository)
+  +        env:
+  +          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+  +          BASE_REPO: ${{ github.repository }}
+  +          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+  +          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  +        run: |
+  +          if [ "$HEAD_REPO" != "$BASE_REPO" ] || [ "$HEAD_BRANCH" != "$DEFAULT_BRANCH" ]; then
+  +            echo "Refusing to publish: triggering run was ${HEAD_REPO}@${HEAD_BRANCH}, expected ${BASE_REPO}@${DEFAULT_BRANCH}." >&2
+  +            exit 1
+  +          fi
+  +
+  +      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+  +        with:
+  +          ref: ${{ github.event.workflow_run.head_sha }}
+  +          fetch-depth: 0
+  +
+  +      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+  +        with:
+  +          node-version: 20
+  +
+  +      - name: Derive release version from package.json
+  +        id: version
+  +        run: |
+  +          VERSION=$(node -p "require('./package.json').version")
+  +          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+  +
+  +      - name: Verify version matches stable release format
+  +        env:
+  +          VERSION: ${{ steps.version.outputs.version }}
+  +        run: node src/update/verify-stable-version.mjs "$VERSION"
+  +
+  +      - name: Verify release tag is safe to (re)create
+  +        id: tag-check
+  +        env:
+  +          VERSION: ${{ steps.version.outputs.version }}
+  +        run: |
+  +          TAG="v${VERSION}"
+  +          HEAD_SHA=$(git rev-parse HEAD)
+  +          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')
+  +          if [ -n "$REMOTE_TAG_SHA" ] && [ "$REMOTE_TAG_SHA" != "$HEAD_SHA" ]; then
+  +            echo "Tag ${TAG} already exists and points at ${REMOTE_TAG_SHA}, expected the release commit ${HEAD_SHA} (a different commit was tagged)." >&2
+  +            exit 1
+  +          fi
+  +          if [ -n "$REMOTE_TAG_SHA" ]; then
+  +            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+  +          else
+  +            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+  +          fi
+  +
+  +      - name: Verify GitHub release does not already exist
+  +        env:
+  +          VERSION: ${{ steps.version.outputs.version }}
+  +        run: |
+  +          TAG="v${VERSION}"
+  +          if gh release view "$TAG" >/dev/null 2>&1; then
+  +            echo "Release ${TAG} already exists; nothing to retry." >&2
+  +            exit 1
+  +          fi
+  +
+  +      - name: Verify headroom-lite v0.31.0 release exists
+  +        run: |
+  +          if ! gh api "repos/yehsuf/headroom-lite/releases/tags/v0.31.0" >/dev/null 2>&1; then
+  +            echo "headroom-lite v0.31.0 release was not found." >&2
+  +            exit 1
+  ... (12 lines truncated)
+  +112 -0
+
+.github/workflows/release-validation.yml
+  @@ -0,0 +1,32 @@
+  +name: Release Validation
+  +
+  +# Manually dispatched, read-only smoke test: proves the current default
+  +# branch state passes the full cross-platform suite. Deliberately holds no
+  +# write token and performs no tag/release action, because this file (and any
+  +# `if:` guard in it) can be overridden on any branch it is dispatched from --
+  +# see docs/superpowers/plans/2026-07-12-atomic-update-backend-selection.md
+  +# (Task 11) and .superpowers/sdd/task-11-review.md (finding 4). The
+  +# write-capable publisher lives in a separate workflow
+  +# (.github/workflows/release-publish.yml) that is never directly
+  +# dispatchable and only reacts to a successful run of this workflow.
+  +on:
+  +  workflow_dispatch: {}
+  +
+  +permissions:
+  +  contents: read
+  +
+  +jobs:
+  +  test:
+  +    strategy:
+  +      fail-fast: false
+  +      matrix:
+  +        os: [macos-latest, windows-latest, ubuntu-latest]
+  +    runs-on: ${{ matrix.os }}
+  +    steps:
+  +      - uses: actions/checkout@v4
+  +      - uses: actions/setup-node@v4
+  +        with:
+  +          node-version: 20
+  +          cache: npm
+  +      - run: npm ci
+  +      - run: npm test
+  +32 -0
+
+.superpowers/sdd/reconcile-report.md
+  @@ -0,0 +1,273 @@
+  +# Reconcile Report — atomic-update/backend-selection onto origin/main
+  +
+  +**Status:** ✅ COMPLETE — Option A reconciliation executed on latest `origin/main`.
+  +All tests green under an isolated temporary HOME. Not pushed (parent will review/push).
+  +
+  +**Worktree:** `/Users/ysufrin/tokenstack-wt-reconcile-atomic-update`
+  +**Branch:** `reconcile/atomic-update-backend-selection`
+  +**Base:** `origin/main` = `ef84eaa` (merge-base with HEAD = `ef84eaa`, i.e. 0 behind main)
+  +**origin/feat/atomic-update-backend-selection:** `3c34c6d` — untouched (reviewed feature tip)
+  +**Backup ref:** `reconcile-pre-A-backup` = `3c34c6d`
+  +**Resulting HEAD:** `3ea4532` (code tip; this report is committed on top)
+  +**Guardrails honored:** no push, no merge-to-main, no tag, no publish, no force-push,
+  +no installer/service/live-HOME action. All tests used an isolated `HOME`/`USERPROFILE`
+  +(`.superpowers/rec-testhome`, since cleaned).
+  +
+  +---
+  +
+  +## Decision executed: Option A
+  +
+  +Per approval, main's `proxy.engine` / `proxy.compression` / `proxy.copilot_headroom`
+  +model is canonical. The feature's Tasks 1–5 `compression.backend` schema/service/tests
+  +were **retired** (never brought over — main already lacks them, so nothing to delete).
+  +The feature's genuinely-unique Tasks 6–11 value was **preserved and adapted** onto the
+  +canonical config model. The four orthogonal main commits (`e58235a` mitm streaming,
+  +`446822a` Responses sidecar, `169ffb1` completion-endpoint, `3d3c51b` docs) are already
+  +present because the work is based directly on `ef84eaa`.
+  +
+  +### Execution mechanism
+  +This was **not** a literal 67-commit rebase (the feature's Tasks 1–5 commits collide
+  +head-on with main's `ef84eaa` on the same config/service/install files, with contradicting
+  +tests on both sides — no hunk-level merge exists). Instead the branch was reset to
+  +`origin/main` and the Tasks 6–11 deliverable was reconstructed on top as a coherent series,
+  +faithfully preserving its behavior while binding it to main's canonical config model.
+  +
+  +---
+  +
+  +## What was brought over (Tasks 6–11)
+  +
+  +**New, self-contained update subsystem** (verbatim from reviewed `3c34c6d`):
+  +`src/update/` — `update-orchestrator.mjs`, `component-installers.mjs`,
+  +`component-manifest.mjs`, `managed-service-binary.mjs`, `version-store.mjs`,
+  +`release-store.mjs`, `release-channels.mjs`, `verify-stable-version.mjs`,
+  +`update-lock-heartbeat.mjs`, `heartbeat-failure-budget.mjs`.
+  +Workflows: `.github/workflows/release-publish.yml`, `release-validation.yml`
+  +(read-only validation + trusted `workflow_run` publisher).
+  +Tests: `component-installers`, `component-manifest`, `release-channels`,
+  +`release-publish-workflow`, `release-store`, `release-validation-workflow`,
+  +`verify-stable-version`, `version-store`, `task10-review-fixes`, `workflow-test-helpers`,
+  +plus new sections of `update.test`.
+  +
+  +**New adapter (the reconcile linchpin):** `src/update/engine-selection.mjs`.
+  +Maps main's canonical config to the shapes the update subsystem expects, so the update
+  +code needs no `compression.backend` awareness:
+  +- `resolveCompressionConfig(config)` → `{ backend, copilotProxy:{enabled,port} }` where
+  +  `backend` ∈ `headroom-lite | headroom-original | disabled` is derived from
+  +  `proxy.engine` (`headroom_lite`→`headroom-lite`, `headroom`→`headroom-original`) and
+  +  `proxy.compression.enabled:false`→`disabled`; `copilotProxy` from `proxy.copilot_headroom`.
+  +- `selectedBackend`, `buildCompressionRuntimes`, `probeCompressionHealth` delegate to
+  +  main's `normalizeCompressionEngine` / engine-runtime helpers.
+  +- `migrateLegacyCompressionConfig` is a no-op (main owns config migration).
+  +
+  +**Rewiring:** `update-orchestrator.mjs` and `cli/update.mjs` now import
+  +`resolveCompressionConfig` from `./engine-selection.mjs`; `cli/index.mjs` gains the update
+  +command wiring.
+  +
+  +**Reverted to main** (feature's edits were only for an auxiliary drift-check path, not the
+  +critical update path): `src/detect/tools.mjs`, `src/tools/rtk.mjs`, `src/tools/uv.mjs`,
+  +`src/service/npmlink.mjs`, `src/service/token-optimizer.mjs`. The orchestrator detects
+  +managed components via `component-installers.detectManagedComponent` directly, so main's
+  +`detect/tools.mjs` is sufficient.
+  +
+  +---
+  +
+  +## Reconciliation decisions (conflicts resolved)
+  +
+  +1. **Config model collision (Tasks 1–5 retired).** Resolved toward main's `proxy.engine`
+  +   throughout. Update-subsystem tests that fed the retired `compression.backend` shape were
+  +   converted to the canonical shape:
+  +   - `test/update-orchestrator.test.mjs`: 6 `config.compression.backend` inputs + the
+  +     `rawConfig()` default + two assertions rewritten to `proxy.engine`. (29/29 pass.)
+  +   - `test/task10-review-fixes.test.mjs`: 16 retired-shape occurrences converted
+  +     (`compression.backend:'disabled'`→`proxy.compression.enabled:false`;
+  +     `headroom-lite`→`proxy.engine:'headroom_lite'`). Finding-3 proxy-backbone assertion
+  +     rewritten to canonical component-install gating.
+  +
+  +2. **`--update-apply` staged-apply path integrated into canonical `install.mjs`.** The
+  +   feature's transactional install region was implemented against the RETIRED feature
+  +   install architecture (`buildInstallPlan`, `resolveCompressionServicePaths`,
+  +   `buildInstallSslEnvs`, `removeLegacyCompressionServices`, `assertInstallMutationFence`).
+  +   Under Option A this was re-implemented using main's canonical mechanisms, additively and
+  +   gated so the default (non-`--update-apply`) install path is byte-for-byte unchanged:
+  +   - New flags `--update-apply` / `--update-token` / `--staged-release`; single gate
+  +     `const runGlobalComponentInstalls = !flags['update-apply'];`.
+  +   - Global component installs (`[1/7]` uv, `[2/7]` code-discovery, `[3/7]` headroom, rtk,
+  +     mitmproxy) suppressed under `--update-apply` (finding 3).
+  +   - One-time `~/.tokenstack`→`~/.myelin` migration gated behind
+  +     `!flags['dry-run'] && !flags['update-apply']` (finding 11).
+  +   - `combinedCert = flags['update-apply'] ? null : await buildCombinedCaCert(...)`
+  +     (finding 12-part1).
+  +   - Managed pinned binaries resolved under `--update-apply` via
+  ... (173 lines truncated)
+  +273 -0
+
+BACKLOG.md
+  @@ -1,31 +0,0 @@
+  -# Myelin Backlog
+  -
+  -This is the canonical cross-worktree backlog. Every implementation branch
+  -starts from current `origin/main`, updates the applicable row in the same PR,
+  -and rebases before push. Do not use a deployment host as a development
+  -checkout.
+  -
+  -## Status Values
+  -
+  -- `in-progress` -- approved work with an active implementation branch.
+  -- `ready` -- implementation exists and needs rebase, review, or validation.
+  -- `planned` -- approved priority, no implementation started.
+  -- `blocked` -- cannot proceed until the stated dependency is resolved.
+  -- `done` -- merged to `main`.
+  -
+  -## Active Work
+  -
+  -| ID | Priority | Status | Work | Evidence / Branch | Next action |
+  -| --- | --- | --- | --- | --- | --- |
+  -| INSTALL-001 | P0 | ready | Replace Git-checkout runtime with a managed immutable runtime and release-aware `myelin self update`. | `feat/managed-runtime-installer`; no release store, pointer, or artifact updater exists in `main`. | Rebase, review, validate, and merge the managed-runtime installer slice. |
+  -| STREAM-001 | P1 | done | Prevent Copilot `/responses` stream EOF after a 418-to-SOCKS5 fallback. | Merged: async offload (mitmproxy event-loop stall fix), responses-input handler, relay streaming fix (PR #20). All 3 envs tested. | — |
+  -| ROUTING-001 | P1 | planned | Keep Claude routing per invocation only; installer must not reintroduce global Anthropic base URLs. | Current installer writes `ANTHROPIC_BASE_URL` to Claude settings; local stale values were manually removed. | Add installer migration and regression tests after INSTALL-001 establishes managed runtime. |
+  -| DEPLOY-001 | P1 | blocked | Restore Windows and Linux hosts to managed deployment runtime. | Windows was left on `feat/mitm-async-offload`; Linux has missing services/tools. | Execute only after INSTALL-001 supplies a non-Git runtime path. |
+  -| BRANCH-001 | P2 | ready | Reconcile remaining backend-selection and observability worktrees. | `feat/atomic-update-backend-selection` is far ahead/behind main; `feat/unified-observability` is dirty and diverged. | Rebase each independently, review, test, and open separate PRs. |
+  -
+  -## Recently Completed
+  -
+  -| ID | Status | Work | Evidence |
+  -| --- | --- | --- | --- |
+  -| STATS-001 | done | Added `myelin stats --wide`. | PR #9, `9e3829d` |
+  -| COMPACT-001 | done | Reject oversized compact clipboard hints. | PR #10, `b0deb20` |
+  +0 -31
+
+CLAUDE.md
+  @@ -7,12 +7,11 @@ Node.js ESM, Commander.js, TDD (`node --test`), feature-branch → PR git workfl
+  -### Mac (reference checkout — stays on clean `main`)
+  +### Mac (primary dev — this machine)
+   ```
+  -~/tokenstack/          # reference clone ONLY — never edit or run experiments here.
+  -                       # All work happens in a ~/myelin-agents/<agent>/ worktree.
+  +~/tokenstack/          # repo
+   myelin verify          # health check
+  -npm test               # 1088 tests
+  +npm test               # 272 tests
+   ```
+   
+   ### Windows (`yeh-legion.local`)
+  @@ -21,7 +20,7 @@ ssh -i ~/.ssh/myelin_windows_ed25519 -o IdentitiesOnly=yes yehsuf@yeh-legion.loc
+  -# Pull latest: myelin update
+  +# Pull latest: myelin update --self
+   ```
+   
+   ### Linux (`muc-lhvsuz`)
+  @@ -29,61 +28,41 @@ ssh -i ~/.ssh/myelin_windows_ed25519 -o IdentitiesOnly=yes yehsuf@yeh-legion.loc
+  -# Pull latest: myelin update
+  +# Pull latest: myelin update --self
+   ```
+   
+   ---
+   
+  -## Feature development workflow (per-agent workspaces)
+  +## Feature development workflow (worktrees)
+   
+  -**Every agent works inside its OWN workspace `~/myelin-agents/<agent>/`. Never edit `main` directly, never work in the bare canonical, never work in another agent's directory.**
+  +**Every feature must use a git worktree + feature branch. Never edit `main` directly.**
+   
+  -Layout (see `docs/superpowers/specs/2026-07-14-agent-workspace-model-design.md`):
+  -
+  -```
+  -~/myelin-agents/
+  -├── .bare/myelin.git/          # bare canonical (no working tree — cannot be clobbered)
+  -├── .bare/headroom-lite.git/
+  -├── <agent>/                   # e.g. architect, reviewer, task-runner
+  -│   ├── myelin/                # git worktree of .bare/myelin.git
+  -│   ├── headroom-lite/         # git worktree of .bare/headroom-lite.git (on demand)
+  -│   └── scratch/               # scratch/tmp — SIBLING of the repos, never inside them
+  -```
+  -
+  -### One-time: create a bare canonical (per repo)
+  +### Start a feature
+   
+   ```bash
+  -mkdir -p ~/myelin-agents/.bare
+  -git clone --bare git@github.com:yehsuf/myelin.git ~/myelin-agents/.bare/myelin.git
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" config remote.origin.fetch \
+  -    '+refs/heads/*:refs/remotes/origin/*'
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
+  -```
+  +# 1. Create worktree + branch + register with Copilot/Serena in one command:
+  +myelin worktree add feat/my-feature
+   
+  -### Start a feature (per agent)
+  +# This does:
+  +#   git worktree add ~/tokenstack-wt-feat-my-feature -b feat/my-feature
+  +#   myelin init --yes   (creates .serena/project.yml + writes .claude/settings.local.json hooks)
+   
+  -```bash
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree add \
+  -    ~/myelin-agents/<agent>/myelin -b <branch> origin/main
+  -cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
+  +# 2. Enter the worktree — start Copilot/Claude Code session FROM this directory
+  +cd ~/tokenstack-wt-feat-my-feature
+  +# The serena-mcp wrapper auto-detects this worktree as the active project
+   ```
+   
+  -Reuse the same worktree path across branches where practical (keeps Serena's path-baked cache warm) — switch in place instead of creating a new worktree dir:
+  +### Test on all 3 platforms before merging
+   
+   ```bash
+  -git -C ~/myelin-agents/<agent>/myelin fetch origin
+  -git -C ~/myelin-agents/<agent>/myelin switch -c <branch> origin/main   # or: switch <existing-branch>
+  -```
+  +# Mac (local)
+  +npm test
+   
+  -Put ALL scratch in `~/myelin-agents/<agent>/scratch/` — never in the worktree.
+  +# Windows — checkout branch + test
+  +ssh yeh-legion "cd %USERPROFILE%\\.myelin\\repo && git fetch origin && git checkout feat/my-feature && npm test"
+   
+  -### Test on all 3 platforms before merging
+  -
+  -```bash
+  -npm test                                   # Mac (local)
+  -ssh yeh-legion "cd %USERPROFILE%\.myelin\repo && git fetch origin && git checkout <branch> && npm test"
+  -ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout <branch> && npm test'
+  +# Linux — checkout branch + test
+  +ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout feat/my-feature && npm test'
+   ```
+   
+   > **⚠️ MANDATORY — always reset the install machines back to `main` when done (test pass OR fail).**
+  @@ -100,43 +79,32 @@ ssh muc-lhvsuz 'cd ~/.myelin/repo && git fetch origin && git checkout <branch> &
+  -### Finish (rebase → PR → ask before merge)
+  +### Merge + cleanup
+   
+   ```bash
+  -git -C ~/myelin-agents/<agent>/myelin fetch origin
+  -git -C ~/myelin-agents/<agent>/myelin rebase origin/main
+  -git -C ~/myelin-agents/<agent>/myelin push -u origin <branch>
+  -gh pr create --base main --head <branch>   # then ASK the human to approve the merge
+  -```
+  +# From main repo (not the worktree)
+  +cd ~/tokenstack
+  +git merge --squash feat/my-feature   # or: git merge --ff-only
+  +git commit -m "feat: ..."
+  +git push origin main
+   
+  -### Remove a worktree when done
+  +# Remove worktree + delete branch
+  +myelin worktree remove feat/my-feature
+  +```
+   
+  +### Other worktree commands
+   ```bash
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree remove ~/myelin-agents/<agent>/myelin
+  -git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree prune
+  +myelin worktree list                          # list all active worktrees
+  +myelin worktree remove feat/x --keep-branch  # remove worktree but keep the branch
+   ```
+   
+  -### Retiring the legacy `~/tokenstack-wt-*` worktrees (coordinated — NOT unilateral)
+  -
+  -The old scattered worktrees are being actively used by other agents. Retire them safely:
+  -
+  -1. **Never** remove a worktree with uncommitted work or a live agent. Check first:
+  -   ```bash
+  -   for w in ~/tokenstack-wt-*; do
+  -     printf '%s  dirty=%s  last=%s\n' "$w" \
+  -       "$(git -C "$w" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" \
+  -       "$(git -C "$w" log -1 --format=%cr 2>/dev/null)"
+  -   done
+  -   ```
+  -2. For each worktree whose agent has finished AND `dirty=0` AND its PR is landed/abandoned:
+  -   ```bash
+  -   git -C /Users/ysufrin/tokenstack worktree remove <path>
+  -   git -C /Users/ysufrin/tokenstack worktree prune
+  -   ```
+  -3. New work uses `~/myelin-agents/` immediately; the human's `~/tokenstack` + `~/Work/headroom-lite` stay as-is.
+  -4. Safe-anytime cleanups (with the human's OK): delete `~/tokenstack-scratch-backup-*` once confirmed unneeded, and remove the empty legacy `~/tokenstack-worktrees/` dir.
+  +### How session registration works
+  +`myelin init` in the worktree calls `serena project create --index <worktree-path>` which:
+  +1. Creates `.serena/project.yml` in the worktree (gitignored — machine-local)
+  +2. Registers the path in `~/.serena/serena_config.yml`
+   
+  -> Note: the old helper command is NOT real — use the `git worktree` commands above. A helper may exist one day in a *separate dev-tools library*, not in myelin.
+  +The `serena-mcp.sh` wrapper detects the project by walking up from CWD at spawn time.
+  +Starting Copilot/Claude Code from the worktree directory = session is registered to that worktree.
+   
+   ---
+   
+  @@ -160,9 +128,8 @@ node --test test/specific.test.mjs             # single file
+  -myelin update                                   # update managed runtime + tools (uv, headroom, serena, semble…)
+  -myelin update --check                           # preview external-tool updates without staging/activating
+  -myelin update --download-only                   # stage + validate latest release without activating it
+  +myelin update                                   # upgrade tools (uv, headroom, serena, semble…)
+  +myelin update --self [--force]                  # self-update from origin/main
+   ```
+   
+   ---
+  @@ -174,12 +141,10 @@ Copilot CLI / Claude Code
+  -    │  POST /v1/compress  →  selected engine
+  +    │  POST /v1/compress  →  headroom :8787
+       │  Tool filter, RAG inject, thrash cache
+       ▼
+  -Selected engine (set by proxy.engine):
+  -  headroom     :8787  Python Headroom (headroom-ai PyPI)
+  -  headroom_lite :8790  Headroom Lite (Node.js, no Python dep)
+  +Headroom proxy :8787  (headroom-ai PyPI)
+       │  Compression pipeline (cache-mode, TOIN)
+       ▼
+   Real API (api.githubcopilot.com / api.anthropic.com)
+  @@ -208,9 +173,7 @@ Optional: LiteLLM :4000 in front of the chain (budget routing + model fallback).
+  -proxy.engine: headroom             # or headroom_lite (set by proxy.engine)
+   proxy.headroom.port: 8787
+  -proxy.headroom_lite.port: 8790
+   proxy.mitm.port: 8888
+   proxy.copilot_headroom.enabled: false   # dedicated Copilot-Headroom instance
+   code_discovery.serena.enabled: true
+  +45 -82
+
+README.md
+  @@ -144,14 +144,15 @@ myelin stats           # compression statistics
+  -Expected output (rows vary by config — this is the default `proxy.engine: headroom` profile):
+  +Expected output:
+   ```
+  -✓ headroom service   :8787  running    # or headroom-lite :8790 if proxy.engine=headroom_lite
+  -✓ headroom health    :8787  healthy
+  -✓ mitmproxy service  :8888  running
+  -✓ rtk                       ready
+  -✓ ast-grep                  ready
+  -✓ semble                    ready
+  +✓ headroom proxy    :8787  healthy    # or: headroom-lite :8790 if proxy.engine=headroom_lite
+  +✓ mitmproxy         :8888  healthy
+  +✓ serena            MCP    ready
+  +✓ semble            MCP    ready
+  +✓ rtk               shell  ready
+  +✓ enforcement hooks        active
+  +✓ shell profile            configured
+   ```
+
+... (more changes truncated)
+  +8 -7
+[full diff: rtk git diff --no-compact]

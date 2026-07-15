@@ -151,7 +151,7 @@ describe('defaultRestartCopilotHeadroom', () => {
     });
     assert.deepEqual(actions[2], {
       type: 'spawn',
-      taskName: 'MyelinCopilotHeadroom',
+      taskName: 'MyelinCopilotCompression',
       exe: 'powershell.exe',
       args: '-NoProfile -ExecutionPolicy Bypass -File "C:\\Users\\alice\\.myelin\\headroom-copilot-9797\\start-copilot-headroom.ps1"',
     });
@@ -1040,7 +1040,7 @@ describe('Windows descriptor watchdogs', () => {
     ]);
     assert.deepEqual(removedWatchdogs.map(({ id, home }) => ({ id, home })), [
       { id: 'headroom_lite-copilot', home: 'C:\\Users\\alice' },
-      { id: 'myelin-copilot-headroom', home: 'C:\\Users\\alice' },
+      { id: 'myelin-copilot-compression', home: 'C:\\Users\\alice' },
     ]);
     assert.ok([...removedServices, ...removedWatchdogs].every(({ isWslImpl }) => typeof isWslImpl === 'function'));
   });
@@ -1055,8 +1055,8 @@ describe('Windows descriptor watchdogs', () => {
       home: 'C:\\Users\\alice',
       existsSyncImpl: () => true,
       readFileSyncImpl: (path) => {
-        const legacy = String(path).includes('myelin-copilot-headroom');
-        const id = legacy ? 'myelin-copilot-headroom' : 'headroom_lite-copilot';
+        const legacy = String(path).includes('myelin-copilot-compression');
+        const id = legacy ? 'myelin-copilot-compression' : 'headroom_lite-copilot';
         return [
           '<service>',
           `  <id>${id}</id>`,
@@ -1082,11 +1082,11 @@ describe('Windows descriptor watchdogs', () => {
 
     assert.deepEqual(removedServices.map(({ id }) => id), [
       'headroom_lite-copilot',
-      'myelin-copilot-headroom',
+      'myelin-copilot-compression',
     ]);
     assert.deepEqual(removedWatchdogs.map(({ id }) => id), [
       'headroom_lite-copilot',
-      'myelin-copilot-headroom',
+      'myelin-copilot-compression',
     ]);
   });
 });

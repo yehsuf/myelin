@@ -9,13 +9,13 @@ import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/mye
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
     return {
-      serviceId: 'myelin-headroom',
+      serviceId: 'myelin-compression',
       description: 'Myelin Headroom AI Proxy',
     };
   }
   if (instance.role === 'copilot') {
     return {
-      serviceId: 'myelin-copilot-headroom',
+      serviceId: 'myelin-copilot-compression',
       description: 'Myelin Copilot-Headroom AI Proxy (dedicated Copilot CLI instance)',
     };
   }
@@ -375,11 +375,11 @@ WantedBy=default.target`;
 }
 
 export function unitPath() {
-  return join(homedir(), '.config', 'systemd', 'user', 'myelin-headroom.service');
+  return join(homedir(), '.config', 'systemd', 'user', 'myelin-compression.service');
 }
 
 export function copilotHeadroomUnitPath() {
-  return join(homedir(), '.config', 'systemd', 'user', 'myelin-copilot-headroom.service');
+  return join(homedir(), '.config', 'systemd', 'user', 'myelin-copilot-compression.service');
 }
 
 export function mitmUnitPath(home = homedir()) {
