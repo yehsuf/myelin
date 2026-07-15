@@ -612,7 +612,26 @@ function createDefaultLock(fs, durability) {
       if (!token || owner.pid !== token.pid || owner.token !== token.token) {
         throw invalidLockError(path);
       }
-      fs.rmSync(path, { recursive: true, force: false });
+      // On Windows, rmSync on the lock directory can transiently fail with EPERM
+      // during the brief window when the OS still holds the directory handle from
+      // the preceding fsyncDirectory/readLockOwner call. Retry up to 5 times with
+      // a short synchronous spin-wait before propagating the error.
+      let lastRmError;
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          fs.rmSync(path, { recursive: true, force: false });
+          lastRmError = null;
+          break;
+        } catch (error) {
+          lastRmError = error;
+          if (!['EPERM', 'EACCES', 'EBUSY'].includes(error?.code)) break;
+          // Busy-wait ~50 ms: spin a tight loop rather than async sleep so we
+          // don't yield the event loop and stay synchronous (release must be sync).
+          const deadline = Date.now() + 50;
+          while (Date.now() < deadline) { /* spin */ }
+        }
+      }
+      if (lastRmError) throw lastRmError;
       durability.fsyncDirectory(dirname(path));
     },
   };
