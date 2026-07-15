@@ -192,6 +192,31 @@ export function runPs(script, {
   }
 }
 
+/**
+ * Injection-safe PowerShell command execution.
+ *
+ * Runs `powershellExe -NoProfile -Command <command>` via an ARGUMENT ARRAY
+ * (execFileSync) — never a shell command STRING. On WSL `process.platform` is
+ * `'linux'`, so `execSync('powershell.exe ... -Command "& { <script> }"')` is
+ * handed to `/bin/sh -c` FIRST. `/bin/sh` sees the PowerShell single-quoted
+ * managed/MYELIN_DIR-derived paths as ordinary text inside its own double
+ * quotes and command-substitutes any `$(...)`/backtick sequences in them
+ * (both are legal Windows filename chars, survive `escapePs`, and MYELIN_DIR is
+ * untrusted) BEFORE PowerShell ever runs — arbitrary code execution. Passing
+ * the whole command as ONE literal argv element means no shell (`/bin/sh` on
+ * WSL/Linux, or `cmd.exe` on Windows) re-parses it on any platform; only
+ * PowerShell interprets it, where the single-quoting is sufficient.
+ */
+function runPsCommand(command, {
+  powershellExe = powerShellExecutable(),
+  execFileSyncImpl = execFileSync,
+  prefixArgs = ['-NoProfile', '-Command'],
+  stdio,
+} = {}) {
+  const options = stdio === undefined ? {} : { stdio };
+  return execFileSyncImpl(powershellExe, [...prefixArgs, command], options);
+}
+
 function escapePs(value = '') {
   return String(value ?? '').replace(/'/g, "''");
 }
@@ -651,7 +676,7 @@ function isWindowsAbsolutePath(filePath = '') {
 }
 
 function readWindowsFileText(filePath, {
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
@@ -668,10 +693,12 @@ function readWindowsFileText(filePath, {
   } catch {}
   if (!isWindowsAbsolutePath(filePath)) return '';
   try {
-    return execSyncImpl(
-      withPowerShell(`-NoProfile -Command "if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }"`, powershellExe),
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    ).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
+    const command = `if (Test-Path '${escapePs(windowsPath(filePath))}') { Get-Content -Path '${escapePs(windowsPath(filePath))}' -Raw }`;
+    return runPsCommand(command, {
+      powershellExe,
+      execFileSyncImpl,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString().replace(/^\uFEFF/, '').replace(/\r/g, '');
   } catch {
     return '';
   }
@@ -761,6 +788,7 @@ export function stopManagedHeadroomProcess({
   processExeName = 'headroom.exe',
   home,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   headroomRunKeyStatusImpl = headroomRunKeyStatus,
   powershellExe = powerShellExecutable(),
 } = {}) {
@@ -777,22 +805,21 @@ export function stopManagedHeadroomProcess({
     // same executable, arguments, and port may belong to a user process.
     script += `\nRemove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(HEADROOM_KEY)} -ErrorAction SilentlyContinue`;
   }
-  script = script.replace(/"/g, '\\"');
-  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
+  runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' });
 }
 
 export function stopHeadroomProcessByExecutablePath({
   port,
   executablePath,
   processExeName = 'headroom.exe',
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
 } = {}) {
   const script = stopByPortScript(processExeName, port, {
     requiredArgs: ['proxy'],
     requiredExecutablePath: windowsPath(executablePath),
-  }).replace(/"/g, '\\"');
-  execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' });
+  });
+  runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' });
 }
 
 export function winswServiceDir({ id, home, env = process.env } = {}) {
@@ -1137,7 +1164,7 @@ export async function installWinswService({
 export function winswServiceStatus({
   id,
   home,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   powershellExe = powerShellExecutable(),
   isWslImpl = isWsl,
@@ -1152,7 +1179,10 @@ export function winswServiceStatus({
 
   let raw = '';
   try {
-    raw = execSyncImpl(withPowerShell(`-Command "& ${psQuote(serviceExePath)} status ${psQuote(configPath)}"`, powershellExe), {
+    raw = runPsCommand(`& ${psQuote(serviceExePath)} status ${psQuote(configPath)}`, {
+      powershellExe,
+      execFileSyncImpl,
+      prefixArgs: ['-Command'],
       stdio: ['ignore', 'pipe', 'pipe'],
     }).toString().trim();
   } catch (error) {
@@ -1505,6 +1535,7 @@ export async function installEngineInstance(instance, {
 export function engineInstanceStatus(instance, {
   manager = 'registry',
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl,
@@ -1515,7 +1546,7 @@ export function engineInstanceStatus(instance, {
   const paths = engineInstancePaths(instance);
   if (manager === 'winsw') {
     return {
-      ...winswServiceStatus({ id: paths.id, home, execSyncImpl, existsSyncImpl, powershellExe, isWslImpl }),
+      ...winswServiceStatus({ id: paths.id, home, execFileSyncImpl, existsSyncImpl, powershellExe, isWslImpl }),
       healthUrl: instance.healthUrl,
     };
   }
@@ -1530,7 +1561,7 @@ export function engineInstanceStatus(instance, {
     }
     const launcherPath = engineInstanceLauncherPath(runKeyStatus.raw, paths.launcherPath);
     const launcherScript = readWindowsScriptText(launcherPath, {
-      execSyncImpl,
+      execFileSyncImpl,
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
@@ -1546,7 +1577,7 @@ export function engineInstanceStatus(instance, {
     const launcherPort = launcherPortFromScript(launcherScript);
     const isBatchLauncher = /\.(?:cmd|bat)$/iu.test(executable);
     const pidText = trimPowershellOutput(readWindowsFileText(paths.pidPath, {
-      execSyncImpl,
+      execFileSyncImpl,
       existsSyncImpl,
       readFileSyncImpl,
       powershellExe,
@@ -1605,11 +1636,11 @@ if ($proc) {
 } else { 'Stopped' }`
           : `if ($proc -and ${identityCheck}) { 'Running' } else { 'Stopped' }`,
       ].join('\n');
-    const escapedScript = script.replace(/"/g, '\\"');
-    const raw = trimPowershellOutput(execSyncImpl(
-      withPowerShell(`-NoProfile -Command "& { ${escapedScript} }"`, powershellExe),
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    ).toString());
+    const raw = trimPowershellOutput(runPsCommand(`& { ${script} }`, {
+      powershellExe,
+      execFileSyncImpl,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).toString());
     return { ...parseManagedHeadroomStatus(raw), label: paths.id, healthUrl: instance.healthUrl };
   } catch {
     return { running: false, state: 'Unknown', raw: '', label: paths.id, healthUrl: instance.healthUrl };
@@ -1620,7 +1651,7 @@ function ownedWinswEngineInstance(instance, paths, {
   home,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   isWslImpl = isWsl,
 } = {}) {
@@ -1628,7 +1659,7 @@ function ownedWinswEngineInstance(instance, paths, {
   const config = readWindowsFileText(configPath, {
     existsSyncImpl,
     readFileSyncImpl,
-    execSyncImpl,
+    execFileSyncImpl,
     powershellExe,
     isWslImpl,
   });
@@ -1814,6 +1845,7 @@ export function removeEngineInstance(instance, {
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   uninstallWinswServiceImpl = uninstallWinswService,
   uninstallWindowsWatchdogTaskImpl = uninstallWindowsWatchdogTask,
@@ -1842,7 +1874,7 @@ export function removeEngineInstance(instance, {
       home,
       existsSyncImpl,
       readFileSyncImpl,
-      execSyncImpl,
+      execFileSyncImpl,
       powershellExe,
       isWslImpl,
     })) {
@@ -1952,14 +1984,14 @@ export function parseLegacyMitmRunKeyValue(runKeyValue = '') {
 
 function readManagedMitmIdentity({
   home,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
 } = {}) {
   const launcherPath = managedMitmLauncherPath({ home });
   const launcherScript = readWindowsScriptText(launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -2034,6 +2066,7 @@ function parseManagedHeadroomRunKeyValue(runKeyValue = '') {
 function readManagedHeadroomIdentity({
   home = defaultWindowsHome(),
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = headroomRunKeyStatus,
@@ -2046,7 +2079,7 @@ function readManagedHeadroomIdentity({
   let argStr = parsedRunKey.argStr ?? '';
   const launcherPath = parsedRunKey.launcherPath ?? '';
   const launcherScript = readWindowsScriptText(launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -2067,6 +2100,7 @@ function readManagedHeadroomIdentity({
 
 function readManagedCopilotHeadroomIdentity({
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   runKeyStatusImpl = copilotHeadroomRunKeyStatus,
@@ -2077,7 +2111,7 @@ function readManagedCopilotHeadroomIdentity({
   let executablePath = parsedRunKey.executablePath ?? '';
   let argStr = parsedRunKey.argStr ?? '';
   const launcherScript = readWindowsScriptText(parsedRunKey.launcherPath, {
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     readFileSyncImpl,
     powershellExe,
@@ -2413,7 +2447,7 @@ export function removeMitmService({
   home,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
-  execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   powershellExe = powerShellExecutable(),
   uninstallWinswServiceImpl = uninstallWinswService,
   runPsFn = runPs,
@@ -2424,7 +2458,7 @@ export function removeMitmService({
   const config = readWindowsFileText(configPath, {
     existsSyncImpl,
     readFileSyncImpl,
-    execSyncImpl,
+    execFileSyncImpl,
     powershellExe,
     isWslImpl,
   });
@@ -2462,6 +2496,7 @@ export function mitmServiceStatus({
   manager = 'registry',
   home,
   execSyncImpl = execSync,
+  execFileSyncImpl = execFileSync,
   existsSyncImpl = existsSync,
   readFileSyncImpl = readFileSync,
   powershellExe = powerShellExecutable(),
@@ -2471,14 +2506,14 @@ export function mitmServiceStatus({
     try {
       const identity = readManagedMitmIdentity({
         home,
-        execSyncImpl,
+        execFileSyncImpl,
         existsSyncImpl,
         readFileSyncImpl,
         powershellExe,
       });
       const pidText = identity
         ? trimPowershellOutput(readWindowsFileText(managedMitmPidPath({ home }), {
-            execSyncImpl,
+            execFileSyncImpl,
             existsSyncImpl,
             readFileSyncImpl,
             powershellExe,
@@ -2490,15 +2525,15 @@ export function mitmServiceStatus({
           executablePath: identity.executablePath,
           argStr: identity.argumentList,
           launcherPath: identity.launcherPath,
-        }).replace(/"/g, '\\"');
-        const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
+        });
+        const raw = runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' }).toString();
         return parseManagedMitmStatus(raw);
       }
       const runKeyStatus = mitmRunKeyStatus({ execSyncImpl, powershellExe });
       const legacyIdentity = parseLegacyMitmRunKeyValue(runKeyStatus.raw);
       if (!legacyIdentity) return { running: false, state: 'Stopped', raw: '' };
-      const script = buildLegacyMitmStatusScript(legacyIdentity).replace(/"/g, '\\"');
-      const raw = execSyncImpl(withPowerShell(`-NoProfile -Command "& { ${script} }"`, powershellExe), { stdio: 'pipe' }).toString();
+      const script = buildLegacyMitmStatusScript(legacyIdentity);
+      const raw = runPsCommand(`& { ${script} }`, { powershellExe, execFileSyncImpl, stdio: 'pipe' }).toString();
       return parseManagedMitmStatus(raw);
     } catch {
       return { running: false, state: 'Unknown' };
@@ -2507,7 +2542,7 @@ export function mitmServiceStatus({
   return winswServiceStatus({
     id: MITM_SERVICE_ID,
     home,
-    execSyncImpl,
+    execFileSyncImpl,
     existsSyncImpl,
     powershellExe,
     isWslImpl,
