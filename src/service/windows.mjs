@@ -1060,6 +1060,11 @@ export async function installWinswService({
 
   mkdirSyncImpl(serviceFilesystemDir, { recursive: true });
   mkdirSyncImpl(logFilesystemDir, { recursive: true });
+  // WinSW sets its process working directory to <workingdirectory> at startup;
+  // if the directory doesn't exist the service fails with DirectoryNotFoundException.
+  if (workingDirectory) {
+    mkdirSyncImpl(winswFilesystemPathFor(workingDirectory, { isWslImpl }), { recursive: true });
+  }
 
   // 1. Fetch WinSW and stage the new exe + config ALONGSIDE the (possibly still
   //    running) service. Never touch the live files while the old service may
