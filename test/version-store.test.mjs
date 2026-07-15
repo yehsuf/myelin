@@ -149,10 +149,10 @@ describe('versioned component store', { concurrency: false }, () => {
     createVersion(root, 'rtk', '0.44.0');
     createVersion(root, 'rtk', '0.43.0');
 
-    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux' });
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux', durability: noOpDurability() });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
 
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.43.0',
       previous: '0.44.0',
     });
@@ -162,7 +162,7 @@ describe('versioned component store', { concurrency: false }, () => {
   it('inspects pointers without acquiring the component lock', () => {
     const root = makeRoot();
     createVersion(root, 'rtk', '0.44.0');
-    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux', durability: noOpDurability() });
     const lock = {
       acquire() {
         throw new Error('read-only inspection must not acquire');
@@ -179,15 +179,15 @@ describe('versioned component store', { concurrency: false }, () => {
     const root = makeRoot();
     createVersion(root, 'rtk', '0.43.0');
     createVersion(root, 'rtk', '0.44.0');
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
     rmSync(componentVersionDir(root, 'rtk', '0.43.0'), { recursive: true });
 
     assert.throws(
-      () => activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux' }),
+      () => activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux', durability: noOpDurability() }),
       /target version directory.*does not exist/i,
     );
     assert.throws(
-      () => readPointers(root, 'rtk'),
+      () => readPointers(root, 'rtk', { durability: noOpDurability() }),
       /target version directory.*does not exist|broken|invalid/i,
     );
     assert.equal(readlinkSync(join(root, 'rtk', 'current')), '0.43.0');
@@ -198,16 +198,16 @@ describe('versioned component store', { concurrency: false }, () => {
     createVersion(root, 'rtk', '0.42.0');
     createVersion(root, 'rtk', '0.43.0');
     createVersion(root, 'rtk', '0.44.0');
-    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux' });
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux', durability: noOpDurability() });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
     rmSync(componentVersionDir(root, 'rtk', '0.42.0'), { recursive: true });
 
     assert.throws(
-      () => activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux' }),
+      () => activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'linux', durability: noOpDurability() }),
       /target version directory.*does not exist/i,
     );
     assert.throws(
-      () => readPointers(root, 'rtk'),
+      () => readPointers(root, 'rtk', { durability: noOpDurability() }),
       /target version directory.*does not exist|broken|invalid/i,
     );
     assert.equal(readlinkSync(join(root, 'rtk', 'current')), '0.43.0');
@@ -218,7 +218,7 @@ describe('versioned component store', { concurrency: false }, () => {
     const root = makeRoot();
     createVersion(root, 'rtk', '0.44.0');
 
-    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'darwin' });
+    activateComponent({ root, name: 'rtk', version: '0.44.0', platform: 'darwin', durability: noOpDurability() });
 
     assert.equal(readlinkSync(join(root, 'rtk', 'current')), '0.44.0');
   });
@@ -228,8 +228,8 @@ describe('versioned component store', { concurrency: false }, () => {
     createVersion(root, 'rtk', '0.42.0');
     createVersion(root, 'rtk', '0.43.0');
     createVersion(root, 'rtk', '0.44.0');
-    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux' });
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux', durability: noOpDurability() });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
 
     const fs = testFs({
       renameSync(source, destination) {
@@ -247,10 +247,11 @@ describe('versioned component store', { concurrency: false }, () => {
         version: '0.44.0',
         platform: 'linux',
         fs,
+        durability: noOpDurability(),
       }),
       /simulated previous replacement failure/,
     );
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.43.0',
       previous: '0.42.0',
     });
@@ -261,17 +262,18 @@ describe('versioned component store', { concurrency: false }, () => {
     createVersion(root, 'rtk', '0.42.0');
     createVersion(root, 'rtk', '0.43.0');
     createVersion(root, 'rtk', '0.44.0');
-    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux' });
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.42.0', platform: 'linux', durability: noOpDurability() });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
 
     restoreComponent({
       root,
       name: 'rtk',
       pointers: { current: '0.44.0', previous: '0.43.0' },
       platform: 'linux',
+      durability: noOpDurability(),
     });
 
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.44.0',
       previous: '0.43.0',
     });
@@ -293,6 +295,7 @@ describe('versioned component store', { concurrency: false }, () => {
       version: '0.44.0',
       platform: 'win32',
       runCommand,
+      durability: noOpDurability(),
     });
 
     assert.deepEqual(commands, [{
@@ -304,7 +307,7 @@ describe('versioned component store', { concurrency: false }, () => {
         `mklink /J "${temporaryPointer}" "${target}"`,
       ],
     }]);
-    assert.deepEqual(readPointers(root, 'rtk'), { current: '0.44.0', previous: null });
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), { current: '0.44.0', previous: null });
   });
 
   it('accepts the extended Windows junction target form while keeping it confined', () => {
@@ -352,9 +355,10 @@ describe('versioned component store', { concurrency: false }, () => {
       platform: 'win32',
       fs,
       createJunction: (pointer, target) => symlinkSync(target, pointer, 'dir'),
+      durability: noOpDurability(),
     });
 
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.44.0',
       previous: null,
     });
@@ -371,6 +375,7 @@ describe('versioned component store', { concurrency: false }, () => {
       version: '0.43.0',
       platform: 'win32',
       createJunction,
+      durability: noOpDurability(),
     });
 
     const fs = testFs({
@@ -394,9 +399,10 @@ describe('versioned component store', { concurrency: false }, () => {
       platform: 'win32',
       fs,
       createJunction,
+      durability: noOpDurability(),
     });
 
-    assert.deepEqual(readPointers(root, 'rtk'), { current: '0.44.0', previous: '0.43.0' });
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), { current: '0.44.0', previous: '0.43.0' });
   });
 
   it('uses an injected junction creator and restores Windows pointers after a failed switch', () => {
@@ -414,6 +420,7 @@ describe('versioned component store', { concurrency: false }, () => {
       version: '0.43.0',
       platform: 'win32',
       createJunction,
+      durability: noOpDurability(),
     });
 
     const fs = testFs({
@@ -433,10 +440,11 @@ describe('versioned component store', { concurrency: false }, () => {
         platform: 'win32',
         fs,
         createJunction,
+        durability: noOpDurability(),
       }),
       /simulated Windows previous replacement failure/,
     );
-    assert.deepEqual(readPointers(root, 'rtk'), { current: '0.43.0', previous: null });
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), { current: '0.43.0', previous: null });
     assert.ok(created.every(({ target }) => target.startsWith(join(root, 'rtk'))));
   });
 
@@ -456,7 +464,7 @@ describe('versioned component store', { concurrency: false }, () => {
       /reserved|safe token/i,
     );
     assert.throws(
-      () => readPointers(root, 'rtk'),
+      () => readPointers(root, 'rtk', { durability: noOpDurability() }),
       /confined|pointer target|invalid/i,
     );
   });
@@ -467,7 +475,7 @@ describe('versioned component store', { concurrency: false }, () => {
     createPointer(root, 'rtk', 'current', 'missing-version');
 
     assert.throws(
-      () => readPointers(root, 'rtk'),
+      () => readPointers(root, 'rtk', { durability: noOpDurability() }),
       /target version directory.*does not exist|broken|invalid/i,
     );
     assert.equal(lstatSync(join(root, 'rtk', 'current')).isSymbolicLink(), true);
@@ -518,6 +526,7 @@ describe('versioned component store', { concurrency: false }, () => {
 
     assert.deepEqual(readPointers(root, 'rtk', {
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.44.0',
       previous: '0.43.0',
@@ -583,6 +592,7 @@ describe('versioned component store', { concurrency: false }, () => {
 
     assert.deepEqual(readPointers(root, 'rtk', {
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.43.0',
       previous: null,
@@ -621,7 +631,7 @@ describe('versioned component store', { concurrency: false }, () => {
       durability: noOpDurability(),
     }));
     assert.equal(existsSync(transactionJournalPath(root, 'rtk')), true);
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.44.0',
       previous: '0.43.0',
     });
@@ -715,7 +725,7 @@ describe('versioned component store', { concurrency: false }, () => {
 
     assert.match(error?.message ?? '', /simulated partial pointer install failure/);
     assert.equal(error?.transaction?.compensation?.succeeded, true);
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.43.0',
       previous: '0.42.0',
     });
@@ -773,7 +783,7 @@ describe('versioned component store', { concurrency: false }, () => {
 
     assert.match(error?.message ?? '', /simulated committed journal failure/);
     assert.equal(error?.transaction?.compensation?.succeeded, true);
-    assert.deepEqual(readPointers(root, 'rtk'), {
+    assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), {
       current: '0.43.0',
       previous: '0.42.0',
     });
@@ -980,6 +990,7 @@ describe('versioned component store', { concurrency: false }, () => {
 
     assert.deepEqual(readPointers(root, 'rtk', {
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.43.0',
       previous: null,
@@ -1074,6 +1085,7 @@ describe('versioned component store', { concurrency: false }, () => {
     assert.deepEqual(readPointers(root, 'rtk', {
       fs,
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.43.0',
       previous: null,
@@ -1156,6 +1168,7 @@ describe('versioned component store', { concurrency: false }, () => {
     assert.deepEqual(readPointers(root, 'rtk', {
       fs,
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.43.0',
       previous: null,
@@ -1199,6 +1212,7 @@ describe('versioned component store', { concurrency: false }, () => {
     assert.deepEqual(readPointers(root, 'rtk', {
       fs,
       durability: noOpDurability(),
+      platform: 'linux',
     }), {
       current: '0.43.0',
       previous: null,
@@ -1349,7 +1363,7 @@ describe('versioned component store', { concurrency: false }, () => {
   it('discards a truncated temporary journal when no committed journal exists', () => {
     const root = makeRoot();
     createVersion(root, 'rtk', '0.43.0');
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
     // Simulate a crash mid-write-temporary: only the truncated .new file exists,
     // the committed journal was never created.
     writeFileSync(join(root, 'rtk', '.pointer-store-journal.json.new'), '{"schemaVersion":1,"na', 'utf8');
@@ -1364,7 +1378,7 @@ describe('versioned component store', { concurrency: false }, () => {
   it('still fails closed on a malformed committed journal', () => {
     const root = makeRoot();
     createVersion(root, 'rtk', '0.43.0');
-    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux' });
+    activateComponent({ root, name: 'rtk', version: '0.43.0', platform: 'linux', durability: noOpDurability() });
     writeFileSync(transactionJournalPath(root, 'rtk'), '{"schemaVersion":1,"na', 'utf8');
 
     assert.throws(
