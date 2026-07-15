@@ -13,7 +13,10 @@ import {
   ensureManagedHeadroomService,
   ensureManagedVenv,
   installPipPackageInManagedVenv,
+  mitmAddonPath,
+  provisionManagedCompressionComponent,
   removeManagedHeadroomRegistration,
+  resolveInstallComponentStoragePlatform,
   shouldInstallPythonHeadroomPackage,
   stopLegacyManagedProxies,
   stopManagedUvToolProcess,
@@ -229,6 +232,90 @@ describe('ensureManagedHeadroomService', () => {
     assert.match(result.reason, /unmanaged/i);
     assert.equal(warnings.length, 1);
     assert.match(warnings[0], /unmanaged/i);
+  });
+});
+
+describe('resolveInstallComponentStoragePlatform', () => {
+  it('uses the raw os for a native (non-WSL) Windows install', () => {
+    assert.equal(resolveInstallComponentStoragePlatform('windows', { isWslImpl: () => false }), 'windows');
+  });
+
+  it('storage falls back to linux under WSL even though the service target is windows (finding 4)', () => {
+    assert.equal(resolveInstallComponentStoragePlatform('windows', { isWslImpl: () => true }), 'linux');
+  });
+
+  it('never calls isWsl for non-Windows service targets', () => {
+    let called = false;
+    assert.equal(
+      resolveInstallComponentStoragePlatform('linux', { isWslImpl: () => { called = true; return true; } }),
+      'linux',
+    );
+    assert.equal(called, false);
+  });
+
+  it('passes darwin through unchanged', () => {
+    assert.equal(resolveInstallComponentStoragePlatform('darwin', { isWslImpl: () => false }), 'darwin');
+  });
+});
+
+describe('provisionManagedCompressionComponent', () => {
+  it('stages and activates the pinned headroom-lite component, then resolves its binary', async () => {
+    const calls = [];
+    const bin = await provisionManagedCompressionComponent({
+      home: '/home/alice',
+      os: 'linux',
+      isWslImpl: () => false,
+      stageComponentImpl: async (args) => calls.push(['stage', args]),
+      activateComponentImpl: async (args) => calls.push(['activate', args]),
+      resolveManagedCompressionBinaryImpl: (args) => {
+        calls.push(['resolve', args]);
+        return { binPath: '/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite' };
+      },
+      componentsImpl: { headroomLite: { kind: 'npm-git', version: '0.31.0', bin: 'headroom-lite' } },
+    });
+
+    assert.equal(bin, '/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite');
+    assert.equal(calls[0][0], 'stage');
+    assert.equal(calls[0][1].name, 'headroomLite');
+    assert.equal(calls[0][1].platform, 'linux');
+    assert.equal(calls[0][1].root, join('/home/alice', '.myelin', 'components'));
+    assert.equal(calls[1][0], 'activate');
+    assert.equal(calls[1][1].version, '0.31.0');
+    assert.equal(calls[1][1].platform, 'linux');
+    assert.equal(calls[2][0], 'resolve');
+    assert.equal(calls[2][1].backend, 'headroom-lite');
+    assert.equal(calls[2][1].platform, 'linux');
+  });
+
+  it('stages under the WSL storage platform (linux) even though the service target is windows (finding 4)', async () => {
+    const platforms = [];
+    await provisionManagedCompressionComponent({
+      home: '/home/alice',
+      os: 'windows',
+      isWslImpl: () => true,
+      stageComponentImpl: async ({ platform }) => platforms.push(platform),
+      activateComponentImpl: async ({ platform }) => platforms.push(platform),
+      resolveManagedCompressionBinaryImpl: ({ platform }) => {
+        platforms.push(platform);
+        return { binPath: '/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite' };
+      },
+      componentsImpl: { headroomLite: { kind: 'npm-git', version: '0.31.0', bin: 'headroom-lite' } },
+    });
+
+    assert.deepEqual(platforms, ['linux', 'linux', 'linux']);
+  });
+
+  it('wraps a staging failure with a clear provisioning error', async () => {
+    await assert.rejects(
+      provisionManagedCompressionComponent({
+        home: '/home/alice',
+        os: 'linux',
+        isWslImpl: () => false,
+        stageComponentImpl: async () => { throw new Error('network unreachable'); },
+        componentsImpl: { headroomLite: { kind: 'npm-git', version: '0.31.0', bin: 'headroom-lite' } },
+      }),
+      /Failed to provision headroom-lite: network unreachable/,
+    );
   });
 });
 
@@ -508,7 +595,35 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.equal(installCalls[0].options.headroomLiteBin, undefined);
   });
 
-  it('fails explicitly for missing Lite before removing owned Python descriptors', async () => {
+  it('provisions the pinned Lite component instead of failing when neither a managed pointer nor a global install exists (finding 2)', async () => {
+    const removed = [];
+    const installed = [];
+    const provisionCalls = [];
+
+    await applyServiceEngineInstallPlan({
+      cfg: liteCopilotConfig,
+      os: 'linux',
+      installEngineInstanceImpl: async (instance, options) => installed.push({ instance, options }),
+      removeManagedHeadroomRegistrationImpl: async () => {},
+      removeEngineInstanceImpl: async (instance) => removed.push(instance),
+      ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
+      detectToolImpl: async () => ({ installed: false, path: null }),
+      restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
+      provisionManagedCompressionImpl: async (args) => {
+        provisionCalls.push(args);
+        return '/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite';
+      },
+    });
+
+    assert.equal(provisionCalls.length, 1);
+    assert.equal(provisionCalls[0].os, 'linux');
+    assert.deepEqual(
+      installed.filter(({ instance }) => instance.role === 'primary').map(({ options }) => options.headroomLiteBin),
+      ['/home/alice/.myelin/components/headroomLite/current/bin/headroom-lite'],
+    );
+  });
+
+  it('fails explicitly when the fresh-install Lite provisioning fallback itself fails', async () => {
     const removed = [];
     const installed = [];
 
@@ -522,37 +637,43 @@ describe('applyServiceEngineInstallPlan', () => {
         ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
         detectToolImpl: async () => ({ installed: false, path: null }),
         restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
+        provisionManagedCompressionImpl: async () => {
+          throw new Error('Failed to provision headroom-lite: network unreachable');
+        },
       }),
-      /headroom-lite selected but not installed/,
+      /Failed to provision headroom-lite/,
     );
 
     assert.deepEqual(removed, []);
     assert.deepEqual(installed, []);
   });
 
-  it('preflights selected Windows Lite before migrating legacy roles', async () => {
+  it('provisions the pinned Lite component for a fresh Windows install too', async () => {
     const removed = [];
+    const provisionCalls = [];
 
-    await assert.rejects(
-      applyServiceEngineInstallPlan({
-        cfg: {
-          proxy: {
-            engine: 'headroom_lite',
-            headroom: { port: 8787 },
-            headroom_lite: { port: 8790 },
-            windows_service: { manager: 'registry' },
-          },
+    await applyServiceEngineInstallPlan({
+      cfg: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom: { port: 8787 },
+          headroom_lite: { port: 8790 },
+          windows_service: { manager: 'registry' },
         },
-        os: 'windows',
-        home: 'C:\\Users\\alice',
-        installEngineInstanceImpl: () => assert.fail('an unavailable engine must not be installed'),
-        removeEngineInstanceImpl: async (instance) => removed.push(instance),
-        detectToolImpl: async () => ({ installed: false, path: null }),
-      }),
-      /headroom-lite selected but not installed/,
-    );
+      },
+      os: 'windows',
+      home: 'C:\\Users\\alice',
+      installEngineInstanceImpl: async () => {},
+      removeEngineInstanceImpl: async (instance) => removed.push(instance),
+      detectToolImpl: async () => ({ installed: false, path: null }),
+      provisionManagedCompressionImpl: async (args) => {
+        provisionCalls.push(args);
+        return 'C:\\Users\\alice\\.myelin\\components\\headroomLite\\current\\bin\\headroom-lite.cmd';
+      },
+    });
 
-    assert.deepEqual(removed, []);
+    assert.equal(provisionCalls.length, 1);
+    assert.equal(provisionCalls[0].os, 'windows');
   });
 
   it('surfaces a Lite registration failure without falling back to Python', async () => {

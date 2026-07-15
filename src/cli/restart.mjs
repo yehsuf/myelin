@@ -28,7 +28,10 @@ import {
   detectMitmdump,
   ensureManagedHeadroomService,
   managedHeadroomRegistrationStatus,
+  resolveInstallComponentStoragePlatform,
 } from '../install.mjs';
+import { updatePaths } from '../update/update-orchestrator.mjs';
+import { resolveManagedCompressionBinary } from '../update/managed-service-binary.mjs';
 
 const COPILOT_HEADROOM_RUN_KEY = 'MyelinCopilotHeadroom';
 const REG_RUN = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
@@ -1107,42 +1110,67 @@ export async function restartEngineInstance(instance, {
   isWslImpl = isWsl,
   defaultWindowsHomeImpl = defaultWindowsHome,
   resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
+  resolveManagedCompressionBinaryImpl = resolveManagedCompressionBinary,
+  updatePathsImpl = updatePaths,
 } = {}) {
   try {
     const options = { manager: winManager, home };
     const wsl = os === 'windows' && isWslImpl();
     const serviceHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
+
+    // Resolve the executable candidate *before* removing the existing service
+    // registration. For headroom_lite, prefer the pinned managed-component
+    // pointer (the common case after any `myelin update`); a legacy global
+    // PATH lookup is only a fallback for a hand-installed, pre-managed-component
+    // Lite. If resolution fails outright, this throws before the service is
+    // touched, so a failed restart never leaves the prior service removed and
+    // nothing installed in its place (finding 3).
+    let candidate;
+    if (instance.engine === 'headroom') {
+      candidate = headroomBinPathImpl();
+    } else if (instance.engine === 'headroom_lite') {
+      const storagePlatform = resolveInstallComponentStoragePlatform(os, { isWslImpl });
+      const componentsRoot = updatePathsImpl(home).componentsRoot;
+      try {
+        candidate = resolveManagedCompressionBinaryImpl({
+          backend: 'headroom-lite',
+          componentsRoot,
+          platform: storagePlatform,
+        })?.binPath;
+      } catch {
+        candidate = null;
+      }
+      if (!candidate) {
+        const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
+        const headroomLite = await detectTool('headroom-lite', '--version');
+        if (!headroomLite.installed || !headroomLite.path) {
+          throw new Error('headroom-lite selected but not installed');
+        }
+        candidate = headroomLite.path;
+      }
+    } else {
+      throw new Error(`Unsupported engine: ${instance.engine}`);
+    }
+
+    const resolvedBin = resolveWindowsServiceExecutableImpl({
+      engine: instance.engine,
+      candidate,
+      serviceHome,
+      servicePlatform: os,
+      wsl,
+    });
+    if (instance.engine === 'headroom') {
+      options.headroomBin = resolvedBin;
+    } else {
+      options.headroomLiteBin = resolvedBin;
+    }
+    options.envVars = engineInstanceServiceEnv(instance, buildManagedHeadroomEnv(cfg));
+
     await removeEngineInstanceImpl(instance, {
       manager: winManager,
       home,
       warn,
     });
-    if (instance.engine === 'headroom') {
-      options.headroomBin = resolveWindowsServiceExecutableImpl({
-        engine: instance.engine,
-        candidate: headroomBinPathImpl(),
-        serviceHome,
-        servicePlatform: os,
-        wsl,
-      });
-    } else if (instance.engine === 'headroom_lite') {
-      const detectTool = detectToolImpl ?? (await import('../detect/tools.mjs')).detectTool;
-      const headroomLite = await detectTool('headroom-lite', '--version');
-      if (!headroomLite.installed || !headroomLite.path) {
-        throw new Error('headroom-lite selected but not installed');
-      }
-      options.headroomLiteBin = resolveWindowsServiceExecutableImpl({
-        engine: instance.engine,
-        candidate: headroomLite.path,
-        serviceHome,
-        servicePlatform: os,
-        wsl,
-      });
-    } else {
-      throw new Error(`Unsupported engine: ${instance.engine}`);
-    }
-    options.envVars = engineInstanceServiceEnv(instance, buildManagedHeadroomEnv(cfg));
-
     await installEngineInstanceImpl(instance, options);
     const healthy = await waitForHealthUrlImpl(instance.healthUrl);
     log(healthy
@@ -1181,6 +1209,21 @@ export async function runRestart({
   const home = os === 'windows' ? defaultWindowsHomeImpl(homedirImpl()) : homedirImpl();
   const plan = buildEngineInstancePlanImpl(cfg);
   log('\n🔄 Restarting Myelin services...');
+
+  if (plan.engine === 'disabled') {
+    // Canonical compression disabled: run no engine service. Tear down any
+    // owned engine registrations (both engines, both roles) and start none.
+    for (const engine of ['headroom', 'headroom_lite']) {
+      const instances = ownedEngineRoleInstances(engine, ['primary', 'copilot'], home, cfg, warn);
+      for (const instance of instances) {
+        await removeEngineInstanceImpl(instance, { manager: winManager, home, warn });
+      }
+    }
+    await restartMitmImpl({ os, cfg, winManager, log, warn });
+    await restartWatchdogImpl({ os, cfg, plan, winManager, home, log, warn });
+    log();
+    return;
+  }
 
   const obsoleteEngine = plan.engine === 'headroom' ? 'headroom_lite' : 'headroom';
   const obsoleteInstances = ownedEngineRoleInstances(

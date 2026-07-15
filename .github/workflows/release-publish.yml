@@ -1,0 +1,118 @@
+name: Release Publish
+
+# Write-capable publisher. This workflow is stored only on the protected
+# default branch and is never directly dispatchable (no workflow_dispatch
+# trigger): it only reacts to `workflow_run` completion events for
+# "Release Validation". Per GitHub Actions semantics, a `workflow_run`
+# workflow always executes the copy of this file that lives on the
+# repository's default branch, regardless of which branch the triggering
+# run came from -- so an attacker branch cannot modify or remove this
+# workflow's trust checks and have that modification take effect. See
+# .superpowers/sdd/task-11-review.md (finding 4).
+on:
+  workflow_run:
+    workflows: ["Release Validation"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.repository.full_name == github.repository &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      # Defense-in-depth: re-verify the trust boundary with a plain step,
+      # redundant with (and independent of) the job-level `if:` above, before
+      # checkout so no ref-controlled code has run yet.
+      - name: Verify the triggering run is trusted (default branch, same repository)
+        env:
+          HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$HEAD_REPO" != "$BASE_REPO" ] || [ "$HEAD_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            echo "Refusing to publish: triggering run was ${HEAD_REPO}@${HEAD_BRANCH}, expected ${BASE_REPO}@${DEFAULT_BRANCH}." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 20
+
+      - name: Derive release version from package.json
+        id: version
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version matches stable release format
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: node src/update/verify-stable-version.mjs "$VERSION"
+
+      - name: Verify release tag is safe to (re)create
+        id: tag-check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          HEAD_SHA=$(git rev-parse HEAD)
+          REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')
+          # Dereference annotated tags to get the commit SHA
+          if [ -n "$REMOTE_TAG_SHA" ]; then
+            REMOTE_COMMIT_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" 2>/dev/null | awk '{print $1}' || echo "$REMOTE_TAG_SHA")
+          else
+            REMOTE_COMMIT_SHA=""
+          fi
+          if [ -n "$REMOTE_COMMIT_SHA" ] && [ "$REMOTE_COMMIT_SHA" != "$HEAD_SHA" ]; then
+            echo "Tag ${TAG} already exists and points at ${REMOTE_COMMIT_SHA}, expected the release commit ${HEAD_SHA} (a different commit was tagged)." >&2
+            exit 1
+          fi
+          if [ -n "$REMOTE_TAG_SHA" ]; then
+            echo "tag_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Verify GitHub release does not already exist
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists; nothing to retry." >&2
+            exit 1
+          fi
+
+      - name: Verify headroom-lite v0.31.0 release exists
+        run: |
+          if ! gh api "repos/yehsuf/headroom-lite/releases/tags/v0.31.0" >/dev/null 2>&1; then
+            echo "headroom-lite v0.31.0 release was not found." >&2
+            exit 1
+          fi
+
+      - name: Create tag and GitHub release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          TAG="v${VERSION}"
+          if [ "${{ steps.tag-check.outputs.tag_exists }}" != "true" ]; then
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+          gh release create "$TAG" --title "$TAG" --generate-notes

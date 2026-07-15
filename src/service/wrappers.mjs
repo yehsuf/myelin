@@ -175,6 +175,36 @@ function _copilot() {
  * api.anthropic.com" regression). Keep it here, per-invocation only.
  */
 export function buildClaudeWrapper({ os, headroomPort = 8787 } = {}) {
+  if (headroomPort == null) {
+    // Compression backend disabled → NO proxy exists. Run Claude Code
+    // unproxied and ACTIVELY UNSET ANTHROPIC_BASE_URL/HEADROOM_PORT so a stale
+    // value left in the shell/global env by a prior install can never point
+    // Claude at a nonexistent proxy port.
+    const unsetVars = [...CLAUDE_FORBIDDEN_ENV, 'ANTHROPIC_BASE_URL', 'HEADROOM_PORT'];
+    if (os === 'windows') {
+      const savedLines = unsetVars
+        .map(k => `  $saved_${k} = $env:${k}\n  $env:${k} = $null`)
+        .join('\n');
+      const restoreLines = unsetVars
+        .map(k => `  $env:${k} = $saved_${k}`)
+        .join('\n');
+      return `# _claude: compression backend disabled — runs Claude Code unproxied.
+# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT so a stray global value can
+# never point Claude at a nonexistent proxy port.
+function global:_claude {
+${savedLines}
+  & claude @args
+${restoreLines}
+}`;
+    }
+    const unsetFlags = unsetVars.map(k => `-u ${k}`).join(' ');
+    return `# _claude: compression backend disabled — runs Claude Code unproxied.
+# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT (via env -u ...) so a stray
+# global value can never point Claude at a nonexistent proxy port.
+function _claude() {
+  env ${unsetFlags} claude "$@"
+}`;
+  }
   if (os === 'windows') {
     const savedLines = CLAUDE_FORBIDDEN_ENV
       .map(k => `  $saved_${k} = $env:${k}\n  $env:${k} = $null`)

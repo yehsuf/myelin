@@ -4,20 +4,56 @@ export function selectedEngine(config = {}) {
   return config?.proxy?.engine === 'headroom_lite' ? 'headroom_lite' : 'headroom';
 }
 
+/**
+ * Canonical `compression.backend: disabled` (the single source of truth, always
+ * populated by config/reader.mjs on load) means: run NO engine service. This is
+ * distinct from the softer legacy `proxy.compression.enabled: false`, which only
+ * disables MITM compression + the dedicated Copilot proxy while the primary
+ * engine keeps running. Keyed on the canonical field so raw proxy-only configs
+ * (which never carry a `compression` block) preserve the legacy primary-only
+ * behavior.
+ */
+export function isCompressionDisabled(config = {}) {
+  return config?.compression?.backend === 'disabled';
+}
+
 export function selectedEnginePort(config = {}) {
-  return selectedEngine(config) === 'headroom_lite'
-    ? (config?.proxy?.headroom_lite?.port ?? 8790)
+  // compression.port is the canonical single shared port — it wins when explicitly set.
+  // Falls back to the per-engine legacy alias for raw configs that haven't gone through
+  // loadConfig's projection. Default for both engines is 8787; the old headroom-lite
+  // default of 8790 is retired in favour of the shared port.
+  if (config?.compression?.port != null) return config.compression.port;
+  const engine = selectedEngine(config);
+  return engine === 'headroom_lite'
+    ? (config?.proxy?.headroom_lite?.port ?? 8787)
     : (config?.proxy?.headroom?.port ?? 8787);
 }
 
 export function buildServiceEnginePlan(config = {}) {
   const engine = selectedEngine(config);
   const headroomPort = config?.proxy?.headroom?.port ?? 8787;
-  const headroomLitePort = config?.proxy?.headroom_lite?.port ?? 8790;
+  const headroomLitePort = config?.proxy?.headroom_lite?.port ?? 8787;
+
+  if (isCompressionDisabled(config)) {
+    return {
+      selectedEngine: 'disabled',
+      // Nominal port of the engine that WOULD run; kept valid so downstream
+      // MITM env stays a real number even though no engine service runs
+      // (compression is off, so the addon never calls this port).
+      // Nominal port of the engine that WOULD run; kept valid so downstream
+      // MITM env stays a real number even though no engine service runs.
+      // Uses the same canonical resolution as selectedEnginePort.
+      selectedPort: selectedEnginePort(config),
+      headroomPort,
+      headroomLitePort,
+      shouldRunManagedHeadroom: false,
+      shouldRemoveManagedHeadroom: true,
+    };
+  }
 
   return {
     selectedEngine: engine,
-    selectedPort: engine === 'headroom_lite' ? headroomLitePort : headroomPort,
+    selectedPort: selectedEnginePort(config),
     headroomPort,
     headroomLitePort,
     shouldRunManagedHeadroom: engine === 'headroom',
@@ -82,6 +118,9 @@ export function buildEngineInstancePlan(config = {}, {
   os = detectOS(),
   defaultWindowsHomeImpl = defaultWindowsHome,
 } = {}) {
+  if (isCompressionDisabled(config)) {
+    return { engine: 'disabled', instances: [] };
+  }
   const engine = selectedEngine(config);
   const descriptorHome = os === 'windows' ? defaultWindowsHomeImpl(home) : home;
   const root = managedPaths({

@@ -33,12 +33,42 @@ describe('buildServiceEnginePlan', () => {
 
     assert.deepEqual(plan, {
       selectedEngine: 'headroom_lite',
+      // explicit proxy.headroom_lite.port: 8790 is honored as a legacy alias;
+      // with default config (no explicit port) selectedPort defaults to 8787.
       selectedPort: 8790,
       headroomPort: 8787,
       headroomLitePort: 8790,
       shouldRunManagedHeadroom: false,
       shouldRemoveManagedHeadroom: true,
     });
+  });
+
+  it('selectedPort is always the canonical compression.port regardless of engine', () => {
+    // Core invariant from the owner requirement: single shared port for both engines.
+    // Neither engine change nor per-engine legacy alias changes the active service port.
+    assert.equal(
+      buildServiceEnginePlan({}).selectedPort,
+      8787,
+      'default config → 8787',
+    );
+    assert.equal(
+      buildServiceEnginePlan({ proxy: { engine: 'headroom_lite' } }).selectedPort,
+      8787,
+      'headroom-lite with no explicit compression.port → still 8787',
+    );
+    assert.equal(
+      buildServiceEnginePlan({ compression: { port: 9090 } }).selectedPort,
+      9090,
+      'explicit compression.port overrides default',
+    );
+    assert.equal(
+      buildServiceEnginePlan({
+        compression: { port: 9090 },
+        proxy: { engine: 'headroom_lite', headroom_lite: { port: 8790 } },
+      }).selectedPort,
+      9090,
+      'compression.port wins over legacy per-engine port',
+    );
   });
 });
 
