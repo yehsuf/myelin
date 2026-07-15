@@ -375,9 +375,21 @@ function fsyncDirectory(fs, path, platform) {
   }
 }
 
+function fsyncFile(fs, path, platform) {
+  try {
+    fsyncPath(fs, path);
+  } catch (error) {
+    // Windows: fsync on a read-only file descriptor (opened with 'r') returns EPERM.
+    // POSIX systems allow fsync on read-only fds; Windows does not. Skip silently
+    // so lock creation (createLock → fsyncFile(owner.json)) doesn't fail on Windows.
+    if (isWindows(platform) && ['EACCES', 'EPERM'].includes(error?.code)) return;
+    throw error;
+  }
+}
+
 function normalizeDurability(fs, durability, platform) {
   return {
-    fsyncFile: durability?.fsyncFile ?? ((path) => fsyncPath(fs, path)),
+    fsyncFile: durability?.fsyncFile ?? ((path) => fsyncFile(fs, path, platform)),
     fsyncDirectory: durability?.fsyncDirectory ?? ((path) => fsyncDirectory(fs, path, platform)),
   };
 }
