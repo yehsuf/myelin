@@ -326,7 +326,7 @@ Controls how much memory the indexing layer uses. Determines which LSP servers a
 
 **What you lose from `full`:** Memory. A `default` → `full` switch on a TypeScript project might cost +400MB (tsserver) or +1-3GB (rust-analyzer). Your laptop will notice.
 
-**Tip:** Use `myelin status` to see current RAM usage per LSP. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
+**Tip:** Use `myelin stats` to see current RAM usage per LSP. Use `full` for your primary project, `light` for quick scripts or unfamiliar repos.
 
 ```bash
 myelin config set index_tier light    # reduce memory pressure
@@ -383,11 +383,7 @@ myelin config set index_tier full     # maximum code intelligence
 
 **What you gain when enabled:** Trait resolution, lifetime analysis, macro expansion, precise `find_referencing_symbols` that understands Rust's ownership model. For Rust development this is transformative.
 
-**How to enable only for Rust projects:**
-```bash
-cd my-rust-project
-myelin init --enable-lsp rust   # enables rust only for this repo
-```
+**How to enable it:** `code_discovery.serena.lsp.rust` is a single global setting in `~/.myelin/config.yaml` — there is currently no per-project override.
 
 ```yaml
 code_discovery:
@@ -597,7 +593,7 @@ These flags control Myelin's own deterministic compression helpers — native re
 
 **What you gain:** The hooks are the difference between theoretical savings and actual savings. Without enforcement, agents default to `cat file.py` because it's the path of least resistance. The hooks make the efficient path the only path.
 
-**What you lose:** Occasional friction when you explicitly WANT raw output. Override with `myelin hooks disable --for-session` to disable enforcement for one session without changing config permanently.
+**What you lose:** Occasional friction when you explicitly WANT raw output. There is currently no per-session override command — disable a specific `output_style.*` key in `~/.myelin/config.yaml` and re-run `myelin install` to change enforcement persistently.
 
 **Windows compatibility:** All hooks are Node.js `.mjs` files — not bash. They work identically on Windows, macOS, and Linux.
 
@@ -797,7 +793,7 @@ myelin install --copilot-only
 ```bash
 myelin config reset                # restores defaults (backs up current config)
 myelin verify                      # confirms stack is healthy
-myelin stats --last-session        # sanity check savings are working
+myelin stats                       # sanity check savings are working
 ```
 
 ---
