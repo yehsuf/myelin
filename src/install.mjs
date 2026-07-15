@@ -32,7 +32,7 @@ import {
 import { renderManagedBlock } from './config/instruction-snippets.mjs';
 import { writeManagedSection } from './config/managed-section.mjs';
 import { ensureUv } from './tools/uv.mjs';
-import { installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
+import { HEADROOM_AI_SPEC, installHeadroom, waitForHeadroom, headroomBinPath } from './tools/headroom.mjs';
 import { installRtk, getRtkVersionWarning, runRtkInit, ensureSafeRtkCopilotHook } from './tools/rtk.mjs';
 import {
   installService,
@@ -2321,7 +2321,7 @@ async function main() {
       ensureManagedVenv(venv);
       // execFileSync passes the spec as a literal argv element, so the `[all]`
       // extras marker is never shell-globbed on any platform — no per-OS quoting.
-      installPipPackageInManagedVenv(venv, 'headroom-ai[all]');
+      installPipPackageInManagedVenv(venv, HEADROOM_AI_SPEC);
       ok('headroom installed (headroom-ai from PyPI)');
     } else {
       skip(`headroom (${tools.headroom.version})`);

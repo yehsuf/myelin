@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { DEFAULT_CONFIG_PATH, readUserConfig } from '../config/reader.mjs';
 import { DEFAULT_CONFIG, listUnknownKeyPaths } from '../config/schema.mjs';
+import { HEADROOM_AI_SPEC } from '../tools/headroom.mjs';
 import { stageMainRuntime } from '../runtime/stage-main.mjs';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
 import { managedHeadroomPidPath } from '../service/windows.mjs';
@@ -29,8 +30,8 @@ function upgradeCommands(os, { home = homedir(), env = process.env } = {}) {
     headroom: {
       upgrade: {
         file: 'uv',
-        args: ['pip', 'install', '--python', venv, '--upgrade', 'headroom-ai[all]'],
-        display: `uv pip install --python "${venv}" --upgrade "headroom-ai[all]"`,
+        args: ['pip', 'install', '--python', venv, HEADROOM_AI_SPEC],
+        display: `uv pip install --python "${venv}" "${HEADROOM_AI_SPEC}"`,
       },
     },
     // serena installed via uv tool as 'serena-agent'
