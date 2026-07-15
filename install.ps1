@@ -83,12 +83,10 @@ function Stage-MainRuntime {
 
     try {
         Write-Host "[myelin] Staging main runtime..."
-        # Redirect stdout+stderr to Write-Host so git progress is visible but
-        # does NOT enter the PowerShell pipeline (which would pollute the return value).
-        git clone --depth 1 --branch main $RepoUrl $stageDir 2>&1 | Write-Host
+        git clone --depth 1 --branch main $RepoUrl $stageDir
         if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
 
-        $commit = (git -C $stageDir rev-parse --short=12 HEAD 2>&1).Trim()
+        $commit = (git -C $stageDir rev-parse --short=12 HEAD).Trim()
         if ($LASTEXITCODE -ne 0) { throw "git rev-parse failed" }
 
         $releaseId = "main-$commit"
@@ -113,10 +111,10 @@ function Stage-MainRuntime {
 
         Push-Location $stageDir
         try {
-            npm ci --ignore-scripts 2>&1 | Write-Host
+            npm ci --ignore-scripts
             if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
 
-            node --check src/cli/index.mjs 2>&1 | Write-Host
+            node --check src/cli/index.mjs
             if ($LASTEXITCODE -ne 0) { throw "node --check failed" }
         } finally {
             Pop-Location
