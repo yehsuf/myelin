@@ -1823,7 +1823,8 @@ describe('managed release store', { concurrency: false }, () => {
     const posixLauncher = readFileSync(posixResult.launcher, 'utf8');
 
     assert.match(posixLauncher, /current\/bin\/myelin/);
-    assert.match(posixLauncher, /exec node "\$entry" "\$@"/);
+    assert.match(posixLauncher, /exec "\$entry" "\$@"/);
+    assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use node to run the shell wrapper
 
     const windowsHome = join(root, 'home & still-safe');
     const windowsResult = installStableLauncher({

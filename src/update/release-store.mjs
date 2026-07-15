@@ -9,7 +9,9 @@ import { gunzipSync } from 'node:zlib';
 
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 const STABLE_RELEASE_ID = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
-const MAIN_RELEASE_ID = /^main-[0-9a-f]{40}$/iu;
+// Accept 7–40 hex chars: new activations use full 40-char SHAs; short SHAs
+// (7–12 chars) remain valid for existing release IDs created by earlier code.
+const MAIN_RELEASE_ID = /^main-[0-9a-f]{7,40}$/iu;
 
 function releaseStoreError(message, code, cause) {
   const error = cause === undefined ? new Error(message) : new Error(message, { cause });
@@ -1227,7 +1229,7 @@ if [ ! -f "$entry" ]; then
   printf '%s\\n' 'No managed Myelin release is active. Run: myelin update --channel main' >&2
   exit 1
 fi
-exec node "$entry" "$@"
+exec "$entry" "$@"
 `;
 }
 

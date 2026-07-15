@@ -7,7 +7,7 @@ import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
 import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
-const LABEL      = 'com.myelin.headroom';
+const LABEL      = 'com.myelin.compression';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 const WATCHDOG_LABEL = 'com.myelin.watchdog';
 const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';

@@ -278,6 +278,7 @@ describe('fenced update execution', { concurrency: false }, () => {
       },
     });
     deps.detectInstalled = async () => ({});
+    deps.isComponentStaged = async () => false; // always re-stage in this test
 
     const result = await runUpdate({ channel: 'stable' }, deps);
 
