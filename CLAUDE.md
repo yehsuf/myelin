@@ -7,9 +7,10 @@ Node.js ESM, Commander.js, TDD (`node --test`), feature-branch → PR git workfl
 
 ## Test machines
 
-### Mac (primary dev — this machine)
+### Mac (reference checkout — stays on clean `main`)
 ```
-~/tokenstack/          # repo
+~/tokenstack/          # reference clone ONLY — never edit or run experiments here.
+                       # All work happens in a ~/myelin-agents/<agent>/ worktree.
 myelin verify          # health check
 npm test               # 272 tests
 ```
@@ -20,7 +21,7 @@ ssh -i ~/.ssh/myelin_windows_ed25519 -o IdentitiesOnly=yes yehsuf@yeh-legion.loc
 # Repo on Windows:      C:\Users\yehsuf\.myelin\repo
 # myelin bin resolves to: ~/.myelin/repo (npm-linked)
 # Verify: ssh then: myelin verify
-# Pull latest: myelin update --self
+# Pull latest: myelin update
 ```
 
 ### Linux (`muc-lhvsuz`)
@@ -28,7 +29,7 @@ ssh -i ~/.ssh/myelin_windows_ed25519 -o IdentitiesOnly=yes yehsuf@yeh-legion.loc
 ssh muc-lhvsuz          # uses ~/.ssh/config entry (ysufrin, internal key)
 # Full host: muc-lhvsuz.munich.corp.akamai.com
 # Repo: ~/.myelin/repo
-# Pull latest: myelin update --self
+# Pull latest: myelin update
 ```
 
 ---
@@ -159,8 +160,9 @@ node --test test/specific.test.mjs             # single file
 node src/install.mjs --yes                     # install/update all services
 myelin verify                                   # health check all services
 myelin config show                              # current config
-myelin update                                   # upgrade tools (uv, headroom, serena, semble…)
-myelin update --self [--force]                  # self-update from origin/main
+myelin update                                   # update managed runtime + tools (uv, headroom, serena, semble…)
+myelin update --check                           # preview external-tool updates without staging/activating
+myelin update --download-only                   # stage + validate latest release without activating it
 ```
 
 ---
