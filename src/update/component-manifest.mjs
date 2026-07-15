@@ -199,6 +199,7 @@ const RELEASED_COMPONENTS = {
   },
   winsw: {
     kind: 'github-binary',
+    platforms: ['win32'],
     repository: 'winsw/winsw',
     version: '3.0.0-alpha.11',
     ref: 'v3.0.0-alpha.11',

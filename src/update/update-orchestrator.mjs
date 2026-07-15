@@ -895,12 +895,15 @@ export function updatePaths(home = homedir()) {
   };
 }
 
-function selectedComponentEntries(manifest, backend) {
+function selectedComponentEntries(manifest, backend, platform = process.platform) {
   return Object.entries(manifest)
-    .filter(([name]) => {
-      if (backend === 'headroom-lite') return name !== 'headroomOriginal';
-      if (backend === 'headroom-original') return name !== 'headroomLite';
-      return !BACKEND_COMPONENT_NAMES.has(name);
+    .filter(([name, component]) => {
+      if (backend === 'headroom-lite' && name === 'headroomOriginal') return false;
+      if (backend === 'headroom-original' && name === 'headroomLite') return false;
+      if (backend !== 'headroom-lite' && backend !== 'headroom-original' && BACKEND_COMPONENT_NAMES.has(name)) return false;
+      // Skip platform-restricted components when they don't apply to the current platform
+      if (Array.isArray(component?.platforms) && !component.platforms.includes(platform)) return false;
+      return true;
     })
     .sort(([left], [right]) => left.localeCompare(right));
 }
@@ -938,6 +941,7 @@ export function planUpdate({
   manifest = COMPONENTS,
   installed = {},
   target,
+  platform = process.platform,
 } = {}) {
   validateChannel(channel);
   if (typeof manifest !== 'object' || manifest === null || Array.isArray(manifest)) {
@@ -948,7 +952,7 @@ export function planUpdate({
   }
   const selected = resolveCompressionConfig(config);
   const releaseBefore = installedReleasePair(installed);
-  const components = selectedComponentEntries(manifest, selected.backend).map(([name, component]) => {
+  const components = selectedComponentEntries(manifest, selected.backend, platform).map(([name, component]) => {
     const before = installedPair(installed, name);
     return {
       name,
