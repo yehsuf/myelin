@@ -46,7 +46,7 @@ export function commitMore(dir) {
 }
 
 export function pushTag(dir, tag) {
-  execFileSync('git', ['-C', dir, 'tag', tag]);
+  execFileSync('git', ['-C', dir, 'tag', '-m', tag, tag]);
   execFileSync('git', ['-C', dir, 'push', '--quiet', 'origin', tag]);
 }
 

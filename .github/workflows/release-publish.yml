@@ -73,8 +73,14 @@ jobs:
           TAG="v${VERSION}"
           HEAD_SHA=$(git rev-parse HEAD)
           REMOTE_TAG_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}')
-          if [ -n "$REMOTE_TAG_SHA" ] && [ "$REMOTE_TAG_SHA" != "$HEAD_SHA" ]; then
-            echo "Tag ${TAG} already exists and points at ${REMOTE_TAG_SHA}, expected the release commit ${HEAD_SHA} (a different commit was tagged)." >&2
+          # Dereference annotated tags to get the commit SHA
+          if [ -n "$REMOTE_TAG_SHA" ]; then
+            REMOTE_COMMIT_SHA=$(git ls-remote --tags origin "refs/tags/${TAG}^{}" 2>/dev/null | awk '{print $1}' || echo "$REMOTE_TAG_SHA")
+          else
+            REMOTE_COMMIT_SHA=""
+          fi
+          if [ -n "$REMOTE_COMMIT_SHA" ] && [ "$REMOTE_COMMIT_SHA" != "$HEAD_SHA" ]; then
+            echo "Tag ${TAG} already exists and points at ${REMOTE_COMMIT_SHA}, expected the release commit ${HEAD_SHA} (a different commit was tagged)." >&2
             exit 1
           fi
           if [ -n "$REMOTE_TAG_SHA" ]; then
