@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { installCopilotSkills } from '../src/install.mjs';
 import {
   applyServiceEngineInstallPlan,
   applyMitmServiceInstallPlan,
@@ -1547,5 +1548,68 @@ describe('buildHeadroomStopExec — MYELIN_DIR-derived headroomBin injection saf
     try { execFileSync(file, args, { stdio: 'pipe' }); } catch { /* lsof/no match is fine */ }
     const { existsSync } = await import('node:fs');
     assert.ok(!existsSync(marker), 'command substitution in the bin path must NOT execute');
+  });
+});
+
+describe('installCopilotSkills', () => {
+  it('creates myelin-compact SKILL.md + symlink on POSIX', () => {
+    const created = []; const links = [];
+    installCopilotSkills({
+      home: '/home/t', copilot: true, repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: (p, c) => created.push([p, c]),
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: () => {},
+      unlinkSyncImpl: () => {},
+    });
+    const skill = created.find(([p]) => p.includes('myelin-compact') && p.endsWith('SKILL.md'));
+    assert.ok(skill, 'myelin-compact SKILL.md must be created');
+    assert.ok(skill[1].includes('name: myelin-compact'), 'SKILL.md name field correct');
+    const link = links.find(([, d]) => d.includes('compact-prepare.mjs'));
+    assert.ok(link, 'compact-prepare.mjs symlink must be created');
+    assert.ok(link[0].includes('compact-prepare.mjs'), `src must point to script: ${link[0]}`);
+    assert.ok(!link[0].includes('~/tokenstack'), 'must NOT hardcode ~/tokenstack');
+  });
+
+  it('creates myelin-constitution SKILL.md with managed runtime path', () => {
+    const created = [];
+    installCopilotSkills({
+      home: '/home/t', copilot: true, repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: (p, c) => created.push([p, c]),
+      symlinkSyncImpl: () => {}, copyFileSyncImpl: () => {}, unlinkSyncImpl: () => {},
+    });
+    const skill = created.find(([p]) => p.includes('myelin-constitution') && p.endsWith('SKILL.md'));
+    assert.ok(skill, 'myelin-constitution SKILL.md must be created');
+    assert.ok(skill[1].includes('/home/t/.myelin/bin/myelin'), 'must embed managed runtime path');
+    assert.ok(!skill[1].includes('~/tokenstack'), 'must NOT hardcode ~/tokenstack');
+  });
+
+  it('copies compact-prepare.mjs on Windows instead of symlinking', () => {
+    const copies = []; const links = [];
+    installCopilotSkills({
+      home: 'C:\\Users\\t', copilot: true, repoRoot: 'C:\\Users\\t\\.myelin\\repo', os: 'windows',
+      managedRuntimeCommandPath: 'C:\\Users\\t\\.myelin\\bin\\myelin.cmd',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: (s, d) => copies.push([s, d]),
+      unlinkSyncImpl: () => {},
+    });
+    assert.ok(copies.some(([s]) => s.includes('compact-prepare.mjs')), 'must copy on Windows');
+    assert.ok(!links.some(([, d]) => d.includes('compact-prepare.mjs')), 'must NOT symlink on Windows');
+  });
+
+  it('skips all skills when copilot=false', () => {
+    const created = [];
+    installCopilotSkills({
+      home: '/home/t', copilot: false, repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
+      mkdirSyncImpl: () => {}, writeFileSyncImpl: (p, c) => created.push([p, c]),
+      symlinkSyncImpl: () => {}, copyFileSyncImpl: () => {}, unlinkSyncImpl: () => {},
+    });
+    assert.equal(created.length, 0, 'no writes when copilot=false');
   });
 });

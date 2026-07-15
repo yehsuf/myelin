@@ -6,15 +6,21 @@ const SERVICE_ID_BY_PURPOSE = Object.freeze({
 });
 
 const LEGACY_COMPRESSION_SERVICE_IDS = Object.freeze([
+  'com.myelin.compression',
   'com.myelin.headroom',
   'com.myelin.headroom-lite',
   'com.ysufrin.headroom',
+  'myelin-compression',
   'myelin-headroom',
   'myelin-headroom-lite',
   'MyelinHeadroom',
+  'MyelinCompression',
   'com.myelin.copilot-headroom',
+  'com.myelin.copilot-compression',
   'myelin-copilot-headroom',
+  'myelin-copilot-compression',
   'MyelinCopilotHeadroom',
+  'MyelinCopilotCompression',
 ]);
 
 export function legacyCompressionServiceIds() {

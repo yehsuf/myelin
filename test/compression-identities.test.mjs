@@ -42,7 +42,7 @@ describe('compression service identities', () => {
 
   it('exposes the exact allowlisted legacy identities', () => {
     const ids = legacyCompressionServiceIds();
-    assert.ok(ids.includes('com.myelin.headroom'));
+    assert.ok(ids.includes('com.myelin.compression'));
     assert.ok(ids.includes('myelin-headroom-lite'));
     // returns a fresh copy each call (no shared mutable state)
     ids.push('mutated');

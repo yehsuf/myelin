@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -1511,7 +1511,174 @@ export function mitmAddonPath(home) {
 }
 
 /**
- * Write a serena MCP wrapper script that detects the git root from CWD at spawn time.
+ * Install myelin Copilot skills (myelin-compact, myelin-constitution) into
+ * ~/.copilot/skills/. Idempotent — safe to call on every `myelin install`.
+ *
+ * Each skill gets a SKILL.md and, where applicable, a companion script symlink
+ * (POSIX) or copy (Windows — symlinks need developer mode or admin rights).
+ *
+ * @param {object} opts
+ * @param {string}   opts.home                    - User home directory
+ * @param {boolean}  opts.copilot                 - Whether Copilot CLI is installed
+ * @param {string}   opts.repoRoot                - Absolute path to myelin repo root (trailing sep)
+ * @param {string}   opts.managedRuntimeCommandPath - Absolute path to the `myelin` binary
+ * @param {string}   opts.os                      - 'darwin' | 'linux' | 'windows'
+ * @param {Function} [opts.mkdirSyncImpl]
+ * @param {Function} [opts.writeFileSyncImpl]
+ * @param {Function} [opts.symlinkSyncImpl]
+ * @param {Function} [opts.copyFileSyncImpl]
+ * @param {Function} [opts.unlinkSyncImpl]
+ */
+export function installCopilotSkills({
+  home,
+  copilot,
+  repoRoot,
+  managedRuntimeCommandPath,
+  os,
+  mkdirSyncImpl = mkdirSync,
+  writeFileSyncImpl = writeFileSync,
+  symlinkSyncImpl = symlinkSync,
+  copyFileSyncImpl = copyFileSync,
+  unlinkSyncImpl = unlinkSync,
+} = {}) {
+  if (!copilot) return;
+
+  const skillsDir = join(home, '.copilot', 'skills');
+
+  // ── myelin-compact ──────────────────────────────────────────────────────────
+  // compact-prepare.mjs lives in the repo; the SKILL.md references it via the
+  // skill directory so the path is always ~/.copilot/skills/myelin-compact/…
+  // (environment-agnostic). On POSIX we symlink so repo updates are reflected
+  // immediately; on Windows we copy (symlinks need developer-mode/admin).
+  {
+    const dir = join(skillsDir, 'myelin-compact');
+    mkdirSyncImpl(dir, { recursive: true });
+    writeFileSyncImpl(join(dir, 'SKILL.md'), COMPACT_SKILL_MD);
+    const src = join(repoRoot.replace(/[\\/]$/, ''), 'src', 'cli', 'compact-prepare.mjs');
+    const dst = join(dir, 'compact-prepare.mjs');
+    if (os === 'windows') {
+      copyFileSyncImpl(src, dst);
+    } else {
+      try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
+      symlinkSyncImpl(src, dst);
+    }
+  }
+
+  // ── myelin-constitution ──────────────────────────────────────────────────────
+  // The SKILL.md instructs the agent to run `myelin constitution <cmd>` using
+  // the managed runtime binary — never a hardcoded ~/tokenstack path.
+  {
+    const dir = join(skillsDir, 'myelin-constitution');
+    mkdirSyncImpl(dir, { recursive: true });
+    writeFileSyncImpl(join(dir, 'SKILL.md'), constitutionSkillMd(managedRuntimeCommandPath));
+  }
+}
+
+/** SKILL.md content for myelin-compact (environment-independent). */
+const COMPACT_SKILL_MD = `---
+name: myelin-compact
+description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
+argument-hint: "[prepare|resume] — prepare before /compact, resume after (post-compact)"
+---
+
+# compact — generic /compact pipeline
+
+Generates a ready-to-paste \`/compact\` hint from live session state. No project-specific hardcoding — works in any repo.
+
+## When to use
+- Context is getting long and \`/compact\` is imminent → invoke with \`prepare\`
+- Immediately after \`/compact\` completes → invoke with \`resume\`
+
+## Instructions for the agent
+
+Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`prepare\` or \`resume\`.
+
+### Mode: prepare
+
+1. Export current todos to a file so the script can read them:
+   \`\`\`sql
+   SELECT id, title, COALESCE(description,'') AS description, status, updated_at
+   FROM todos
+   WHERE status IN ('in_progress','pending','blocked')
+   ORDER BY CASE status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC
+   \`\`\`
+   Write the JSON result to \`~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/todos.json\`.
+
+2. Run:
+   \`\`\`bash
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
+   \`\`\`
+
+3. Print the full script output verbatim.
+
+4. **YOU (the agent) now compose the actual compact hint** using the \`<<<SESSION_STATE_BRIEF>>>\` block as source of truth. Maximum 4000 characters total.
+
+5. Print the hint between \`>>> COMPACT HINT >>>\` and \`<<< END COMPACT HINT <<<\` sentinels.
+
+6. Tell the user to paste it after \`/compact \` in the next message.
+
+7. Do NOT run \`/compact\` yourself.
+
+### Mode: resume
+
+1. Run:
+   \`\`\`bash
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
+   \`\`\`
+2. Print the output verbatim.
+3. In ≤3 lines, state the top priority.
+
+## Error handling
+- Exit 2: tell user "Run this inside an active Copilot CLI session."
+- \`sqlite3\` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
+`;
+
+/** SKILL.md content for myelin-constitution (uses managed runtime path). */
+function constitutionSkillMd(cliPath) {
+  return `---
+name: myelin-constitution
+description: Loads, checks, and manages the project constitution (.github/copilot-instructions.md). Run at session start or after /compact to ensure project invariants are active.
+argument-hint: "[show|check|init]"
+---
+
+# myelin-constitution
+
+Manages the project constitution — a stable, cached \`.github/copilot-instructions.md\` file that Copilot CLI reads natively at every session start.
+
+## When to use
+- Start of a new session → run with \`show\` to confirm constitution is present and current
+- After \`/compact\` → run \`show\` to confirm it's active
+- When a durable decision is made → propose \`myelin constitution append <section> "<rule>"\`
+
+## Instructions for the agent
+
+Let \`$CMD\` = first token of \`$ARGUMENTS\`, default \`show\`.
+
+### show
+Run: \`"${cliPath}" constitution show\`
+Print output. Confirm: "Constitution active: <name> sha256=<first8>…"
+
+### check
+Run: \`"${cliPath}" constitution check\`
+Print output. If errors: tell user what to fix.
+
+### init
+Run: \`"${cliPath}" constitution init\`
+Print output. Tell user to edit \`.github/copilot-instructions.md\` and commit it.
+
+### append
+Syntax: \`append <section> <bullet>\`
+Run: \`"${cliPath}" constitution append "<section>" "<bullet>"\`
+Ask user to commit the change.
+
+## What belongs in the constitution (stable only)
+✅ Architecture invariants · Standing rules · Technology stack · Key file map
+❌ Blocked items · Shipped work · PR numbers · Branch names
+`;
+}
+
+
+/**
  * Solves Copilot launching MCP servers from a generic CWD instead of the project dir.
  */
 function writeSerenaWrapper(home, serenaBin) {
@@ -3061,6 +3228,15 @@ ${initSkillBody}`);
       ok('~/.claude/commands/myelin/init.md (invoke: /myelin:init)');
     }
   }
+
+  // Myelin skills — myelin-compact and myelin-constitution
+  installCopilotSkills({
+    home,
+    copilot,
+    repoRoot: runtimeBridge.root,
+    managedRuntimeCommandPath: managedRuntime.commandPath,
+    os,
+  });
 
   // Shell profile
   const profilePath = shellProfilePath(os, shell);

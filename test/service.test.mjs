@@ -561,7 +561,7 @@ describe('engine instance service generators', () => {
       const instance = engineInstance(engine, role);
       const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : HEADROOM_LITE_FIXTURE.entrypoint;
       const expectedWindowsBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
-      const expectedLabel = role === 'primary' ? 'com.myelin.headroom' : 'com.myelin.copilot-headroom';
+      const expectedLabel = role === 'primary' ? 'com.myelin.compression' : 'com.myelin.copilot-headroom';
       const expectedServiceId = role === 'primary' ? 'myelin-headroom' : 'myelin-copilot-headroom';
       const expectedWindowsServiceId = instance.id;
       const expectedWindowsRunKey = `Myelin${instance.id.split(/[-_]/u)
@@ -1162,7 +1162,7 @@ describe('generateLaunchdWatchdogScript', () => {
 describe('launchd plist generator', () => {
   it('contains the label', () => {
     const xml = generatePlist(OPTS);
-    assert.ok(xml.includes('com.myelin.headroom'));
+    assert.ok(xml.includes('com.myelin.compression'));
   });
   it('contains the binary path', () => {
     const xml = generatePlist(OPTS);
