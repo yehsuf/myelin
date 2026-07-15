@@ -1,6 +1,6 @@
 {
   "name": "myelin",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
   "description": "Token-efficient AI workspace installer and manager",
   "bin": {
