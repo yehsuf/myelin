@@ -851,27 +851,14 @@ function isWindows(platform) {
   return platform === 'win32' || platform === 'windows';
 }
 
-function quoteCmdArgument(value) {
-  if (
-    typeof value !== 'string'
-    || value.includes('\0')
-    || value.includes('"')
-    || value.includes('%')
-    || value.includes('!')
-    || value.includes('\r')
-    || value.includes('\n')
-  ) {
-    throw new TypeError('Windows junction paths contain a CMD metacharacter that cannot be safely quoted.');
-  }
-  return `"${value}"`;
-}
-
-function createWindowsJunction(pointer, target, runCommand) {
-  const command = `mklink /J ${quoteCmdArgument(pointer)} ${quoteCmdArgument(target)}`;
-  runCommand('cmd', ['/d', '/s', '/c', command], {
-    stdio: 'ignore',
-    windowsHide: true,
-  });
+function createWindowsJunction(pointer, target, _runCommand) {
+  // Use Node.js native junction support instead of `cmd /c mklink /J`.
+  // execFileSync('cmd', ['/d', '/s', '/c', 'mklink /J "p1" "p2"']) fails on
+  // Windows because Node wraps the 4th argument in its own quotes when building
+  // the Win32 command line, mangling the inner double-quotes that mklink needs.
+  // fs.symlinkSync with type='junction' uses the Windows API directly and has
+  // no quoting issues. Directory junctions do not require elevated privileges.
+  nodeFs.symlinkSync(target, pointer, 'junction');
 }
 
 function createTemporaryPointer(options, pointer, version) {

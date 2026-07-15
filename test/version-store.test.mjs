@@ -279,14 +279,12 @@ describe('versioned component store', { concurrency: false }, () => {
     });
   });
 
-  it('uses an injected cmd junction command for Windows pointers', () => {
+  it('uses native fs.symlinkSync for Windows junction pointers (runCommand not called)', () => {
     const root = makeRoot();
-    const target = createVersion(root, 'rtk', '0.44.0');
-    const temporaryPointer = join(root, 'rtk', 'current.new');
+    createVersion(root, 'rtk', '0.44.0');
     const commands = [];
     const runCommand = (command, commandArguments) => {
       commands.push({ command, arguments: commandArguments });
-      symlinkSync(target, temporaryPointer, 'dir');
     };
 
     activateComponent({
@@ -298,15 +296,8 @@ describe('versioned component store', { concurrency: false }, () => {
       durability: noOpDurability(),
     });
 
-    assert.deepEqual(commands, [{
-      command: 'cmd',
-      arguments: [
-        '/d',
-        '/s',
-        '/c',
-        `mklink /J "${temporaryPointer}" "${target}"`,
-      ],
-    }]);
+    // Junction is created via fs.symlinkSync — cmd.exe is never invoked
+    assert.deepEqual(commands, []);
     assert.deepEqual(readPointers(root, 'rtk', { durability: noOpDurability() }), { current: '0.44.0', previous: null });
   });
 
@@ -902,11 +893,10 @@ describe('versioned component store', { concurrency: false }, () => {
     assert.equal(lstatSync(activeDirectory).isDirectory(), true);
   });
 
-  it('uses one safely quoted cmd command string for junction paths with spaces and metacharacters', () => {
+  it('creates Windows junction via native fs.symlinkSync (no cmd.exe)', () => {
     const root = makeRoot();
     const commandRoot = join(root, 'component root & more');
-    const target = createVersion(commandRoot, 'rtk', '0.44.0');
-    const pointer = join(commandRoot, 'rtk', 'current.new');
+    createVersion(commandRoot, 'rtk', '0.44.0');
     const commands = [];
 
     activateComponent({
@@ -915,42 +905,36 @@ describe('versioned component store', { concurrency: false }, () => {
       version: '0.44.0',
       platform: 'win32',
       runCommand(command, arguments_) {
+        // runCommand must NOT be called — junction now uses fs.symlinkSync directly
         commands.push({ command, arguments: arguments_ });
-        symlinkSync(target, pointer, 'dir');
       },
       durability: noOpDurability(),
     });
 
-    assert.deepEqual(commands, [{
-      command: 'cmd',
-      arguments: [
-        '/d',
-        '/s',
-        '/c',
-        `mklink /J "${pointer}" "${target}"`,
-      ],
-    }]);
+    // No cmd.exe invocation — native fs handles it
+    assert.deepEqual(commands, []);
+    // After activation, pointer is renamed from current.new → current
+    assert.ok(existsSync(join(commandRoot, 'rtk', 'current')), 'expected current pointer');
   });
 
-  it('fails closed for Windows paths containing cmd variable-expansion metacharacters', () => {
+  it('Windows paths containing former cmd metacharacters now work (no shell injection risk)', () => {
     const root = makeRoot();
     const commandRoot = join(root, 'component root %EXPANSION%');
-    const target = createVersion(commandRoot, 'rtk', '0.44.0');
-    const pointer = join(commandRoot, 'rtk', 'current.new');
+    createVersion(commandRoot, 'rtk', '0.44.0');
 
-    assert.throws(
-      () => activateComponent({
+    // Formerly threw "cmd metacharacter". Now fs.symlinkSync handles paths
+    // directly — no shell involved, no injection risk.
+    assert.doesNotThrow(() => {
+      activateComponent({
         root: commandRoot,
         name: 'rtk',
         version: '0.44.0',
         platform: 'win32',
-        runCommand() {
-          symlinkSync(target, pointer, 'dir');
-        },
         durability: noOpDurability(),
-      }),
-      /cmd.*metacharacter|safe.*cmd/i,
-    );
+      });
+    });
+    // After activation, pointer is renamed from current.new → current
+    assert.ok(existsSync(join(commandRoot, 'rtk', 'current')), 'expected current pointer');
   });
 
   it('fails closed when a component lock is already held', () => {
