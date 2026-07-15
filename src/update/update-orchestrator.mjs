@@ -1212,7 +1212,17 @@ async function stageSelectedComponents(plan, deps, context) {
     ) {
       continue;
     }
-    staged.push(await mutate(deps, context, deps.stageComponent, component));
+    const isOptional = component.component?.optional === true;
+    try {
+      staged.push(await mutate(deps, context, deps.stageComponent, component));
+    } catch (error) {
+      if (isOptional) {
+        // Optional component: log the failure but don't abort the update.
+        console.warn(`[myelin] Optional component '${component.name}' failed to stage — skipping: ${error.message}`);
+      } else {
+        throw error;
+      }
+    }
   }
   return staged;
 }
