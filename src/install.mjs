@@ -21,7 +21,7 @@ import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
-import { buildEngineInstancePlan, buildServiceEnginePlan, selectedEnginePort } from './config/engine-runtime.mjs';
+import { buildEngineInstancePlan, buildServiceEnginePlan, selectedEnginePort, isCompressionDisabled } from './config/engine-runtime.mjs';
 import { applyDisableSerenaDashboardAutoOpen } from './service/serena-config.mjs';
 import {
   installTokenOptimizerForCopilot,
@@ -136,16 +136,34 @@ export function installPipPackageInManagedVenv(venv, spec, {
 /**
  * Resolves the proxy port written into Claude/shell/wrapper env config.
  *
- * A running primary engine instance owns the port. When there is none — a
- * `compression.backend: disabled` config (or an mcp/no-headroom install where
- * no engine service runs) — the primary instance is absent, so fall back to the
- * NOMINAL canonical port from the service plan. This keeps the emitted
- * HEADROOM_PORT / ANTHROPIC_BASE_URL a real integer instead of the literal
- * string "null".
+ * A running primary engine instance owns the port. When there is none AND the
+ * backend is `disabled` there is no proxy service at all — return `null` so
+ * callers OMIT/UNSET ANTHROPIC_BASE_URL + HEADROOM_PORT and let Claude run
+ * unproxied, rather than inventing a NOMINAL port that points at a service that
+ * isn't running. For a non-disabled backend with no resolved primary instance
+ * (e.g. mid-install), fall back to the service plan's canonical port so the
+ * emitted env stays a real integer.
  */
 export function resolveProxyEnvPort(cfg = {}, primaryInstance = null) {
-  return primaryInstance?.port ?? buildServiceEnginePlan(cfg).selectedPort;
+  if (primaryInstance?.port != null) return primaryInstance.port;
+  if (isCompressionDisabled(cfg)) return null;
+  return buildServiceEnginePlan(cfg).selectedPort;
+}
 
+/**
+ * Builds the ANTHROPIC_BASE_URL + HEADROOM_PORT fragment for ~/.claude/settings.json.
+ * When `selectedProxyPort` is null (backend disabled, no proxy), both keys are
+ * emitted as `undefined` so mergeJsonFile actively STRIPS any stale value —
+ * Claude then runs unproxied instead of pointing at a nonexistent port.
+ */
+export function resolveClaudeProxyEnv(selectedProxyPort) {
+  if (selectedProxyPort == null) {
+    return { ANTHROPIC_BASE_URL: undefined, HEADROOM_PORT: undefined };
+  }
+  return {
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${selectedProxyPort}`,
+    HEADROOM_PORT: String(selectedProxyPort),
+  };
 }
 
 function isVersionAtLeast(version, minimum) {
@@ -711,7 +729,9 @@ export async function applyServiceEngineInstallPlan({
       },
       persistHeadroomFallback: false,
       selectedInstallEngine: 'disabled',
-      selectedProxyPort: servicePlan.selectedPort,
+      // No engine service runs: there is no proxy port. null signals callers to
+      // omit/unset ANTHROPIC_BASE_URL + HEADROOM_PORT (run Claude unproxied).
+      selectedProxyPort: null,
     };
   }
   const primary = resolvedPlan.instances?.find(({ role }) => role === 'primary');
@@ -2894,11 +2914,10 @@ async function main() {
   if (claudeCC) {
     mergeJsonFile(join(home, '.claude', 'settings.json'), {
       env: {
-        ANTHROPIC_BASE_URL: `http://127.0.0.1:${selectedProxyPort}`,
+        ...resolveClaudeProxyEnv(selectedProxyPort),
         ENABLE_PROMPT_CACHING_1H: '1',
         CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: '50',
         CLAUDE_CODE_SUBAGENT_MODEL: 'claude-sonnet-4-6',
-        HEADROOM_PORT: String(selectedProxyPort),
         ...sslEnv,
       },
       mcpServers: claudeMcpServers,
@@ -2924,7 +2943,7 @@ async function main() {
       provider: 'claude',
       model: installCfg.copilot?.model,
       cfg: installCfg,
-      extraSections: [`## Session\n- /compact when context > 50%. Headroom proxy on port ${selectedProxyPort}.`],
+      extraSections: [`## Session\n- /compact when context > 50%.${selectedProxyPort != null ? ` Headroom proxy on port ${selectedProxyPort}.` : ' Compression backend disabled — Claude runs unproxied.'}`],
     });
     writeManagedSection(join(home, '.claude', 'CLAUDE.md'), `\n${claudeBlock}`);
     ok('~/.claude/CLAUDE.md managed section');
@@ -3077,7 +3096,7 @@ ${initSkillBody}`);
       // NOTE: provider-specific env vars (ANTHROPIC_BASE_URL, HTTPS_PROXY) are
       // deliberately NOT set in $PROFILE — they live only inside the _copilot
       // and _claude wrappers so they can't cross-contaminate each other.
-      const psEnv = `$env:HEADROOM_PORT = "${selectedProxyPort}"`;
+      const psEnv = selectedProxyPort != null ? `$env:HEADROOM_PORT = "${selectedProxyPort}"` : '';
       // Only a genuinely relocated root persists $env:MYELIN_DIR (escaped,
       // native Windows form) so a new PowerShell session resolves the same
       // managed root the baked-in PATH points at. A default install emits none.
@@ -3088,8 +3107,11 @@ ${initSkillBody}`);
       const psPaths = renderWindowsProfilePathLines(profilePathBlock.windowsPathDirs);
       block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
-      // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below.
-      block = `\n# >>> myelin managed >>>\nexport HEADROOM_PORT=${selectedProxyPort}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below. When the
+      // backend is disabled (selectedProxyPort == null) HEADROOM_PORT is omitted
+      // entirely so nothing points at a nonexistent proxy.
+      const headroomExport = selectedProxyPort != null ? `export HEADROOM_PORT=${selectedProxyPort}` : '';
+      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
       ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
@@ -3156,7 +3178,7 @@ ${initSkillBody}`);
     const _winCfg = await loadConfig(DEFAULT_CONFIG_PATH);
     const interceptEnabled = _winCfg.proxy?.headroom?.intercept_tool_results !== false;
     const registryVars = {
-      HEADROOM_PORT: String(selectedProxyPort),
+      ...(selectedProxyPort != null ? { HEADROOM_PORT: String(selectedProxyPort) } : {}),
       // Use env var instead of --intercept-tool-results CLI flag to avoid startup hang:
       // the flag triggers ensure_tools() which downloads ast-grep and blocks in restricted networks.
       ...(interceptEnabled ? { HEADROOM_INTERCEPT_ENABLED: '1' } : {}),
@@ -3210,7 +3232,7 @@ ${initSkillBody}`);
 
   // 7. Summary
   step('[7/7] Complete! \ud83e\uddec\n' + '\u2500'.repeat(55));
-  console.log(`  Headroom port: ${selectedProxyPort}`);
+  console.log(`  Headroom port: ${selectedProxyPort ?? 'disabled (unproxied)'}`);
   console.log(`  Mitmproxy:     8888  (Copilot compression + cache)`);
   if (selectedInstallEngine === 'headroom') {
     console.log(`  Headroom:      ${headroomBinPath()}`);

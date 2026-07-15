@@ -52,4 +52,22 @@ describe('engine-selection canonical backend (PR #23)', () => {
       copilotProxy: { enabled: true, port: 8788 },
     });
   });
+
+  it('lets an explicit legacy copilot_headroom.enabled=false win over a canonical copilot_proxy.enabled=true (per-key precedence)', () => {
+    // Both keys explicitly set: the legacy per-key override wins, mirroring
+    // reader.mjs proxyAliasFor. Raw-YAML update path (no loadConfig).
+    const selection = resolveCompressionConfig({
+      compression: { backend: 'headroom-lite', copilot_proxy: { enabled: true, port: 8899 } },
+      proxy: { copilot_headroom: { enabled: false } },
+    });
+    assert.equal(selection.copilotProxy.enabled, false);
+  });
+
+  it('lets an explicit legacy copilot_headroom.enabled=true win over a canonical copilot_proxy.enabled=false', () => {
+    const selection = resolveCompressionConfig({
+      compression: { backend: 'headroom-lite', copilot_proxy: { enabled: false } },
+      proxy: { copilot_headroom: { enabled: true } },
+    });
+    assert.equal(selection.copilotProxy.enabled, true);
+  });
 });

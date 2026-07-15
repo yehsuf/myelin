@@ -9,7 +9,7 @@ import {
   buildServiceEnginePlan,
 } from '../src/config/engine-runtime.mjs';
 import { resolveMitmCompression } from '../src/config/compression-env.mjs';
-import { applyServiceEngineInstallPlan, resolveProxyEnvPort } from '../src/install.mjs';
+import { applyServiceEngineInstallPlan, resolveProxyEnvPort, resolveClaudeProxyEnv } from '../src/install.mjs';
 import { runRestart } from '../src/cli/restart.mjs';
 import { resolveCompressionConfig } from '../src/update/engine-selection.mjs';
 
@@ -144,16 +144,34 @@ describe('canonical compression.* drives the install/restart service plan', () =
     assert.equal(off.proxy.copilot_headroom.enabled, false);
   });
 
-  it('resolves a nominal canonical proxy env port when disabled has no primary instance', async () => {
-    // disabled backend => no engine instances; the Claude/shell/wrapper config
-    // must still receive a real numeric port, never null/"null".
+  it('returns null (no proxy) for a disabled backend so callers never point at a nonexistent port', async () => {
+    // disabled backend => no engine instances and NO proxy service. The
+    // Claude/shell/wrapper config must OMIT/UNSET ANTHROPIC_BASE_URL +
+    // HEADROOM_PORT and let Claude run unproxied, rather than inventing a
+    // nominal port that points at a service that isn't running.
     const cfg = await load('compression:\n  backend: disabled\n');
     const primary = primaryOf(buildEngineInstancePlan(cfg));
     assert.equal(primary, undefined);
-    const envPort = resolveProxyEnvPort(cfg, primary);
-    assert.equal(typeof envPort, 'number');
-    assert.ok(Number.isInteger(envPort) && envPort > 0, `expected a real port, got ${envPort}`);
-    assert.equal(String(envPort) === 'null', false);
+    assert.equal(resolveProxyEnvPort(cfg, primary), null);
+  });
+
+  it('still resolves a real port when a primary engine instance owns one', async () => {
+    const cfg = await load('compression:\n  backend: headroom-lite\n  port: 9191\n');
+    const primary = primaryOf(buildEngineInstancePlan(cfg));
+    assert.equal(resolveProxyEnvPort(cfg, primary), 9191);
+  });
+
+  it('emits proxy env only when a port exists; removes ANTHROPIC_BASE_URL/HEADROOM_PORT otherwise', () => {
+    assert.deepEqual(resolveClaudeProxyEnv(8787), {
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:8787',
+      HEADROOM_PORT: '8787',
+    });
+    // null port => keys explicitly set to undefined so mergeJsonFile strips them.
+    const off = resolveClaudeProxyEnv(null);
+    assert.equal(off.ANTHROPIC_BASE_URL, undefined);
+    assert.equal(off.HEADROOM_PORT, undefined);
+    assert.ok('ANTHROPIC_BASE_URL' in off && 'HEADROOM_PORT' in off,
+      'keys must be present-but-undefined so mergeJsonFile removes any stale value');
   });
 
   it('reconciles an explicit legacy copilot toggle into resolved compression.copilot_proxy so update keeps it', async () => {
@@ -173,5 +191,25 @@ describe('canonical compression.* drives the install/restart service plan', () =
     );
     assert.equal(off.compression.copilot_proxy.enabled, false);
     assert.equal(resolveCompressionConfig(off).copilotProxy.enabled, false);
+  });
+
+  it('lets an explicit legacy copilot toggle win over an explicit canonical one (both set)', async () => {
+    // Conflict case: canonical copilot_proxy.enabled=true AND legacy
+    // copilot_headroom.enabled=false are BOTH explicitly set. Per-key
+    // precedence (proxyAliasFor) makes the explicit legacy false win — the
+    // update orchestrator (resolveCompressionConfig) must agree with the
+    // service lifecycle (proxy.copilot_headroom.enabled).
+    const off = await load(
+      'compression:\n  backend: headroom-lite\n  copilot_proxy:\n    enabled: true\nproxy:\n  copilot_headroom:\n    enabled: false\n',
+    );
+    assert.equal(off.proxy.copilot_headroom.enabled, false);
+    assert.equal(resolveCompressionConfig(off).copilotProxy.enabled, false);
+
+    // Reverse: explicit legacy true wins over an explicit canonical false.
+    const on = await load(
+      'compression:\n  backend: headroom-lite\n  copilot_proxy:\n    enabled: false\nproxy:\n  copilot_headroom:\n    enabled: true\n',
+    );
+    assert.equal(on.proxy.copilot_headroom.enabled, true);
+    assert.equal(resolveCompressionConfig(on).copilotProxy.enabled, true);
   });
 });

@@ -15,11 +15,11 @@ function isObject(value) {
  * canonical `compression.copilot_proxy.enabled` value for a raw config that
  * carries a canonical `compression.backend`.
  *
- * Precedence mirrors reader.mjs `proxyAliasFor`'s `ifUnset`: an explicit
- * canonical value always wins; only when the canonical `enabled` is UNSET and
- * the legacy `enabled` is SET does the legacy value flow into the canonical
- * block. Returns the effective boolean, or `undefined` when no reconciliation
- * applies.
+ * Precedence mirrors reader.mjs `proxyAliasFor`'s `ifUnset`: an explicit LEGACY
+ * per-key value is a deliberate override that WINS — even when the canonical
+ * `enabled` is ALSO explicitly set. Only when the legacy `enabled` is UNSET does
+ * the canonical value stand on its own. Returns the effective boolean when a
+ * legacy override applies, or `undefined` when it does not (canonical stands).
  *
  * Shared by config/reader.mjs (the loadConfig path) and
  * update/engine-selection.mjs (the raw-YAML update path that parses the config
@@ -28,8 +28,6 @@ function isObject(value) {
 export function reconcileCanonicalCopilotEnabled(config = {}) {
   const compression = isObject(config?.compression) ? config.compression : null;
   if (!compression || compression.backend == null) return undefined;
-  const canonicalCopilot = isObject(compression.copilot_proxy) ? compression.copilot_proxy : {};
-  if (Object.hasOwn(canonicalCopilot, 'enabled')) return undefined;
   const proxy = isObject(config?.proxy) ? config.proxy : {};
   const legacyCopilot = isObject(proxy.copilot_headroom) ? proxy.copilot_headroom : {};
   if (!Object.hasOwn(legacyCopilot, 'enabled')) return undefined;

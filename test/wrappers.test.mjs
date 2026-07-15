@@ -159,6 +159,33 @@ describe('_claude wrapper — sets its own env per-invocation', () => {
   }
 });
 
+describe('_claude wrapper — unproxied when compression backend is disabled (null port)', () => {
+  for (const os of platforms) {
+    describe(os, () => {
+      const w = buildClaudeWrapper({ os, headroomPort: null });
+      it('never ASSIGNS ANTHROPIC_BASE_URL (no proxy exists)', () => {
+        assert.ok(!assignsVar(w, 'ANTHROPIC_BASE_URL'),
+          '_claude must NOT point at a nonexistent proxy when the backend is disabled.');
+      });
+      it('ACTIVELY UNSETS ANTHROPIC_BASE_URL + HEADROOM_PORT (defense against stale global env)', () => {
+        for (const v of ['ANTHROPIC_BASE_URL', 'HEADROOM_PORT']) {
+          const hasWinUnset = w.includes(`$env:${v} = $null`);
+          const hasPosixUnset = w.includes(`-u ${v}`);
+          assert.ok(hasWinUnset || hasPosixUnset,
+            `unproxied _claude must unset '${v}' so a stale value can't point Claude at a dead port.`);
+        }
+      });
+      it('runs claude directly (unproxied)', () => {
+        if (os === 'windows') {
+          assert.ok(w.includes('& claude @args'));
+        } else {
+          assert.ok(w.includes('claude "$@"'));
+        }
+      });
+    });
+  }
+});
+
 // -----------------------------------------------------------------------------
 // Service isolation — long-running services must unset client-side vars.
 // -----------------------------------------------------------------------------
@@ -208,14 +235,14 @@ describe('install.mjs regression — no global ANTHROPIC_BASE_URL', () => {
   });
 
   it('Windows PowerShell $PROFILE block (psEnv) excludes ANTHROPIC_BASE_URL', () => {
-    const match = installSrc.match(/const psEnv = `[^`]*`;/);
-    assert.ok(match, 'psEnv template literal not found');
+    const match = installSrc.match(/const psEnv = [^\n]*;/);
+    assert.ok(match, 'psEnv assignment not found');
     assert.ok(!match[0].includes('ANTHROPIC_BASE_URL'),
       'ANTHROPIC_BASE_URL must NOT be exported in Windows PowerShell $PROFILE — it leaks into every PS-launched process (including Copilot CLI). Only _claude wrapper may set it.');
   });
 
   it('POSIX shell profile block excludes ANTHROPIC_BASE_URL', () => {
-    const posixStart = installSrc.indexOf('block = `\\n# >>> myelin managed >>>\\nexport HEADROOM_PORT');
+    const posixStart = installSrc.indexOf('block = `\\n# >>> myelin managed >>>\\n${headroomExport}');
     assert.ok(posixStart >= 0, 'POSIX shell-block assignment not found');
     const posixEnd = installSrc.indexOf('`;', posixStart);
     assert.ok(posixEnd >= 0, 'POSIX shell-block template not terminated');
