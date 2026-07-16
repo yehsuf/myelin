@@ -42,6 +42,7 @@ import {
   restoreRelease,
   stageRelease,
 } from './release-store.mjs';
+import { writeCurrentRelease } from '../runtime/release-store.mjs';
 import {
   componentVersionDir,
   readPointersReadOnly,
@@ -2454,12 +2455,19 @@ function defaultDependencies({
   const defaultRestoreComponentPairs = async (pairs, _state, context) => (
     defaultApplyComponentPairs(pairs, undefined, context)
   );
-  const defaultApplyReleasePair = async pair => restoreRelease({
-    releasesRoot: paths.releasesRoot,
-    pointers: pair,
-    platform: storagePlatform,
-    fs,
-  });
+  const defaultApplyReleasePair = async pair => {
+    await restoreRelease({
+      releasesRoot: paths.releasesRoot,
+      pointers: pair,
+      platform: storagePlatform,
+      fs,
+    });
+    // Keep current.json in sync with the current symlink so `myelin verify`
+    // stays green after every orchestrated update.
+    if (pair.current !== null && pair.current !== undefined) {
+      writeCurrentRelease({ home, rootDir, releaseId: pair.current });
+    }
+  };
 
   const deps = {
     paths,
