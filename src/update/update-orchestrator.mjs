@@ -2465,7 +2465,7 @@ function defaultDependencies({
     // Keep current.json in sync with the current symlink so `myelin verify`
     // stays green after every orchestrated update.
     if (pair.current !== null && pair.current !== undefined) {
-      writeCurrentRelease({ home, rootDir, releaseId: pair.current });
+      writeCurrentRelease({ home, releaseId: pair.current });
     }
   };
 
