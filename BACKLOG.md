@@ -50,13 +50,34 @@
 - Update this file in the same PR as the implementation (not a separate cleanup PR).
 - Session SQL todos are a scratchpad only — always sync final state back here.
 
+### Task claiming protocol (multi-agent)
+> Tools live in `~/.myelin/bin/` (local only, not in repo). Agent identity stored in `~/.myelin/agent-name`.
+
+**Rules — non-negotiable:**
+- **Never start work on a task you have not claimed.** Always `myelin-claim <task-id>` first.
+- **One active claim per agent at a time.** Claim blocks until you `myelin-unclaim`.
+- **Always unclaim when done, blocked, or handing off.** Don't leave ghost claims.
+- Expired claims (heartbeat > TTL 120m) may be force-reclaimed: `myelin-claim <id> --force`.
+- On new session: `myelin-claims` to see what's already in flight before picking up work.
+
+**Quick reference:**
+```bash
+myelin-agent init <name>          # one-time: register this machine as <name>
+myelin-agent whoami               # show current agent name
+myelin-claim <task-id>            # claim a task (updates BACKLOG.md status)
+myelin-unclaim [task-id]          # release your claim (defaults to your only task)
+myelin-claims                     # list all claims + flag stale ones
+myelin-claims --expire            # interactively remove expired claims
+myelin-heartbeat                  # refresh your heartbeat (auto-called by claim scripts)
+```
+
 ---
 
 ## Active Work
 
 | ID | Priority | Status | Work | Evidence / Branch | Next action |
 | --- | --- | --- | --- | --- | --- |
-| DEPLOY-ZDT-001 | P1 | planned | **Zero-downtime service swap** — fix ~5s mitmproxy gap during `myelin install`/`myelin update` that causes Copilot CLI ECONNREFUSED. Fix: write new plist + bootstrap new service, verify `/health`, then bootout old. | — | Start worktree, implement in `src/service/launchd.mjs` + systemd + windows equivalents |
+| DEPLOY-ZDT-001 | P1 | in-progress | **Zero-downtime service swap** — fix ~5s mitmproxy gap during `myelin install`/`myelin update` that causes Copilot CLI ECONNREFUSED. Fix: write new plist + bootstrap new service, verify `/health`, then bootout old. | — | Start worktree, implement in `src/service/launchd.mjs` + systemd + windows equivalents |
 | MITM-MODEL-001 | P2 | planned | **MITM model tracking** — `myelin stats` only shows `gpt-5.4-nano`/`gpt-4o-mini`. Check `~/.myelin/mitmproxy.log` for actual model distribution; improve headroom-lite stats to show model breakdown from `/v1/messages` `model` field. | — | Investigate log first, then implement |
 | HLITE-B4-001 | P3 | planned | **headroom-lite B4 proxy request-path ports** — H/2 reset handling, favicon 204, `MIN_TOKENS=0`, SSE passthrough, stream-lock release. Deferred to avoid `server.mjs` conflicts. SKIP TOIN/CCR (ML, out of scope). | — | Start after DEPLOY-ZDT-001 |
 | STATUSBAR-001 | P4 | planned | **Myelin statusline config** — opt-in statusline showing proxy health, compression savings, active engine, and agent↔code binding (`~/myelin-agents/<agent>/<repo>` CWD → agent name + repo + branch). See `docs/superpowers/specs/2026-07-14-agent-workspace-model-design.md §6a`. | — | Start after MITM-MODEL-001 |
