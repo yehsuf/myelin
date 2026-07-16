@@ -40,7 +40,7 @@ export function stageMainRuntime({
       stdio: 'inherit',
     });
 
-    const commit = String(execFileSyncFn('git', ['rev-parse', '--short=12', 'HEAD'], {
+    const commit = String(execFileSyncFn('git', ['rev-parse', 'HEAD'], {
       cwd: stageRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'inherit'],
