@@ -62,14 +62,24 @@
 
 **Quick reference:**
 ```bash
-myelin-agent init <name>          # one-time: register this machine as <name>
-myelin-agent whoami               # show current agent name
-myelin-claim <task-id>            # claim a task (updates BACKLOG.md status)
-myelin-unclaim [task-id]          # release your claim (defaults to your only task)
-myelin-claims                     # list all claims + flag stale ones
-myelin-claims --expire            # interactively remove expired claims
-myelin-heartbeat                  # refresh your heartbeat (auto-called by claim scripts)
+# At the start of each new session:
+myelin-agent init <name>          # register THIS session (session-scoped, not machine-scoped)
+myelin-agent whoami               # show this session's name
+myelin-agent list                 # list all known sessions
+
+# Before starting any work:
+myelin-claims                     # check what's already in flight
+myelin-claim <task-id>            # claim a task (updates BACKLOG.md → in-progress)
+
+# When done or blocked:
+myelin-unclaim [task-id]          # release (restores → planned); default = your only task
+myelin-unclaim --all              # release all this session's claims (on exit)
+myelin-claims --expire            # clean up expired/dead-session claims
 ```
+
+> **Note:** Agent = Copilot/Claude session (`COPILOT_AGENT_SESSION_ID`). A new session is a
+> new agent. Expired claims (no heartbeat > 120m) indicate a dead session —
+> `myelin-claims --expire` to clean up.
 
 ---
 
