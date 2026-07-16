@@ -44,6 +44,34 @@
   - Linux: `ssh muc-lhvsuz 'myelin update --channel main'`
   - Windows: `ssh -i ~/.ssh/myelin_windows_ed25519 -o IdentitiesOnly=yes yehsuf@yeh-legion.local "..."`
 - Run `myelin verify` on each machine after deploy.
+- **DO NOT declare the task done until `myelin verify` passes on all deployed machines.**
+
+### Pre-merge testing protocol (runtime/pointer/update changes)
+For any PR touching `src/update/update-orchestrator.mjs`, `src/runtime/release-store.mjs`,
+`src/runtime/stage-main.mjs`, or `src/cli/update.mjs`:
+
+**Unit tests alone are NOT sufficient.** These paths are heavily mocked in tests. Required before merge:
+
+1. **Integration test** — the PR must include a test that:
+   - Calls the REAL function (not a mock) with real fs + temp dirs
+   - Asserts BOTH `current.json` AND `current` symlink match after the operation
+   - Example: `syncReleasePair` tests in `test/update-orchestrator.test.mjs`
+
+2. **Smoke test on a real machine** — in a temp `MYELIN_DIR`:
+   ```bash
+   export MYELIN_DIR=$(mktemp -d)
+   # stage initial release manually, then:
+   myelin update --channel main
+   myelin verify 2>&1 | grep "Managed runtime"
+   # Must show: ✓ Managed runtime ... healthy
+   ```
+   Or use the worktree checkout directly:
+   ```bash
+   node --test test/update-orchestrator.test.mjs  # must pass including new integration tests
+   ```
+
+3. **Never approve a pointer-sync PR based on unit tests alone** — the mock boundary
+   for `applyReleasePair` is exactly where the `rootDir` bug hid across PRs #39, #40, #41.
 
 ### Backlog hygiene
 - Add new items to **Active Work** below when triaged.
