@@ -145,6 +145,7 @@ export function writeValidatedPlist({
  * Injected `impl` allows unit tests to override without shelling out.
  */
 export function isPortResponding(port, { execFileSyncImpl = execFileSync } = {}) {
+  if (port == null) return false;
   try {
     execFileSyncImpl('nc', ['-z', '-w', '1', '127.0.0.1', String(port)], { stdio: 'ignore' });
     return true;
@@ -251,6 +252,7 @@ export function installEngineInstance(instance, options = {}) {
   const {
     _isPortResponding = isPortResponding,
     _isPlistUnchanged = isPlistUnchanged,
+    forceRestart = false,
     ...opts
   } = options;
   const { label } = engineInstanceIdentity(instance);
@@ -261,7 +263,9 @@ export function installEngineInstance(instance, options = {}) {
   // Skip restart entirely when config is unchanged and the service is already
   // responding — avoids the ~5s bootout/bootstrap gap that causes Copilot CLI
   // ECONNREFUSED during routine reinstalls.
-  if (_isPlistUnchanged(p, content) && _isPortResponding(instance.port)) {
+  // forceRestart=true bypasses the skip (e.g. when the installer knows it just
+  // overwrote a referenced file such as the Python addon at a stable path).
+  if (!forceRestart && _isPlistUnchanged(p, content) && _isPortResponding(instance.port)) {
     return 'skipped';
   }
   // Validate + atomically replace BEFORE booting out the running job, so an
@@ -309,7 +313,7 @@ export function removeEngineInstance(instance) {
  *  redirects (arrival-port gating in the addon itself), it only owns real
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged, forceRestart = false }) {
   const p = mitmPlistPath(home ?? homedir());
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
@@ -360,7 +364,9 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
   // Skip restart when config is unchanged and mitmproxy is already listening —
   // avoids the ~5s bootout/bootstrap gap that causes Copilot CLI ECONNREFUSED.
-  if (_isPlistUnchanged(p, content) && _isPortResponding(port)) {
+  // forceRestart=true bypasses skip for callers that just overwrote a referenced
+  // file (e.g. Python addon) at a stable path.
+  if (!forceRestart && _isPlistUnchanged(p, content) && _isPortResponding(port)) {
     return 'skipped';
   }
   writeValidatedPlist({ path: p, content });

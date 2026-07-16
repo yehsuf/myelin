@@ -351,6 +351,7 @@ export function installEngineInstance(instance, options = {}) {
   const {
     _isPortResponding = isPortResponding,
     _isUnitUnchanged = isUnitUnchanged,
+    forceRestart = false,
     ...opts
   } = options;
   const { serviceId } = engineInstanceIdentity(instance);
@@ -360,7 +361,9 @@ export function installEngineInstance(instance, options = {}) {
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   // Skip restart when unit file is unchanged and service is already active —
   // avoids the brief service gap during routine reinstalls.
-  if (_isUnitUnchanged(p, content) && _isPortResponding(instance.port)) {
+  // forceRestart=true bypasses skip for callers that just overwrote a referenced
+  // file (e.g. Python addon) at a stable path.
+  if (!forceRestart && _isUnitUnchanged(p, content) && _isPortResponding(instance.port)) {
     return 'skipped';
   }
   writeFileSync(p, content, 'utf8');
@@ -434,7 +437,7 @@ export function copilotHeadroomServiceStatus(opts = {}) {
   return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env, _isPortResponding = isPortResponding, _isUnitUnchanged = isUnitUnchanged }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, home, env = process.env, _isPortResponding = isPortResponding, _isUnitUnchanged = isUnitUnchanged, forceRestart = false }) {
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
@@ -449,10 +452,12 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
     env,
   }));
-  const p = mitmUnitPath();
+  const p = mitmUnitPath(home ?? homedir());
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
   // Skip restart when unit is unchanged and mitmproxy is already listening.
-  if (_isUnitUnchanged(p, content) && _isPortResponding(port)) {
+  // forceRestart=true bypasses the skip (e.g. when the installer knows it just
+  // overwrote a referenced file such as the Python addon at a stable path).
+  if (!forceRestart && _isUnitUnchanged(p, content) && _isPortResponding(port)) {
     return 'skipped';
   }
   writeFileSync(p, content, 'utf8');
