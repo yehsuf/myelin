@@ -949,7 +949,7 @@ function validateChannel(channel) {
  * deliberately absent, so a backend selection cannot stage both sidecars.
  */
 export function planUpdate({
-  channel = 'stable',
+  channel = 'main',
   config = {},
   manifest = COMPONENTS,
   installed = {},
@@ -2684,7 +2684,7 @@ async function checkUpdate(options, deps) {
  * releases, write migration output, or invoke service/process boundaries.
  */
 export async function runUpdate(options = {}, injectedDeps = {}) {
-  const channel = options.channel ?? 'stable';
+  const channel = options.channel ?? 'main';
   validateChannel(channel);
   const deps = defaultDependencies(injectedDeps);
   if (options.check === true) {

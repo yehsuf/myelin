@@ -124,7 +124,7 @@ function baseDeps(events = []) {
 }
 
 describe('planUpdate', { concurrency: false }, () => {
-  it('defaults to stable and stages only the selected compression backend', () => {
+  it('defaults to main and stages only the selected compression backend', () => {
     const plan = planUpdate({
       config: { proxy: { engine: 'headroom_lite' } },
       manifest: {
@@ -139,7 +139,7 @@ describe('planUpdate', { concurrency: false }, () => {
       target: { version: '1.1.0' },
     });
 
-    assert.equal(plan.channel, 'stable');
+    assert.equal(plan.channel, 'main');
     assert.deepEqual(plan.components.map(({ name }) => name), ['headroomLite', 'serena']);
     assert.deepEqual(plan.release, {
       current: '1.1.0',
