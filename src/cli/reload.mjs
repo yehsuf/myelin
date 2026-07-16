@@ -14,10 +14,14 @@ import { detectOS, detectShell } from '../detect/os.mjs';
  *
  * Also writes ~/.myelin-reload timestamp so shells can detect a reload is needed.
  */
-export async function runReload({ silent = false } = {}) {
-  const os   = detectOS();
-  const shell = detectShell();
-  const home  = homedir();
+export async function runReload({
+  silent = false,
+  os = detectOS(),
+  shell = detectShell(),
+  home = homedir(),
+  execSyncFn = execSync,
+  writeFileSyncFn = writeFileSync,
+} = {}) {
 
   const profileMap = {
     zsh:  join(home, '.zshrc'),
@@ -38,7 +42,7 @@ export async function runReload({ silent = false } = {}) {
   // Write reload marker with timestamp — shells can check this
   const markerPath = join(home, '.myelin-reload');
   const ts = new Date().toISOString();
-  writeFileSync(markerPath, ts, 'utf8');
+  writeFileSyncFn(markerPath, ts, 'utf8');
 
   const sourceCmdWithMarker = shellName === 'fish'
     ? `source ${profilePath}`
@@ -47,7 +51,7 @@ export async function runReload({ silent = false } = {}) {
   let reloaded = false;
 
   if (os === 'darwin') {
-    reloaded = _reloadMacTerminals(sourceCmdWithMarker);
+    reloaded = _reloadMacTerminals(sourceCmdWithMarker, execSyncFn);
   }
 
   if (!silent) {
@@ -63,7 +67,7 @@ export async function runReload({ silent = false } = {}) {
   return reloaded;
 }
 
-function _reloadMacTerminals(sourceCmd) {
+function _reloadMacTerminals(sourceCmd, execSyncFn = execSync) {
   let reloaded = false;
   const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
@@ -73,7 +77,8 @@ function _reloadMacTerminals(sourceCmd) {
   // e.g. {"login", "-zsh"}, even while completely idle) and was causing
   // reload to skip nearly every idle tab.
   try {
-    const script = `tell application "Terminal"
+    const script = `if application "Terminal" is running then
+tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
       try
@@ -83,8 +88,9 @@ function _reloadMacTerminals(sourceCmd) {
       end try
     end repeat
   end repeat
-end tell`;
-    execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000 });
+end tell
+end if`;
+    execSyncFn(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000, killSignal: 'SIGKILL' });
     reloaded = true;
   } catch {}
 
@@ -97,7 +103,8 @@ end tell`;
   // (`variable value of s named ...`), which threw on every run and
   // aborted the whole tell-block, so nothing in iTerm2 ever got reloaded.
   try {
-    const script = `tell application "iTerm2"
+    const script = `if application "iTerm2" is running then
+tell application "iTerm2"
   repeat with w in windows
     repeat with t in tabs of w
       repeat with s in sessions of t
@@ -112,8 +119,9 @@ end tell`;
       end repeat
     end repeat
   end repeat
-end tell`;
-    execSync(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000 });
+end tell
+end if`;
+    execSyncFn(`osascript << 'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, { stdio: 'pipe', timeout: 5000, killSignal: 'SIGKILL' });
     reloaded = true;
   } catch {}
 
