@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { buildVerifyResults, checkManagedRuntime } from '../src/cli/verify.mjs';
 import { parseManagedMitmStatus, windowsWatchdogTaskName } from '../src/service/windows.mjs';
 import { tmpdir } from 'node:os';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('buildVerifyResults engine selection', () => {
@@ -448,5 +448,50 @@ describe('checkManagedRuntime', () => {
     const result = checkManagedRuntime({ home, env: {} });
     assert.equal(result.ok, true);
     assert.match(result.detail, /healthy/);
+  });
+
+  it('returns ok=false when current symlink points to different release than current.json', () => {
+    if (process.platform === 'win32') return;
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    try {
+      const root = join(home, '.myelin');
+      const releaseId = 'main-abc1234def5678901234567890abc1234def56789';
+      const releaseDir = makeRelease(root, releaseId);
+      const currentJson = JSON.stringify({ version: 1, releaseId, runtimeRoot: releaseDir });
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, 'current.json'), currentJson);
+
+      // Create a DIFFERENT release dir and point the symlink at it
+      const otherReleaseId = 'main-def5678abc1234def5678abc1234def5678abc12';
+      const otherReleaseDir = makeRelease(root, otherReleaseId);
+      symlinkSync(otherReleaseDir, join(root, 'current'));
+
+      const result = checkManagedRuntime({ home, env: {} });
+      assert.equal(result.ok, false);
+      assert.match(result.detail, /≠/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('returns ok=true when current symlink matches current.json', () => {
+    if (process.platform === 'win32') return;
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    try {
+      const root = join(home, '.myelin');
+      const releaseId = 'main-abc1234def5678901234567890abc1234def56789';
+      const releaseDir = makeRelease(root, releaseId);
+      const realReleaseDir = realpathSync(releaseDir);
+      const currentJson = JSON.stringify({ version: 1, releaseId, runtimeRoot: realReleaseDir });
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, 'current.json'), currentJson);
+      symlinkSync(join('releases', releaseId), join(root, 'current'));
+
+      const result = checkManagedRuntime({ home, env: {} });
+      assert.equal(result.ok, true);
+      assert.match(result.detail, /healthy/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

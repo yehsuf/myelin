@@ -1,4 +1,4 @@
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeSync } from 'node:fs';
 import { joinManaged, managedPaths } from '../shared/myelin-paths.mjs';
 
 const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
@@ -67,6 +67,9 @@ export function writeCurrentRelease({
   home,
   rootDir,
   releaseId,
+  platform = process.platform,
+  symlinkSyncFn = symlinkSync,
+  unlinkSyncFn = unlinkSync,
   renameSyncFn = renameSync,
   readFileSyncFn = readFileSync,
   writeFileSyncFn,
@@ -127,6 +130,16 @@ export function writeCurrentRelease({
     }
 
     renameSyncFn(tempPointerPath, paths.currentPointerPath);
+
+    // Keep current symlink in sync with current.json
+    const symlinkPath = joinManaged(paths.root, 'current');
+    try { unlinkSyncFn(symlinkPath); } catch { /* ignore — not present or already gone */ }
+    if (platform === 'win32') {
+      symlinkSyncFn(pointer.runtimeRoot, symlinkPath, 'junction');
+    } else {
+      symlinkSyncFn(`releases/${releaseId}`, symlinkPath, 'dir');
+    }
+
     return pointer;
   } catch (error) {
     try {

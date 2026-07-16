@@ -122,6 +122,10 @@ describe('current release pointer', { concurrency: false }, () => {
         readFileSync(join(home, '.myelin', 'current.json'), 'utf8'),
         JSON.stringify(result, null, 2) + '\n'
       );
+      if (process.platform !== 'win32') {
+        assert.ok(lstatSync(join(home, '.myelin', 'current')).isSymbolicLink(), 'current is a symlink');
+        assert.equal(readlinkSync(join(home, '.myelin', 'current')), 'releases/main-abcdef1');
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -159,6 +163,8 @@ describe('current release pointer', { concurrency: false }, () => {
       rootDir,
       releaseId: 'main-abcdef1',
       mkdirSyncFn() {},
+      symlinkSyncFn() {},
+      unlinkSyncFn() {},
       writeFileSyncFn(path, content) {
         files.set(path, content);
       },
@@ -222,6 +228,8 @@ describe('current release pointer', { concurrency: false }, () => {
       home: '/home/alice',
       releaseId: 'main-abcdef1',
       mkdirSyncFn() {},
+      symlinkSyncFn() {},
+      unlinkSyncFn() {},
       openSyncFn(path, flags) {
         const fd = nextFd++;
         fdToPath.set(fd, path);
@@ -303,6 +311,82 @@ describe('current release pointer', { concurrency: false }, () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+
+  it('creates the current symlink pointing to the release dir', () => {
+    if (process.platform === 'win32') return;
+    const home = makeTempHome();
+    try {
+      const releaseId = 'main-abcdef1234567890abcdef1234567890abcdef12';
+      const runtimeRoot = join(home, '.myelin', 'releases', releaseId);
+      mkdirSync(runtimeRoot, { recursive: true });
+
+      writeCurrentRelease({ home, releaseId });
+
+      const symlinkPath = join(home, '.myelin', 'current');
+      assert.ok(lstatSync(symlinkPath).isSymbolicLink(), 'current is a symlink');
+      assert.equal(readlinkSync(symlinkPath), `releases/${releaseId}`);
+      assert.equal(
+        readdirSync(join(home, '.myelin')).sort().join(',').includes('current.json,'),
+        true,
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('overwrites existing current symlink when release changes', () => {
+    if (process.platform === 'win32') return;
+    const home = makeTempHome();
+    try {
+      const releaseId1 = 'main-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+      const releaseId2 = 'main-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+      writeCurrentRelease({ home, releaseId: releaseId1 });
+      assert.equal(readlinkSync(join(home, '.myelin', 'current')), `releases/${releaseId1}`);
+
+      writeCurrentRelease({ home, releaseId: releaseId2 });
+      assert.equal(readlinkSync(join(home, '.myelin', 'current')), `releases/${releaseId2}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('calls symlinkSyncFn with absolute target and junction type on Windows', () => {
+    const symlinkCalls = [];
+    const unlinkCalls = [];
+    const files = new Map();
+    const rootDir = 'C:\\Users\\alice\\.myelin';
+    const releaseId = 'main-abcdef1234567890abcdef1234567890abcdef12';
+
+    writeCurrentRelease({
+      home: 'C:\\Users\\alice',
+      rootDir,
+      releaseId,
+      platform: 'win32',
+      symlinkSyncFn(target, linkPath, type) {
+        symlinkCalls.push({ target, linkPath, type });
+      },
+      unlinkSyncFn(p) {
+        unlinkCalls.push(p);
+      },
+      mkdirSyncFn() {},
+      writeFileSyncFn(path, content) { files.set(path, content); },
+      readFileSyncFn(path) {
+        const c = files.get(path);
+        if (c == null) throw new Error(`missing: ${path}`);
+        return c;
+      },
+      renameSyncFn(from, to) {
+        files.set(to, files.get(from));
+        files.delete(from);
+      },
+    });
+
+    assert.equal(symlinkCalls.length, 1, 'symlinkSyncFn called once');
+    assert.equal(symlinkCalls[0].type, 'junction');
+    assert.equal(symlinkCalls[0].target, `${rootDir}\\releases\\${releaseId}`);
+    assert.equal(symlinkCalls[0].linkPath, `${rootDir}\\current`);
   });
 
   it('resolves the managed runtime entrypoint from the current pointer', () => {
@@ -647,7 +731,7 @@ describe('stageMainRuntime', { concurrency: false }, () => {
 
       assert.deepEqual(commands, [
         `git clone --depth 1 --branch main ${repoUrl} ${join(home, '.myelin', `releases-stage-main-${process.pid}-${stagedAt}`)}`,
-        'git rev-parse --short=12 HEAD',
+        'git rev-parse HEAD',
       ]);
       assert.deepEqual(result, { releaseId, runtimeRoot, reused: true });
       assert.deepEqual(readCurrentRelease({ home }), {
