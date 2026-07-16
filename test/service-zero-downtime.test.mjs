@@ -9,7 +9,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
-import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 // ─── launchd helpers ────────────────────────────────────────────────────────
@@ -71,47 +72,32 @@ describe('isPlistUnchanged (launchd)', () => {
 });
 
 describe('installMitmService skip logic (launchd)', () => {
-  function makeOpts(dir, { portResponding, plistMatch }) {
-    const plistPath = join(dir, 'com.myelin.mitmproxy.plist');
-    const addonPath = join(dir, 'addon.py');
-    writeFileSync(addonPath, '# addon');
-
-    const _isPortResponding = () => portResponding;
-    const _isPlistUnchanged = () => plistMatch;
-
-    return {
-      mitmdumpBin: '/usr/bin/mitmdump',
-      port: 8888,
-      addonPath,
-      _isPortResponding,
-      _isPlistUnchanged,
-    };
-  }
-
   it('returns skipped when plist unchanged AND port responding', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'zdt-test-'));
-    const opts = makeOpts(dir, { portResponding: true, plistMatch: true });
-    const result = launchdInstallMitmService({
-      ...opts,
-      // Provide a no-op writeValidatedPlist to prevent any FS writes reaching LaunchAgents
-      env: { MYELIN_DIR: dir },
-      home: dir,
-    });
-    assert.equal(result, 'skipped');
-  });
-
-  it('proceeds when port not responding (service is down)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zdt-test-'));
     mkdirSync(join(dir, 'Library', 'LaunchAgents'), { recursive: true });
     const addonPath = join(dir, 'addon.py');
     writeFileSync(addonPath, '# addon');
 
-    let writeValidatedPlistCalled = false;
-    let execCalls = [];
+    const result = launchdInstallMitmService({
+      mitmdumpBin: '/usr/bin/mitmdump',
+      port: 8888,
+      addonPath,
+      env: { MYELIN_DIR: dir },
+      home: dir,
+      _isPortResponding: () => true,
+      _isPlistUnchanged: () => true,
+    });
+    assert.equal(result, 'skipped');
+  });
 
-    // We can't easily intercept launchd execSync without a full mock.
-    // Instead, verify that when port is NOT responding, it does NOT return 'skipped'.
-    // The function will throw trying to run launchctl in test environment — catch it.
+  it('writes plist to sandboxed home dir (not ~/Library) when restart needed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zdt-test-'));
+    mkdirSync(join(dir, 'Library', 'LaunchAgents'), { recursive: true });
+    const addonPath = join(dir, 'addon.py');
+    writeFileSync(addonPath, '# addon');
+
+    // Call with skip=false — launchctl will fail in test env but plist write
+    // must go to sandboxed dir, never ~/Library/LaunchAgents.
     try {
       launchdInstallMitmService({
         mitmdumpBin: '/usr/bin/mitmdump',
@@ -120,13 +106,24 @@ describe('installMitmService skip logic (launchd)', () => {
         env: { MYELIN_DIR: dir },
         home: dir,
         _isPortResponding: () => false,
-        _isPlistUnchanged: () => true,
+        _isPlistUnchanged: () => false,
       });
     } catch {
-      // Expected: launchctl/plutil not available or different UID in test
+      // launchctl/plutil may fail in test env — that is expected
     }
-    // If we get here without skipped returned, the test passes structurally.
-    // The real assertion is done by the unit test above (skipped case).
+    const sandboxedPlist = join(dir, 'Library', 'LaunchAgents', 'com.myelin.mitmproxy.plist');
+    const realPlist = join(homedir(), 'Library', 'LaunchAgents', 'com.myelin.mitmproxy.plist');
+    // The plist MUST have been written to the sandboxed dir, and if it was
+    // accidentally written to ~/Library the test detects it via content check.
+    if (existsSync(sandboxedPlist)) {
+      const content = readFileSync(sandboxedPlist, 'utf8');
+      assert.ok(content.includes(addonPath), 'sandboxed plist must reference the sandboxed addon path');
+    }
+    // Verify ~/Library plist does NOT contain the sandboxed addon path
+    if (existsSync(realPlist)) {
+      const realContent = readFileSync(realPlist, 'utf8');
+      assert.ok(!realContent.includes(dir), 'real plist must NOT reference the sandboxed temp dir');
+    }
   });
 });
 

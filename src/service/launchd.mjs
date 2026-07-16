@@ -310,7 +310,7 @@ export function removeEngineInstance(instance) {
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
 export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged }) {
-  const p = mitmPlistPath();
+  const p = mitmPlistPath(home ?? homedir());
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];

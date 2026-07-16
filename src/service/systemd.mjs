@@ -1,7 +1,7 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
@@ -285,9 +285,10 @@ function assertNoSystemdEnvControlChars(mergedEnv = {}) {
 /**
  * Return true when `port` has a process actively listening on 127.0.0.1.
  */
-export function isPortResponding(port, { execFileSyncImpl = execSync } = {}) {
+export function isPortResponding(port, { execFileSyncImpl = execFileSync } = {}) {
+  if (port == null) return false;
   try {
-    execFileSyncImpl(`nc -z -w 1 127.0.0.1 ${port}`, { stdio: 'ignore', shell: true });
+    execFileSyncImpl('nc', ['-z', '-w', '1', '127.0.0.1', String(port)], { stdio: 'ignore' });
     return true;
   } catch {
     return false;
