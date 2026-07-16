@@ -3,6 +3,7 @@
 > **This file is the single source of truth for the backlog across all sessions, agents, and machines.**
 > Agent SQL todos are session-local and ephemeral — they are NOT visible to other sessions.
 > When you finish work or triage new items, update this file and commit to `main` so the next session picks it up.
+> **⛔ DO NOT EDIT TASK ROWS MANUALLY. Use `myelin-claim`, `myelin-unclaim`, `myelin-done` scripts only.**
 
 ## Status Values
 
@@ -54,10 +55,14 @@
 ### Task claiming protocol (multi-agent)
 > Tools live in `~/.myelin/bin/` (local only, not in repo). Agent identity stored in `~/.myelin/agents/<session-id>.json`.
 
+**⛔ BACKLOG.md IS SCRIPT-MANAGED — DO NOT EDIT MANUALLY.**
+All status changes MUST go through the claiming scripts. Direct edits break cross-session state.
+
 **Rules — non-negotiable:**
 - **Never start work on a task you have not claimed.** Always `myelin-claim <task-id>` first.
 - **One active claim per agent at a time.** Claim blocks until you `myelin-unclaim`.
 - **Always unclaim when done, blocked, or handing off.** Don't leave ghost claims.
+- **Never edit BACKLOG.md task rows directly** — use `myelin-claim`, `myelin-unclaim`, `myelin-done`.
 - Expired claims (heartbeat > TTL 120m) may be force-reclaimed: `myelin-claim <id> --force`.
 - On new session: `myelin-claims` to see what's already in flight before picking up work.
 
