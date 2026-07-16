@@ -1,7 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildVerifyResults } from '../src/cli/verify.mjs';
+import { buildVerifyResults, checkManagedRuntime } from '../src/cli/verify.mjs';
 import { parseManagedMitmStatus, windowsWatchdogTaskName } from '../src/service/windows.mjs';
+import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('buildVerifyResults engine selection', () => {
   const baseConfig = {
@@ -32,6 +35,7 @@ describe('buildVerifyResults engine selection', () => {
       includeMitmCheck: false,
       includeCopilotHeadroomCheck: false,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     assert.deepEqual(probes, []);
@@ -67,6 +71,7 @@ describe('buildVerifyResults engine selection', () => {
       includeMitmCheck: false,
       includeCopilotHeadroomCheck: false,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     assert.deepEqual(waits, []);
@@ -197,6 +202,7 @@ describe('buildVerifyResults engine selection', () => {
       includeMitmCheck: false,
       includeCopilotHeadroomCheck: true,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     assert.deepEqual(calls, [
@@ -229,6 +235,7 @@ describe('buildVerifyResults engine selection', () => {
       includeToolChecks: false,
       includeCopilotHeadroomCheck: false,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     const mitm = results.find(({ name }) => name === 'Mitmproxy service (:8888)');
@@ -261,6 +268,7 @@ describe('buildVerifyResults engine selection', () => {
       includeMitmCheck: false,
       includeCopilotHeadroomCheck: true,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     const headroomService = results.find(({ name }) => name === 'Headroom service');
@@ -298,6 +306,7 @@ describe('buildVerifyResults engine selection', () => {
       includeToolChecks: false,
       includeMitmCheck: false,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     assert.deepEqual(results.filter(({ name }) => /headroom/i.test(name)).map(({ name }) => name), [
@@ -333,6 +342,7 @@ describe('buildVerifyResults engine selection', () => {
       includeToolChecks: false,
       includeMitmCheck: false,
       includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
     });
 
     assert.deepEqual(statuses, ['primary']);
@@ -371,5 +381,72 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(statuses, ['headroom_lite-primary']);
     assert.deepEqual(probes, [8790]);
     assert.equal(results.some(({ name }) => /Copilot/i.test(name)), false);
+  });
+});
+
+describe('checkManagedRuntime', () => {
+  function makeRelease(root, releaseId, { withEntrypoint = true } = {}) {
+    const releaseDir = join(root, 'releases', releaseId);
+    if (withEntrypoint) {
+      mkdirSync(join(releaseDir, 'src', 'cli'), { recursive: true });
+      writeFileSync(join(releaseDir, 'src', 'cli', 'index.mjs'), '// entrypoint');
+    } else {
+      mkdirSync(releaseDir, { recursive: true });
+    }
+    return releaseDir;
+  }
+
+  it('returns ok=true when no current.json (unmanaged install)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    mkdirSync(join(home, '.myelin'), { recursive: true });
+    const result = checkManagedRuntime({
+      home,
+      existsSyncImpl: (p) => p.endsWith('current.json') ? false : true,
+      readFileSyncImpl: () => { throw new Error('should not be called'); },
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /unmanaged/);
+  });
+
+  it('returns ok=false when release dir is missing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    const root = join(home, '.myelin');
+    mkdirSync(root, { recursive: true });
+    const releaseId = 'main-abc1234';
+    const runtimeRoot = join(root, 'releases', releaseId);
+    const currentJson = JSON.stringify({ version: 1, releaseId, runtimeRoot });
+    writeFileSync(join(root, 'current.json'), currentJson);
+
+    const result = checkManagedRuntime({ home, env: {} });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /missing/);
+  });
+
+  it('returns ok=false when entrypoint is missing inside release dir', () => {
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    const root = join(home, '.myelin');
+    const releaseId = 'main-abc1234';
+    const releaseDir = makeRelease(root, releaseId, { withEntrypoint: false });
+    const currentJson = JSON.stringify({ version: 1, releaseId, runtimeRoot: releaseDir });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'current.json'), currentJson);
+
+    const result = checkManagedRuntime({ home, env: {} });
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /entrypoint missing/);
+  });
+
+  it('returns ok=true when release dir and entrypoint both exist', () => {
+    const home = mkdtempSync(join(tmpdir(), 'verify-rt-'));
+    const root = join(home, '.myelin');
+    const releaseId = 'main-abc1234def5678901234567890abc1234def56789';
+    const releaseDir = makeRelease(root, releaseId);
+    const currentJson = JSON.stringify({ version: 1, releaseId, runtimeRoot: releaseDir });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'current.json'), currentJson);
+
+    const result = checkManagedRuntime({ home, env: {} });
+    assert.equal(result.ok, true);
+    assert.match(result.detail, /healthy/);
   });
 });

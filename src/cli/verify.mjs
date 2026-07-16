@@ -8,6 +8,10 @@ import { which } from '../detect/which.mjs';
 import { ensureToolPath } from '../detect/tool-path.mjs';
 import { detectOS } from '../detect/os.mjs';
 import { execSync } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import { managedPaths } from '../shared/myelin-paths.mjs';
 
 async function probeHeadroomLite(port, execSyncFn = execSync) {
   try {
@@ -64,6 +68,67 @@ async function probeEngineInstance(instance, {
   return results;
 }
 
+/**
+ * Check that current.json releaseId matches the current symlink target,
+ * and that the release directory actually exists with a valid entrypoint.
+ * Returns a verify result object.
+ */
+export function checkManagedRuntime({ home = homedir(), env = process.env, existsSyncImpl = existsSync, readFileSyncImpl = readFileSync } = {}) {
+  const root = managedPaths({ home, env }).root;
+  const currentJsonPath = join(root, 'current.json');
+  const currentSymlink = join(root, 'current');
+
+  if (!existsSyncImpl(currentJsonPath)) {
+    return { name: 'Managed runtime', ok: true, detail: 'unmanaged (direct install)' };
+  }
+
+  let currentJson;
+  try {
+    currentJson = JSON.parse(readFileSyncImpl(currentJsonPath, 'utf8'));
+  } catch {
+    return { name: 'Managed runtime', ok: false, detail: `current.json unreadable — run: myelin update` };
+  }
+
+  const { releaseId, runtimeRoot } = currentJson;
+
+  // Check the release dir exists
+  if (!runtimeRoot || !existsSyncImpl(runtimeRoot)) {
+    return {
+      name: 'Managed runtime',
+      ok: false,
+      detail: `release dir missing: ${runtimeRoot ?? releaseId} — run: myelin update --channel main`,
+    };
+  }
+
+  // Check the entrypoint exists inside the release
+  const entrypoint = join(runtimeRoot, 'src', 'cli', 'index.mjs');
+  if (!existsSyncImpl(entrypoint)) {
+    return {
+      name: 'Managed runtime',
+      ok: false,
+      detail: `entrypoint missing in release ${releaseId} — run: myelin update --channel main`,
+    };
+  }
+
+  // Check symlink points to the same release as current.json
+  try {
+    const symlinkTarget = realpathSync(currentSymlink);
+    const jsonTarget = runtimeRoot.replace(/\/$/, '');
+    if (symlinkTarget !== jsonTarget) {
+      return {
+        name: 'Managed runtime',
+        ok: false,
+        detail: `current.json (${releaseId}) ≠ current symlink — run: myelin update --channel main`,
+      };
+    }
+  } catch {
+    // symlink missing or unresolvable — not necessarily fatal if json+dir are fine
+  }
+
+  return { name: 'Managed runtime', ok: true, detail: `${releaseId.slice(0, 20)}… healthy` };
+}
+
+
 export async function buildVerifyResults({
   config,
   loadConfigImpl = loadConfig,
@@ -79,6 +144,7 @@ export async function buildVerifyResults({
   includeMitmCheck = true,
   includeCopilotHeadroomCheck = true,
   includeWatchdogChecks = true,
+  includeManagedRuntimeCheck = true,
   platform = process.platform,
   execSyncImpl = execSync,
 } = {}) {
@@ -89,6 +155,12 @@ export async function buildVerifyResults({
   const engineInstances = plannedEngineInstances
     .filter((instance) => instance.role !== 'copilot' || includeCopilotHeadroomCheck);
   const results = [];
+
+  // Check managed runtime consistency first — a broken current.json makes
+  // every subsequent myelin command fail with an opaque "entrypoint missing" error.
+  if (includeManagedRuntimeCheck && platform !== 'win32') {
+    results.push(checkManagedRuntime());
+  }
 
   for (const instance of engineInstances) {
     results.push(...await probeEngineInstance(instance, {
