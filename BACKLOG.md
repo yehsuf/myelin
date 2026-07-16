@@ -107,7 +107,6 @@ git add BACKLOG.md && git commit -m "chore: mark <task-id> done" && git push ori
 
 | ID | Priority | Status | Work | Evidence / Branch | Next action |
 | --- | --- | --- | --- | --- | --- |
-| UPDATE-SYNC-001 | P1 | ready | **Fix `myelin update` current.json sync** — after `myelin update`, `activateRelease()` updates `~/.myelin/current` symlink (40-char SHA) but `stageMainRuntime` wrote `current.json` with 12-char SHA to a different release dir — these are separate systems. Result: `myelin verify` shows `✗ Managed runtime: current.json ≠ symlink` after every update; requires manual fix. Fix: after `activateRelease()` runs, rewrite `current.json` to match the new symlink target. | PR #39 `fix/update-sync-001` | Merge PR #39, deploy all 3 machines, verify |
 | DEPLOY-ZDT-WIN-001 | P2 | planned | **Zero-downtime service swap — Windows** — `src/service/windows.mjs` was excluded from PR #38 (skip-if-unchanged). Add `isPortResponding()` + registry/WinSW config unchanged check; skip restart when config is byte-identical and port responds. Same pattern as launchd/systemd. | — | Worktree → TDD → implement in `windows.mjs` → test on yeh-legion.local → PR |
 | MITM-MODEL-001 | P2 | planned | **MITM model tracking** — `myelin stats` only shows `gpt-5.4-nano`/`gpt-4o-mini`. Check `~/.myelin/mitmproxy.log` for actual model distribution; improve headroom-lite stats to show model breakdown from `/v1/messages` `model` field. | — | Investigate log first, then implement |
 | HLITE-B4-001 | P3 | planned | **headroom-lite B4 proxy request-path ports** — H/2 reset handling, favicon 204, `MIN_TOKENS=0`, SSE passthrough, stream-lock release. Deferred to avoid `server.mjs` conflicts. SKIP TOIN/CCR (ML, out of scope). | — | Ready to start (DEPLOY-ZDT-001 done) |
@@ -119,6 +118,7 @@ git add BACKLOG.md && git commit -m "chore: mark <task-id> done" && git push ori
 
 | ID | Status | Work | Evidence |
 | --- | --- | --- | --- |
+| UPDATE-SYNC-001 | done | **Fix `myelin update` current.json sync** — after `myelin update`, `activateRelease()` updates `~/.myelin/current` symlink but `current.json` points to a different release dir. Result: `myelin verify` shows `✗ Managed runtime` after every update; requires manual fix. | PR #39+#40, bab4bb1 |
 | DEPLOY-ZDT-001 | done | **Zero-downtime service swap** — skip-if-unchanged gate in `launchd.mjs` + `systemd.mjs`; `isPortResponding`, `isPlistUnchanged`/`isUnitUnchanged`, `forceRestart` option; `mitmPlistPath(home)` bug fix; `myelin verify` managed-runtime check added. | PR #38, `a5d0386` |
 | DOCS-CLI-001 | done | **CLI clarity docs** — improved CLI command documentation and help text. | `feat/docs-cli-clarity`, squash-merged |
 | INSTALL-001 | done | Managed immutable runtime: `~/.myelin/releases/`, `current.json` pointer, `myelin update`, `MYELIN_DIR` end-to-end. | PR #24, `5eb9e3b` |
