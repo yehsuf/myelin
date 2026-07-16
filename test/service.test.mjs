@@ -1119,7 +1119,7 @@ describe('generateLaunchdWatchdogScript', () => {
 
     assert.ok(!script.includes("check_and_revive 8888 mitmproxy '*.mitmproxy.plist'"));
     assert.ok(!script.includes("check_and_revive 8889 mitmproxy-egress '*.mitmproxy.plist'"));
-    assert.ok(script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+    assert.ok(script.includes("check_and_revive 8787 compression '*.compression.plist'"));
   });
 
   it('omits the main Headroom stanza when headroomPort is undefined', () => {
@@ -1132,28 +1132,28 @@ describe('generateLaunchdWatchdogScript', () => {
     });
 
     assert.ok(script.includes("check_and_revive 8888 mitmproxy '*.mitmproxy.plist'"));
-    assert.ok(!script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+    assert.ok(!script.includes("check_and_revive 8787 compression '*.compression.plist'"));
     assert.ok(script.includes("check_and_revive 8788 copilot-headroom '*.copilot-headroom.plist'"));
   });
 
-  it('preserves the main Headroom stanza when an explicit headroom port is provided', () => {
+  it('preserves the main compression stanza when an explicit headroom port is provided', () => {
     const script = generateLaunchdWatchdogScript({
       home: '/Users/alice',
       headroomPort: 8787,
       mitmPort: 8888,
     });
 
-    assert.ok(script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
+    assert.ok(script.includes("check_and_revive 8787 compression '*.compression.plist'"));
   });
 
-  it('monitors primary at the headroom_lite port (*.headroom.plist glob matches both engines)', () => {
+  it('monitors primary at the headroom_lite port (*.compression.plist glob matches the service)', () => {
     const script = generateLaunchdWatchdogScript({
       home: '/Users/alice',
       headroomPort: 8790,
       mitmPort: 8888,
     });
 
-    assert.ok(script.includes("check_and_revive 8790 headroom '*.headroom.plist'"),
+    assert.ok(script.includes("check_and_revive 8790 compression '*.compression.plist'"),
       'watchdog must check the headroom_lite primary port');
     assert.ok(!script.includes('check_and_revive 8787'), 'must not include stale Python headroom port');
   });

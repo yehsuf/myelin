@@ -441,7 +441,7 @@ export function generateLaunchdWatchdogScript({ home, env = process.env, headroo
   const watchdogLog = joinManaged(managedPaths({ home, env }).root, 'watchdog.log');
   const checks = [
     ...(mitmPort != null ? [`check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`] : []),
-    ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
+    ...(headroomPort != null ? [`check_and_revive ${headroomPort} compression '*.compression.plist'`] : []),
     ...(copilotHeadroomPort ? [`check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'`] : []),
     ...(mitmPort != null && egressPort ? [`check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'`] : []),
   ];
