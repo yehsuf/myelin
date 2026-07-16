@@ -1,4 +1,4 @@
-import { platform, arch as _arch } from 'node:os';
+import { platform, arch as _arch, userInfo } from 'node:os';
 import { env } from 'node:process';
 import { isWsl } from './wsl.mjs';
 
@@ -27,6 +27,13 @@ export function detectShell() {
   if (process.platform === 'win32') {
     return env.COMSPEC ?? 'powershell.exe';
   }
+  // userInfo().shell reads /etc/passwd — correct even in SSH sessions where
+  // $SHELL may be inherited from the client machine (e.g. /bin/zsh on a Mac
+  // connecting to a Linux host that uses /bin/bash).
+  try {
+    const loginShell = userInfo().shell;
+    if (loginShell) return loginShell;
+  } catch {}
   return env.SHELL ?? '/bin/sh';
 }
 
