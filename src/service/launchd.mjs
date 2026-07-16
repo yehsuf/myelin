@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
@@ -139,6 +139,33 @@ export function writeValidatedPlist({
   return path;
 }
 
+/**
+ * Return true when `port` has a process actively listening on 127.0.0.1.
+ * Used to decide whether a service restart is necessary during install.
+ * Injected `impl` allows unit tests to override without shelling out.
+ */
+export function isPortResponding(port, { execFileSyncImpl = execFileSync } = {}) {
+  try {
+    execFileSyncImpl('nc', ['-z', '-w', '1', '127.0.0.1', String(port)], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return true when the file at `path` already contains exactly `content`.
+ * A missing file returns false (restart needed).
+ */
+export function isPlistUnchanged(path, content, { readFileSyncImpl = readFileSync, existsSyncImpl = existsSync } = {}) {
+  if (!existsSyncImpl(path)) return false;
+  try {
+    return readFileSyncImpl(path, 'utf8') === content;
+  } catch {
+    return false;
+  }
+}
+
 export function generatePlist(opts = {}) {
   const mergedEnv = opts.interceptToolResults
     ? { HEADROOM_INTERCEPT_ENABLED: '1', ...opts.envVars }
@@ -221,11 +248,22 @@ export function engineInstancePlistPath(instance) {
 }
 
 export function installEngineInstance(instance, options = {}) {
+  const {
+    _isPortResponding = isPortResponding,
+    _isPlistUnchanged = isPlistUnchanged,
+    ...opts
+  } = options;
   const { label } = engineInstanceIdentity(instance);
   const p = engineInstancePlistPath(instance);
-  const content = generateEngineInstancePlist({ instance, ...options });
+  const content = generateEngineInstancePlist({ instance, ...opts });
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
+  // Skip restart entirely when config is unchanged and the service is already
+  // responding — avoids the ~5s bootout/bootstrap gap that causes Copilot CLI
+  // ECONNREFUSED during routine reinstalls.
+  if (_isPlistUnchanged(p, content) && _isPortResponding(instance.port)) {
+    return 'skipped';
+  }
   // Validate + atomically replace BEFORE booting out the running job, so an
   // invalid plist (bad XML from a `&`/`<` path) can never leave the host with a
   // booted-out job and no working replacement.
@@ -234,6 +272,7 @@ export function installEngineInstance(instance, options = {}) {
   try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
   execSync(`launchctl bootstrap gui/${uid} ${p}`);
+  return 'restarted';
 }
 
 export function engineInstanceStatus(instance) {
@@ -270,7 +309,7 @@ export function removeEngineInstance(instance) {
  *  redirects (arrival-port gating in the addon itself), it only owns real
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged }) {
   const p = mitmPlistPath();
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
@@ -319,11 +358,17 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     logPath: logPath ?? joinManaged(managedPaths({ home: home ?? homedir(), env }).root, 'mitmproxy.log'),
   });
   mkdirSync(join(homedir(), 'Library', 'LaunchAgents'), { recursive: true });
+  // Skip restart when config is unchanged and mitmproxy is already listening —
+  // avoids the ~5s bootout/bootstrap gap that causes Copilot CLI ECONNREFUSED.
+  if (_isPlistUnchanged(p, content) && _isPortResponding(port)) {
+    return 'skipped';
+  }
   writeValidatedPlist({ path: p, content });
   const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
   try { execSync(`launchctl bootout gui/${uid}/${MITM_LABEL}`, { stdio: 'ignore' }); } catch {}
   execSync('sleep 1');
   execSync(`launchctl bootstrap gui/${uid} ${p}`);
+  return 'restarted';
 }
 
 export function removeMitmService({

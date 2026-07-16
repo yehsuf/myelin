@@ -1,4 +1,4 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
@@ -282,6 +282,30 @@ function assertNoSystemdEnvControlChars(mergedEnv = {}) {
   }
 }
 
+/**
+ * Return true when `port` has a process actively listening on 127.0.0.1.
+ */
+export function isPortResponding(port, { execFileSyncImpl = execSync } = {}) {
+  try {
+    execFileSyncImpl(`nc -z -w 1 127.0.0.1 ${port}`, { stdio: 'ignore', shell: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return true when the file at `path` already contains exactly `content`.
+ */
+export function isUnitUnchanged(path, content, { readFileSyncImpl = readFileSync, existsSyncImpl = existsSync } = {}) {
+  if (!existsSyncImpl(path)) return false;
+  try {
+    return readFileSyncImpl(path, 'utf8') === content;
+  } catch {
+    return false;
+  }
+}
+
 export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
@@ -323,15 +347,26 @@ export function engineInstanceUnitPath(instance) {
 }
 
 export function installEngineInstance(instance, options = {}) {
+  const {
+    _isPortResponding = isPortResponding,
+    _isUnitUnchanged = isUnitUnchanged,
+    ...opts
+  } = options;
   const { serviceId } = engineInstanceIdentity(instance);
-  const content = validateSystemdUnit(generateEngineInstanceUnit({ instance, ...options }));
+  const content = validateSystemdUnit(generateEngineInstanceUnit({ instance, ...opts }));
   const p = engineInstanceUnitPath(instance);
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
+  // Skip restart when unit file is unchanged and service is already active —
+  // avoids the brief service gap during routine reinstalls.
+  if (_isUnitUnchanged(p, content) && _isPortResponding(instance.port)) {
+    return 'skipped';
+  }
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
   execSync(`systemctl --user enable ${serviceId}.service`);
   execSync(`systemctl --user restart ${serviceId}.service`);
+  return 'restarted';
 }
 
 export function engineInstanceStatus(instance) {
@@ -398,7 +433,7 @@ export function copilotHeadroomServiceStatus(opts = {}) {
   return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env, _isPortResponding = isPortResponding, _isUnitUnchanged = isUnitUnchanged }) {
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
@@ -415,16 +450,16 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   }));
   const p = mitmUnitPath();
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
+  // Skip restart when unit is unchanged and mitmproxy is already listening.
+  if (_isUnitUnchanged(p, content) && _isPortResponding(port)) {
+    return 'skipped';
+  }
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
   execSync('systemctl --user enable myelin-mitmproxy.service');
-  // See installService() above — `enable --now` doesn't restart an
-  // already-running unit, which left a stale mitmdump process (pointing at
-  // a deleted ~/.tokenstack path) running for 7+ hours after today's
-  // ~/.tokenstack -> ~/.myelin migration, silently failing every TLS
-  // connection to api.business.githubcopilot.com. `restart` is always
-  // correct: starts if stopped, cleanly restarts if already running.
+  // `restart` is always correct: starts if stopped, cleanly restarts if running.
   execSync('systemctl --user restart myelin-mitmproxy.service');
+  return 'restarted';
 }
 
 export function removeMitmService({
