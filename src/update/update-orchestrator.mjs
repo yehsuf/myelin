@@ -2372,6 +2372,18 @@ export function resolveStoragePlatform(platform, { wsl = false } = {}) {
   return wsl ? 'linux' : platform;
 }
 
+/**
+ * Apply a release pointer pair AND sync current.json so both pointer systems
+ * stay consistent. Used by the default applyReleasePair/restoreReleasePair
+ * dependency. Exported for direct testing.
+ */
+export async function syncReleasePair(pair, { releasesRoot, home, platform, fs = nodeFs } = {}) {
+  await restoreRelease({ releasesRoot, pointers: pair, platform, fs });
+  if (pair.current !== null && pair.current !== undefined) {
+    writeCurrentRelease({ home, releaseId: pair.current });
+  }
+}
+
 function defaultDependencies({
   home = homedir(),
   platform = detectOS(),
@@ -2455,19 +2467,12 @@ function defaultDependencies({
   const defaultRestoreComponentPairs = async (pairs, _state, context) => (
     defaultApplyComponentPairs(pairs, undefined, context)
   );
-  const defaultApplyReleasePair = async pair => {
-    await restoreRelease({
-      releasesRoot: paths.releasesRoot,
-      pointers: pair,
-      platform: storagePlatform,
-      fs,
-    });
-    // Keep current.json in sync with the current symlink so `myelin verify`
-    // stays green after every orchestrated update.
-    if (pair.current !== null && pair.current !== undefined) {
-      writeCurrentRelease({ home, rootDir, releaseId: pair.current });
-    }
-  };
+  const defaultApplyReleasePair = async pair => syncReleasePair(pair, {
+    releasesRoot: paths.releasesRoot,
+    home,
+    platform: storagePlatform,
+    fs,
+  });
 
   const deps = {
     paths,
