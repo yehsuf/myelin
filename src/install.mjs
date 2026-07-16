@@ -1067,6 +1067,7 @@ async function installMitmproxyCA(home, interactive = true) {
       const answer = await promptYN(`Add mitmproxy CA to ${pemPath}? [Y/n]: `);
       if (!answer) { skip(`${pemPath} — skipped`); continue; }
     }
+    // Non-interactive (e.g. myelin update): always add mitmproxy CA automatically
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     try { copyFileSync(pemPath, `${pemPath}.bak.${ts}`); } catch {}
     writeFileSync(pemPath,
