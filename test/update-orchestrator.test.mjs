@@ -881,3 +881,74 @@ describe('finding 4: staged-apply child identity is durably recorded before spaw
     assert.equal(events.includes('restore-release'), false, 'must not roll back while child alive');
   });
 })
+
+// ─── Integration test: syncReleasePair syncs both pointer systems ─────────────
+import { tmpdir } from 'node:os';
+import { mkdtempSync, symlinkSync, readlinkSync, realpathSync } from 'node:fs';
+import { syncReleasePair } from '../src/update/update-orchestrator.mjs';
+import { readCurrentRelease } from '../src/runtime/release-store.mjs';
+
+describe('syncReleasePair', { concurrency: false }, () => {
+  it('writes current.json and updates the current symlink atomically', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sync-release-pair-'));
+    try {
+      const releasesRoot = join(home, '.myelin', 'releases');
+      const oldId = 'main-abcdef1234567890abcdef1234567890abcdef12';
+      const newId = 'main-1234567890abcdef1234567890abcdef12345678';
+      fs.mkdirSync(join(releasesRoot, oldId), { recursive: true });
+      fs.mkdirSync(join(releasesRoot, newId), { recursive: true });
+
+      // Bootstrap: old release active
+      await syncReleasePair(
+        { current: oldId, previous: null },
+        { releasesRoot, home, platform: 'linux' },
+      );
+      assert.equal(readCurrentRelease({ home })?.releaseId, oldId,
+        'current.json should point to old release after bootstrap');
+
+      // Activate: new release
+      await syncReleasePair(
+        { current: newId, previous: oldId },
+        { releasesRoot, home, platform: 'linux' },
+      );
+
+      // Both pointer systems must agree
+      const jsonRelease = readCurrentRelease({ home });
+      const symlinkTarget = realpathSync(join(home, '.myelin', 'current'));
+      const expectedRoot = realpathSync(join(releasesRoot, newId));
+
+      assert.equal(jsonRelease?.releaseId, newId,
+        'current.json must point to new release');
+      assert.equal(symlinkTarget, expectedRoot,
+        'current symlink must resolve to new release dir');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps current.json in sync when called from restoreReleasePair scenario', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'sync-release-restore-'));
+    try {
+      const releasesRoot = join(home, '.myelin', 'releases');
+      const newId = 'main-1234567890abcdef1234567890abcdef12345678';
+      const oldId = 'main-abcdef1234567890abcdef1234567890abcdef12';
+      fs.mkdirSync(join(releasesRoot, newId), { recursive: true });
+      fs.mkdirSync(join(releasesRoot, oldId), { recursive: true });
+
+      // Simulate: current was newId but rolled back to oldId
+      await syncReleasePair(
+        { current: newId, previous: null },
+        { releasesRoot, home, platform: 'linux' },
+      );
+      await syncReleasePair(
+        { current: oldId, previous: newId },
+        { releasesRoot, home, platform: 'linux' },
+      );
+
+      assert.equal(readCurrentRelease({ home })?.releaseId, oldId,
+        'current.json must follow symlink after rollback');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
