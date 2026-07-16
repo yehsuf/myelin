@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, chmodSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { createServer } from 'node:net';
 import * as windowsService from '../src/service/windows.mjs';
 import {
   generatePlist,
@@ -476,6 +477,116 @@ describe('WSL PowerShell registration paths', () => {
     assert.equal(watchdogCalls.length, 1);
     assert.match(watchdogCalls[0].script, /Myelin Headroom Primary Watchdog/);
     assert.equal(watchdogCalls[0].options.home, home);
+  });
+});
+
+describe('windows WinSW zero-downtime skip', () => {
+  const skipInstallArgs = (overrides = {}) => ({
+    id: 'headroom-primary',
+    name: 'Myelin Headroom Primary',
+    description: 'Myelin headroom primary',
+    executable: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+    arguments: 'proxy --port 8787',
+    logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+    workingDirectory: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+    home: 'C:\\Users\\alice',
+    port: 8787,
+    forceRestart: false,
+    mkdirSyncImpl: () => {},
+    existsSyncImpl: () => false,
+    copyFileSyncImpl: () => {},
+    writeFileSyncImpl: () => {},
+    renameSyncImpl: () => {},
+    unlinkSyncImpl: () => {},
+    runPsFn: () => {},
+    ...overrides,
+  });
+
+  it('isPortResponding returns true when a port is open', async () => {
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    try {
+      assert.equal(await windowsService.isPortResponding(port), true);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  it('isPortResponding returns false when a port is closed', async () => {
+    const server = createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+    assert.equal(await windowsService.isPortResponding(port), false);
+  });
+
+  it('isWinswConfigUnchanged returns true when file matches content', () => {
+    assert.equal(
+      windowsService.isWinswConfigUnchanged('/svc.xml', '<service/>', { readFile: () => '<service/>' }),
+      true,
+    );
+  });
+
+  it('isWinswConfigUnchanged returns false when file differs', () => {
+    assert.equal(
+      windowsService.isWinswConfigUnchanged('/svc.xml', '<service/>', { readFile: () => '<other/>' }),
+      false,
+    );
+  });
+
+  it('isWinswConfigUnchanged returns false when file is missing', () => {
+    assert.equal(
+      windowsService.isWinswConfigUnchanged('/svc.xml', '<service/>', {
+        readFile: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); },
+      }),
+      false,
+    );
+  });
+
+  it('installWinswService skips restart when config unchanged and port responds', async () => {
+    let installWinswCalled = false;
+    const result = await windowsService.installWinswService(skipInstallArgs({
+      _isWinswConfigUnchanged: () => true,
+      _isPortResponding: async () => true,
+      installWinswImpl: async () => { installWinswCalled = true; return { path: 'x', filesystemPath: 'x' }; },
+    }));
+    assert.equal(result.skipped, true);
+    assert.equal(installWinswCalled, false);
+  });
+
+  it('installWinswService restarts when config differs even if port responds', async () => {
+    let installWinswCalled = false;
+    const result = await windowsService.installWinswService(skipInstallArgs({
+      _isWinswConfigUnchanged: () => false,
+      _isPortResponding: async () => true,
+      installWinswImpl: async () => { installWinswCalled = true; return { path: 'x', filesystemPath: 'x' }; },
+    }));
+    assert.equal(result.skipped, undefined);
+    assert.equal(installWinswCalled, true);
+  });
+
+  it('installWinswService restarts when port not responding even if config unchanged', async () => {
+    let installWinswCalled = false;
+    const result = await windowsService.installWinswService(skipInstallArgs({
+      _isWinswConfigUnchanged: () => true,
+      _isPortResponding: async () => false,
+      installWinswImpl: async () => { installWinswCalled = true; return { path: 'x', filesystemPath: 'x' }; },
+    }));
+    assert.equal(result.skipped, undefined);
+    assert.equal(installWinswCalled, true);
+  });
+
+  it('installWinswService force-restarts even when config unchanged and port responds', async () => {
+    let installWinswCalled = false;
+    const result = await windowsService.installWinswService(skipInstallArgs({
+      forceRestart: true,
+      _isWinswConfigUnchanged: () => true,
+      _isPortResponding: async () => true,
+      installWinswImpl: async () => { installWinswCalled = true; return { path: 'x', filesystemPath: 'x' }; },
+    }));
+    assert.equal(result.skipped, undefined);
+    assert.equal(installWinswCalled, true);
   });
 });
 

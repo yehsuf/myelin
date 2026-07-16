@@ -1,4 +1,5 @@
 import { execFileSync, execSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, posix as pathPosix, win32 as pathWin32 } from 'node:path';
@@ -1016,6 +1017,40 @@ async function replaceFileWithRetry({
   throw lastErr;
 }
 
+/**
+ * Return true when `port` accepts a TCP connection on 127.0.0.1 within ~200ms.
+ * Used to decide whether a WinSW service restart is necessary during install.
+ * Windows-safe (no `nc` dependency) — uses Node's own net stack.
+ */
+export function isPortResponding(port) {
+  if (port == null) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const socket = createConnection({ host: '127.0.0.1', port, timeout: 200 });
+    socket.on('connect', () => { socket.destroy(); done(true); });
+    socket.on('error', () => { socket.destroy(); done(false); });
+    socket.on('timeout', () => { socket.destroy(); done(false); });
+  });
+}
+
+/**
+ * Return true when the WinSW config file at `configPath` already contains
+ * exactly `content`. A missing/unreadable file returns false (restart needed).
+ * `opts.readFile` is injectable for tests.
+ */
+export function isWinswConfigUnchanged(configPath, content, { readFile = readFileSync } = {}) {
+  try {
+    return readFile(configPath, 'utf8') === content;
+  } catch {
+    return false;
+  }
+}
+
 export async function installWinswService({
   id,
   name,
@@ -1027,6 +1062,10 @@ export async function installWinswService({
   workingDirectory,
   home,
   env = process.env,
+  port = null,
+  forceRestart = false,
+  _isPortResponding = isPortResponding,
+  _isWinswConfigUnchanged = isWinswConfigUnchanged,
   onFailureDelays = ['5 sec', '30 sec'],
   resetFailure = '1 hour',
   isWslImpl = isWsl,
@@ -1053,6 +1092,28 @@ export async function installWinswService({
   const configFilesystemPath = winswFilesystemPathFor(configPath, { isWslImpl });
   const logFilesystemDir = winswFilesystemPathFor(logDir, { isWslImpl });
 
+  const xml = generateWinswConfigXml({
+    id,
+    name,
+    description,
+    executable: windowsPath(executable),
+    arguments: serviceArguments,
+    logPath: logDir,
+    workingDirectory: workingDirectory ? windowsPath(workingDirectory) : undefined,
+    envVars: defaultServiceEnv({ home: winHome, env, envVars }),
+    onFailureDelays,
+    resetFailure,
+  });
+
+  // Skip the restart entirely when the config is byte-identical and the service
+  // is already responding — avoids the download/uninstall/reinstall gap that
+  // causes ECONNREFUSED during routine reinstalls. forceRestart bypasses it.
+  if (!forceRestart
+    && _isWinswConfigUnchanged(configFilesystemPath, xml)
+    && await _isPortResponding(port)) {
+    return { id, serviceExePath, configPath, logDir, skipped: true };
+  }
+
   const stagedExePath = `${serviceFilesystemExePath}.new`;
   const stagedConfigPath = `${configFilesystemPath}.new`;
   const backupExePath = `${serviceFilesystemExePath}.bak`;
@@ -1073,18 +1134,6 @@ export async function installWinswService({
   const winswSource = winsw.filesystemPath ?? winswFilesystemPathFor(winsw.path, { isWslImpl });
   copyFileSyncImpl(winswSource, stagedExePath);
 
-  const xml = generateWinswConfigXml({
-    id,
-    name,
-    description,
-    executable: windowsPath(executable),
-    arguments: serviceArguments,
-    logPath: logDir,
-    workingDirectory: workingDirectory ? windowsPath(workingDirectory) : undefined,
-    envVars: defaultServiceEnv({ home: winHome, env, envVars }),
-    onFailureDelays,
-    resetFailure,
-  });
   writeFileSyncImpl(stagedConfigPath, xml, 'utf8');
 
   // 2. Back up and stop/uninstall any previous service so it releases the exe
@@ -1510,6 +1559,9 @@ export async function installEngineInstance(instance, {
   home,
   env = process.env,
   runPsFn = runPs,
+  forceRestart = false,
+  _isPortResponding = isPortResponding,
+  _isWinswConfigUnchanged = isWinswConfigUnchanged,
   ...options
 } = {}) {
   const identity = engineInstanceIdentity(instance);
@@ -1534,6 +1586,10 @@ export async function installEngineInstance(instance, {
     workingDirectory: instance.stateDir,
     home,
     env,
+    port: instance.port,
+    forceRestart,
+    _isPortResponding,
+    _isWinswConfigUnchanged,
   });
 }
 
@@ -2478,7 +2534,7 @@ export function removeMitmService({
   return removed || manager === 'registry';
 }
 
-export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry' }) {
+export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry', forceRestart = false, _isPortResponding = isPortResponding, _isWinswConfigUnchanged = isWinswConfigUnchanged }) {
   const persistedEnv = withForwardedMyelinDir(envVars, env);
   if (manager !== 'winsw') {
     runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, home }), { home, env });
@@ -2494,6 +2550,10 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
     logPath,
     home,
     env,
+    port,
+    forceRestart,
+    _isPortResponding,
+    _isWinswConfigUnchanged,
   });
 }
 
