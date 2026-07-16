@@ -133,7 +133,7 @@ export function writeCurrentRelease({
 
     // Keep current symlink in sync with current.json
     const symlinkPath = joinManaged(paths.root, 'current');
-    try { unlinkSyncFn(symlinkPath); } catch { /* not present yet */ }
+    try { unlinkSyncFn(symlinkPath); } catch { /* ignore — not present or already gone */ }
     if (platform === 'win32') {
       symlinkSyncFn(pointer.runtimeRoot, symlinkPath, 'junction');
     } else {
