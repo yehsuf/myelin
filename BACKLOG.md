@@ -49,9 +49,10 @@
 - Move to **Recently Completed** when merged; include PR number and commit SHA.
 - Update this file in the same PR as the implementation (not a separate cleanup PR).
 - Session SQL todos are a scratchpad only — always sync final state back here.
+- **Before adding any new item:** propose it first (ID, description, which repo, priority, why it's new — not a duplicate/extension of an existing item). Get explicit user approval. Do not add without approval.
 
 ### Task claiming protocol (multi-agent)
-> Tools live in `~/.myelin/bin/` (local only, not in repo). Agent identity stored in `~/.myelin/agent-name`.
+> Tools live in `~/.myelin/bin/` (local only, not in repo). Agent identity stored in `~/.myelin/agents/<session-id>.json`.
 
 **Rules — non-negotiable:**
 - **Never start work on a task you have not claimed.** Always `myelin-claim <task-id>` first.
@@ -77,6 +78,25 @@ myelin-unclaim --all              # release all this session's claims (on exit)
 myelin-claims --expire            # clean up expired/dead-session claims
 ```
 
+**Closing a task as done (until myelin-done exists):**
+```bash
+myelin-unclaim <task-id>          # 1. release claim (script handles claim file + BACKLOG in-progress→planned)
+# 2. manually edit BACKLOG.md: move row to Recently Completed, set status=done, add PR/SHA evidence
+git add BACKLOG.md && git commit -m "chore: mark <task-id> done" && git push origin main
+```
+
+**First-aid — known problems:**
+
+| Problem | Fix |
+|---------|-----|
+| Forgot to claim before starting | `myelin-claim <id>` now — better late than never; add note in PR |
+| Claim file exists but scripts missing (new machine) | Copy scripts from another machine: `scp muc-lhvsuz:~/.myelin/bin/myelin-* ~/.myelin/bin/ && chmod +x ~/.myelin/bin/myelin-*` |
+| `myelin-claim` fails: "session not registered" | `myelin-agent init <your-name>` first |
+| `COPILOT_AGENT_SESSION_ID` not set | Check `echo $COPILOT_AGENT_SESSION_ID`; if empty, set manually: `export COPILOT_AGENT_SESSION_ID=$(uuidgen)` (session-local only) |
+| Stale claim from dead session blocking you | `myelin-claims` to confirm it's expired (>120m), then `myelin-claim <id> --force` |
+| Accidentally bypassed scripts (edited BACKLOG directly) | Remove claim file manually: `rm ~/.myelin/claims/<id>.json`; document what you did in next commit message |
+| Claim on wrong task | `myelin-unclaim <wrong-id>` then `myelin-claim <right-id>` |
+
 > **Note:** Agent = Copilot/Claude session (`COPILOT_AGENT_SESSION_ID`). A new session is a
 > new agent. Expired claims (no heartbeat > 120m) indicate a dead session —
 > `myelin-claims --expire` to clean up.
@@ -87,6 +107,7 @@ myelin-claims --expire            # clean up expired/dead-session claims
 
 | ID | Priority | Status | Work | Evidence / Branch | Next action |
 | --- | --- | --- | --- | --- | --- |
+| UPDATE-SYNC-001 | P1 | planned | **Fix `myelin update` current.json sync** — after `myelin update`, `activateRelease()` updates `~/.myelin/current` symlink (40-char SHA) but `stageMainRuntime` wrote `current.json` with 12-char SHA to a different release dir — these are separate systems. Result: `myelin verify` shows `✗ Managed runtime: current.json ≠ symlink` after every update; requires manual fix. Fix: after `activateRelease()` runs, rewrite `current.json` to match the new symlink target. | — | Trace `activateRelease()` in `src/update/release-store.mjs` + `stageMainRuntime` in `src/runtime/stage-main.mjs`; unify |
 | DEPLOY-ZDT-WIN-001 | P2 | planned | **Zero-downtime service swap — Windows** — `src/service/windows.mjs` was excluded from PR #38 (skip-if-unchanged). Add `isPortResponding()` + registry/WinSW config unchanged check; skip restart when config is byte-identical and port responds. Same pattern as launchd/systemd. | — | Worktree → TDD → implement in `windows.mjs` → test on yeh-legion.local → PR |
 | MITM-MODEL-001 | P2 | planned | **MITM model tracking** — `myelin stats` only shows `gpt-5.4-nano`/`gpt-4o-mini`. Check `~/.myelin/mitmproxy.log` for actual model distribution; improve headroom-lite stats to show model breakdown from `/v1/messages` `model` field. | — | Investigate log first, then implement |
 | HLITE-B4-001 | P3 | planned | **headroom-lite B4 proxy request-path ports** — H/2 reset handling, favicon 204, `MIN_TOKENS=0`, SSE passthrough, stream-lock release. Deferred to avoid `server.mjs` conflicts. SKIP TOIN/CCR (ML, out of scope). | — | Ready to start (DEPLOY-ZDT-001 done) |
@@ -99,6 +120,7 @@ myelin-claims --expire            # clean up expired/dead-session claims
 | ID | Status | Work | Evidence |
 | --- | --- | --- | --- |
 | DEPLOY-ZDT-001 | done | **Zero-downtime service swap** — skip-if-unchanged gate in `launchd.mjs` + `systemd.mjs`; `isPortResponding`, `isPlistUnchanged`/`isUnitUnchanged`, `forceRestart` option; `mitmPlistPath(home)` bug fix; `myelin verify` managed-runtime check added. | PR #38, `a5d0386` |
+| DOCS-CLI-001 | done | **CLI clarity docs** — improved CLI command documentation and help text. | `feat/docs-cli-clarity`, squash-merged |
 | INSTALL-001 | done | Managed immutable runtime: `~/.myelin/releases/`, `current.json` pointer, `myelin update`, `MYELIN_DIR` end-to-end. | PR #24, `5eb9e3b` |
 | DEPLOY-001 | done | Bootstrapped all 3 machines (Mac/Linux/Windows) onto managed runtime. Fixed `install.ps1` pipeline-capture bug. | PRs #29–31, 2026-07-15 |
 | STREAM-001 | done | Prevent Copilot `/responses` stream EOF after a 418-to-SOCKS5 fallback. | PR #20 — async offload, responses-input handler, relay streaming fix. |
