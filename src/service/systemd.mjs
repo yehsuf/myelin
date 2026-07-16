@@ -1,7 +1,7 @@
-import { writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join, posix as pathPosix } from 'node:path';
 import { homedir } from 'node:os';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines } from './wrappers.mjs';
 import { resolveHeadroomLiteEntrypoint } from './headroom-lite-command.mjs';
 import { managedPaths, joinManaged, withForwardedMyelinDir } from '../shared/myelin-paths.mjs';
@@ -282,6 +282,31 @@ function assertNoSystemdEnvControlChars(mergedEnv = {}) {
   }
 }
 
+/**
+ * Return true when `port` has a process actively listening on 127.0.0.1.
+ */
+export function isPortResponding(port, { execFileSyncImpl = execFileSync } = {}) {
+  if (port == null) return false;
+  try {
+    execFileSyncImpl('nc', ['-z', '-w', '1', '127.0.0.1', String(port)], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Return true when the file at `path` already contains exactly `content`.
+ */
+export function isUnitUnchanged(path, content, { readFileSyncImpl = readFileSync, existsSyncImpl = existsSync } = {}) {
+  if (!existsSyncImpl(path)) return false;
+  try {
+    return readFileSyncImpl(path, 'utf8') === content;
+  } catch {
+    return false;
+  }
+}
+
 export function generateEngineInstanceUnit({ instance, envVars = {}, env = process.env, ...options }) {
   const { serviceId, description } = engineInstanceIdentity(instance);
   const command = engineInstanceCommand(instance, options);
@@ -323,15 +348,29 @@ export function engineInstanceUnitPath(instance) {
 }
 
 export function installEngineInstance(instance, options = {}) {
+  const {
+    _isPortResponding = isPortResponding,
+    _isUnitUnchanged = isUnitUnchanged,
+    forceRestart = false,
+    ...opts
+  } = options;
   const { serviceId } = engineInstanceIdentity(instance);
-  const content = validateSystemdUnit(generateEngineInstanceUnit({ instance, ...options }));
+  const content = validateSystemdUnit(generateEngineInstanceUnit({ instance, ...opts }));
   const p = engineInstanceUnitPath(instance);
   mkdirSync(instance.stateDir, { recursive: true });
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
+  // Skip restart when unit file is unchanged and service is already active —
+  // avoids the brief service gap during routine reinstalls.
+  // forceRestart=true bypasses skip for callers that just overwrote a referenced
+  // file (e.g. Python addon) at a stable path.
+  if (!forceRestart && _isUnitUnchanged(p, content) && _isPortResponding(instance.port)) {
+    return 'skipped';
+  }
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
   execSync(`systemctl --user enable ${serviceId}.service`);
   execSync(`systemctl --user restart ${serviceId}.service`);
+  return 'restarted';
 }
 
 export function engineInstanceStatus(instance) {
@@ -398,7 +437,7 @@ export function copilotHeadroomServiceStatus(opts = {}) {
   return engineInstanceStatus(legacyEngineInstance({ ...opts, role: 'copilot' }));
 }
 
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, env = process.env }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, egressPort, home, env = process.env, _isPortResponding = isPortResponding, _isUnitUnchanged = isUnitUnchanged, forceRestart = false }) {
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
     : ['--listen-port', String(port), '-s', addonPath];
@@ -413,18 +452,20 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
     env,
   }));
-  const p = mitmUnitPath();
+  const p = mitmUnitPath(home ?? homedir());
   mkdirSync(join(homedir(), '.config', 'systemd', 'user'), { recursive: true });
+  // Skip restart when unit is unchanged and mitmproxy is already listening.
+  // forceRestart=true bypasses the skip (e.g. when the installer knows it just
+  // overwrote a referenced file such as the Python addon at a stable path).
+  if (!forceRestart && _isUnitUnchanged(p, content) && _isPortResponding(port)) {
+    return 'skipped';
+  }
   writeFileSync(p, content, 'utf8');
   execSync('systemctl --user daemon-reload');
   execSync('systemctl --user enable myelin-mitmproxy.service');
-  // See installService() above — `enable --now` doesn't restart an
-  // already-running unit, which left a stale mitmdump process (pointing at
-  // a deleted ~/.tokenstack path) running for 7+ hours after today's
-  // ~/.tokenstack -> ~/.myelin migration, silently failing every TLS
-  // connection to api.business.githubcopilot.com. `restart` is always
-  // correct: starts if stopped, cleanly restarts if already running.
+  // `restart` is always correct: starts if stopped, cleanly restarts if running.
   execSync('systemctl --user restart myelin-mitmproxy.service');
+  return 'restarted';
 }
 
 export function removeMitmService({
