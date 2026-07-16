@@ -78,11 +78,10 @@ myelin-unclaim --all              # release all this session's claims (on exit)
 myelin-claims --expire            # clean up expired/dead-session claims
 ```
 
-**Closing a task as done (until myelin-done exists):**
+**Closing a task as done:**
 ```bash
-myelin-unclaim <task-id>          # 1. release claim (script handles claim file + BACKLOG in-progress→planned)
-# 2. manually edit BACKLOG.md: move row to Recently Completed, set status=done, add PR/SHA evidence
-git add BACKLOG.md && git commit -m "chore: mark <task-id> done" && git push origin main
+myelin-done <task-id> "<pr-evidence>"   # moves row to Recently Completed, removes claim, commits+pushes
+# e.g. myelin-done UPDATE-SYNC-001 "PR #39, abc1234"
 ```
 
 **First-aid — known problems:**
