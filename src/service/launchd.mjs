@@ -1,5 +1,5 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
-import { join, posix as pathPosix } from 'node:path';
+import { join, posix as pathPosix, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { buildServiceEnvUnsetLines, SERVER_FORBIDDEN_ENV } from './wrappers.mjs';
@@ -144,14 +144,92 @@ export function writeValidatedPlist({
  * Used to decide whether a service restart is necessary during install.
  * Injected `impl` allows unit tests to override without shelling out.
  */
-export function isPortResponding(port, { execFileSyncImpl = execFileSync } = {}) {
+export function isPortResponding(port, { execFileSyncImpl = execFileSync, attempts = 3 } = {}) {
   if (port == null) return false;
-  try {
-    execFileSyncImpl('nc', ['-z', '-w', '1', '127.0.0.1', String(port)], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
+  // Retry a few times before declaring the port down. A single `nc -z -w 1`
+  // probe false-negatives against a busy-but-healthy proxy under streaming
+  // load, which used to trigger a needless restart of a working mitmproxy
+  // (brief ECONNREFUSED / os error 61). Any success => responding. (The watchdog
+  // bash probe is hardened with the same retry + a live-PID guard in
+  // generateLaunchdWatchdogScript.)
+  for (let i = 0; i < Math.max(1, attempts); i++) {
+    try {
+      execFileSyncImpl('nc', ['-z', '-w', i === 0 ? '1' : '2', '127.0.0.1', String(port)], { stdio: 'ignore' });
+      return true;
+    } catch {
+      // try again
+    }
   }
+  return false;
+}
+
+/**
+ * True when `plistPath` lives under the REAL user's `~/Library/LaunchAgents`
+ * (the only place a gui-domain launchd agent legitimately belongs).
+ *
+ * This is an ALLOWLIST — inverting the earlier "is it under the temp dir?"
+ * blocklist, which was fragile: it missed `/tmp` / `/private/tmp`, broke when
+ * `$TMPDIR` was set to `/` or `$HOME`, and depended on os.tmpdir() matching the
+ * exact temp root a test used. The allowlist is robust regardless of $TMPDIR:
+ * a test's fake HOME (temp dir, /tmp, anywhere) is never under the real
+ * ~/Library/LaunchAgents, so its plist is refused; a real production plist at
+ * <realHome>/Library/LaunchAgents/... is always accepted.
+ *
+ * `home` MUST be the real os.homedir() (never a caller-supplied home, which a
+ * test controls) — that is what makes the guard un-bypassable by a fake HOME.
+ */
+export function isManagedLaunchAgentPath(plistPath, home = homedir()) {
+  if (!plistPath || typeof plistPath !== 'string' || !home) return false;
+  const laDir = join(home, 'Library', 'LaunchAgents');
+  return plistPath !== laDir && plistPath.startsWith(laDir + sep);
+}
+
+/**
+ * Robustly replace a launchd agent: bootout the old registration, then
+ * bootstrap the new plist with retries so a bootout/bootstrap race can never
+ * leave the service DOWN. The previous `bootout → sleep 1 → bootstrap` sequence
+ * failed with EIO ("Bootstrap failed: 5: Input/output error") whenever bootout
+ * had not finished within the fixed 1s, and the service stayed down until the
+ * next `myelin update` happened to re-bootstrap it.
+ *
+ * Safety: refuses to bootstrap any plist that is NOT under the real user's
+ * ~/Library/LaunchAgents (unless `allowTmpBootstrap` is set — tests only). This
+ * makes it impossible for a test with a fake temp HOME to register a real
+ * `com.myelin.*` label into the real gui domain.
+ *
+ * All shell-outs go through the injectable `execSyncImpl`, so unit tests never
+ * touch real launchd.
+ */
+export function bootReplaceLaunchdService({
+  uid,
+  label,
+  plistPath,
+  home = homedir(),
+  execSyncImpl = execSync,
+  sleepImpl,
+  maxTries = 5,
+  allowTmpBootstrap = false,
+  isManagedPathImpl = isManagedLaunchAgentPath,
+} = {}) {
+  if (!allowTmpBootstrap && !isManagedPathImpl(plistPath, home)) {
+    throw new Error(`refusing to bootstrap launchd label ${label} from a non-managed plist path (must be under ${join(home, 'Library', 'LaunchAgents')}): ${plistPath}`);
+  }
+  const sleep = sleepImpl ?? ((ms) => { try { execSyncImpl(`sleep ${Math.max(0, ms) / 1000}`); } catch {} });
+  const bootout = () => { try { execSyncImpl(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {} };
+  bootout();
+  let lastErr = null;
+  for (let i = 0; i < Math.max(1, maxTries); i++) {
+    // First wait preserves the original ~1s settle; later waits are shorter.
+    sleep(i === 0 ? 1000 : 500);
+    try {
+      execSyncImpl(`launchctl bootstrap gui/${uid} ${plistPath}`);
+      return true;
+    } catch (e) {
+      lastErr = e;
+      if (i < maxTries - 1) bootout();
+    }
+  }
+  throw lastErr ?? new Error(`launchctl bootstrap failed for ${label}`);
 }
 
 /**
@@ -252,6 +330,7 @@ export function installEngineInstance(instance, options = {}) {
   const {
     _isPortResponding = isPortResponding,
     _isPlistUnchanged = isPlistUnchanged,
+    execSyncImpl = execSync,
     forceRestart = false,
     ...opts
   } = options;
@@ -272,10 +351,8 @@ export function installEngineInstance(instance, options = {}) {
   // invalid plist (bad XML from a `&`/`<` path) can never leave the host with a
   // booted-out job and no working replacement.
   writeValidatedPlist({ path: p, content });
-  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
-  try { execSync(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
-  execSync('sleep 1');
-  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+  const uid = process.getuid?.() ?? execSyncImpl('id -u').toString().trim();
+  bootReplaceLaunchdService({ uid, label, plistPath: p, execSyncImpl });
   return 'restarted';
 }
 
@@ -313,7 +390,7 @@ export function removeEngineInstance(instance) {
  *  redirects (arrival-port gating in the addon itself), it only owns real
  *  network egress (block-bypass/CA/corp-upstream) for that instance.
  */
-export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged, forceRestart = false }) {
+export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, _isPortResponding = isPortResponding, _isPlistUnchanged = isPlistUnchanged, execSyncImpl = execSync, forceRestart = false }) {
   const p = mitmPlistPath(home ?? homedir());
   const args = egressPort
     ? ['--mode', `regular@${port}`, '--mode', `regular@127.0.0.1:${egressPort}`, '-s', addonPath]
@@ -370,10 +447,8 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     return 'skipped';
   }
   writeValidatedPlist({ path: p, content });
-  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
-  try { execSync(`launchctl bootout gui/${uid}/${MITM_LABEL}`, { stdio: 'ignore' }); } catch {}
-  execSync('sleep 1');
-  execSync(`launchctl bootstrap gui/${uid} ${p}`);
+  const uid = process.getuid?.() ?? execSyncImpl('id -u').toString().trim();
+  bootReplaceLaunchdService({ uid, label: MITM_LABEL, plistPath: p, execSyncImpl });
   return 'restarted';
 }
 
@@ -454,16 +529,37 @@ LA="${la}"
 
 check_and_revive() {
   local port="$1" name="$2" glob="$3"
-  if nc -z 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
+  # Retry the probe before declaring the port down — a single nc -z probe
+  # false-negatives against a busy-but-healthy proxy under streaming load,
+  # which used to make the watchdog needlessly tear down a working service.
+  local i
+  for i in 1 2 3; do
+    if nc -z -w 2 127.0.0.1 "$port" 2>/dev/null; then return 0; fi
+    sleep 1
+  done
   local plist
   plist=$(ls "$LA"/$glob 2>/dev/null | grep -v '\.bak' | head -1)
   if [ -z "$plist" ]; then return 0; fi
   local label
   label=$(basename "$plist" .plist)
-  launchctl bootout "gui/$UID_N/$label" 2>/dev/null
-  sleep 1
-  launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null
-  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> ${posixSingleQuote(watchdogLog)}
+  # NEVER kill a service launchd still reports running with a live PID: the
+  # port can transiently fail to answer while the process is perfectly healthy.
+  # Only revive a genuinely dropped job.
+  if launchctl list "$label" 2>/dev/null | grep -qE '"PID"[[:space:]]*=[[:space:]]*[0-9]+'; then
+    return 0
+  fi
+  # Robust re-bootstrap: retry so a bootout/bootstrap EIO ("error 5") race can
+  # never leave the service DOWN (the old fixed sleep + single bootstrap did).
+  local t
+  for t in 1 2 3 4 5; do
+    launchctl bootout "gui/$UID_N/$label" 2>/dev/null
+    sleep 1
+    if launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null; then
+      echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> ${posixSingleQuote(watchdogLog)}
+      return 0
+    fi
+  done
+  echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') FAILED to revive $name ($label) after retries" >> ${posixSingleQuote(watchdogLog)}
 }
 
 ${checks.join('\n')}
@@ -481,7 +577,7 @@ ${checks.join('\n')}
  * automatically otherwise, so Copilot/Claude requests fail with ECONNREFUSED
  * until a human notices and intervenes. This watchdog closes that gap.
  */
-export function installWatchdog({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort } = {}) {
+export function installWatchdog({ home, env = process.env, headroomPort, mitmPort, copilotHeadroomPort, egressPort, execSyncImpl = execSync } = {}) {
   home = home ?? homedir();
   const root = managedPaths({ home, env }).root;
   const binDir = joinManaged(root, 'bin');
@@ -518,10 +614,8 @@ export function installWatchdog({ home, env = process.env, headroomPort, mitmPor
   const plistPathW = join(la, `${WATCHDOG_LABEL}.plist`);
   mkdirSync(la, { recursive: true });
   writeValidatedPlist({ path: plistPathW, content: plistContent });
-  const uid = process.getuid?.() ?? execSync('id -u').toString().trim();
-  try { execSync(`launchctl bootout gui/${uid}/${WATCHDOG_LABEL}`, { stdio: 'ignore' }); } catch {}
-  execSync('sleep 1');
-  execSync(`launchctl bootstrap gui/${uid} ${plistPathW}`);
+  const uid = process.getuid?.() ?? execSyncImpl('id -u').toString().trim();
+  bootReplaceLaunchdService({ uid, label: WATCHDOG_LABEL, plistPath: plistPathW, execSyncImpl });
   return plistPathW;
 }
 

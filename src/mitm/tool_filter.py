@@ -244,6 +244,20 @@ def filter_tools(tools: list[dict], messages: list[dict]) -> tuple[list[dict], b
     if not FILTER_ENABLED or len(tools) < MIN_TOOLS:
         return tools, False
 
+    # Provider-managed deferred tool loading: when the client marks any tool
+    # defer_loading truthy it is managing the visible tool set itself (deferred
+    # tools are surfaced on demand via a tool-search meta-tool). Our relevance
+    # filter must NOT touch tools[] in that mode:
+    #   - dropping every defer_loading=false tool yields a hard provider 400
+    #     ("At least one tool must have defer_loading=false. All tools cannot
+    #     be deferred"), killing the whole request; and
+    #   - dropping a defer_loading=true tool hides it from tool-search.
+    # A truthy (not strict `is True`) check errs toward NOT filtering, so an
+    # unexpected value (e.g. the string "true") can never trip the 400. Deferral
+    # already minimises upfront tool tokens, so there is nothing to save here.
+    if any(isinstance(t, dict) and t.get('defer_loading') for t in tools):
+        return tools, False
+
     query = last_user_text(messages)
     referenced = _referenced_tool_names(messages)
     always_on = [t for t in tools if t.get('name') in ALWAYS_ON]

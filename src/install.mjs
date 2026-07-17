@@ -953,6 +953,31 @@ function printStateTable(tools, caBundles, proxy) {
 }
 
 /**
+ * Single source of truth for the mitmproxy-CA marker. The write path and the
+ * detect path MUST use the same string — the original bug was that we WROTE a
+ * comment marker but DETECTED a decoded X.509 subject ('CN=mitmproxy') that
+ * never appears in a base64 PEM, so detection always failed and the CA was
+ * re-appended on every install/update.
+ */
+export const MITM_CA_MARKER = 'mitmproxy CA (Myelin Copilot interception)';
+
+/** True when a PEM bundle already carries the mitmproxy CA. Detects both the
+ *  current comment marker AND the exact certificate body, so a bundle written
+ *  by an older marker (or no marker) is still recognized — preventing a
+ *  one-time duplicate append on upgrade. */
+export function bundleTrustsMitmCA(content, mitmCert) {
+  if (typeof content !== 'string') return false;
+  if (content.includes(MITM_CA_MARKER)) return true;
+  if (typeof mitmCert === 'string' && mitmCert.trim() && content.includes(mitmCert.trim())) return true;
+  return false;
+}
+
+/** Append the mitmproxy CA (with its marker comment) to a PEM bundle body. */
+export function appendMitmCA(content, mitmCert) {
+  return (content ?? '') + '\n# ' + MITM_CA_MARKER + '\n' + mitmCert + '\n';
+}
+
+/**
  * Install mitmproxy CA into all PEM bundles referenced by env vars.
  * Detects locations from NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, REQUESTS_CA_BUNDLE,
  * HEADROOM_CA_BUNDLE, GIT_SSL_CAINFO, CURL_CA_BUNDLE. Prompts user per file.
@@ -967,7 +992,6 @@ async function installMitmproxyCA(home, interactive = true) {
     return;
   }
   const mitmCert = readFileSync(mitmCaPath, 'utf8');
-  const mitmMarker = 'CN=mitmproxy';
 
   // --- 1. Discover all CA-related paths from environment ---
   const envVars = ['NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
@@ -1053,15 +1077,14 @@ async function installMitmproxyCA(home, interactive = true) {
   }
   // Strip old mitmproxy CA entry, re-add fresh
   const withoutMitm = sysCerts.replace(/\n?# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
-  writeFileSync(ourBundle,
-    (withoutMitm || '') + '\n# mitmproxy CA (Myelin Copilot interception)\n' + mitmCert + '\n', 'utf8');
+  writeFileSync(ourBundle, appendMitmCA(withoutMitm || '', mitmCert), 'utf8');
   ok(`ca-bundle.pem rebuilt from system CAs + mitmproxy CA`);
   discovered.set(ourBundle, { writable: true, isPemBundle: true, content: readFileSync(ourBundle, 'utf8') });
 
   // --- 3. For writable PEM bundles: offer to append mitmproxy CA ---
   for (const [pemPath, { writable, isPemBundle, content }] of discovered) {
     if (!writable || !isPemBundle) continue;
-    if (content.includes(mitmMarker)) { skip(`${pemPath} — already trusts mitmproxy CA`); continue; }
+    if (bundleTrustsMitmCA(content, mitmCert)) { skip(`${pemPath} — already trusts mitmproxy CA`); continue; }
 
     if (interactive) {
       const answer = await promptYN(`Add mitmproxy CA to ${pemPath}? [Y/n]: `);
@@ -1070,8 +1093,7 @@ async function installMitmproxyCA(home, interactive = true) {
     // Non-interactive (e.g. myelin update): always add mitmproxy CA automatically
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
     try { copyFileSync(pemPath, `${pemPath}.bak.${ts}`); } catch {}
-    writeFileSync(pemPath,
-      content + '\n# mitmproxy CA (Myelin Copilot interception)\n' + mitmCert + '\n', 'utf8');
+    writeFileSync(pemPath, appendMitmCA(content, mitmCert), 'utf8');
     ok(`${pemPath} — added mitmproxy CA`);
   }
 
