@@ -88,7 +88,7 @@ export function buildCorporateSslEnv(caBundle = null) {
  * "UnknownIssuer" (the exact Linux breakage this fixes). Fall back to the first
  * detected bundle only when mitmproxy is disabled (no interception CA to trust).
  */
-export function resolveCaEnvBundle({ mitmEnabled = true, myelinCaBundle = null, detectedBundles = [] } = {}) {
-  if (mitmEnabled && myelinCaBundle) return myelinCaBundle;
+export function resolveCaEnvBundle({ mitmEnabled = true, myelinCaBundle = null, myelinCaBundleUsable = true, detectedBundles = [] } = {}) {
+  if (mitmEnabled && myelinCaBundle && myelinCaBundleUsable) return myelinCaBundle;
   return detectedBundles?.[0]?.path ?? null;
 }

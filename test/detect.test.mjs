@@ -170,6 +170,13 @@ describe('resolveCaEnvBundle', () => {
     );
   });
 
+  it('falls back to the detected bundle when the myelin bundle is not usable (missing, update-apply)', () => {
+    assert.equal(
+      resolveCaEnvBundle({ mitmEnabled: true, myelinCaBundle: myelin, myelinCaBundleUsable: false, detectedBundles: system }),
+      system[0].path,
+    );
+  });
+
   it('returns null when nothing is available', () => {
     assert.equal(resolveCaEnvBundle({ mitmEnabled: false, myelinCaBundle: null, detectedBundles: [] }), null);
     assert.equal(resolveCaEnvBundle({}), null);

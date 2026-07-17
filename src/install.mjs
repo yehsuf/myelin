@@ -2584,6 +2584,10 @@ async function main() {
   const sslEnv = buildCorporateSslEnv(resolveCaEnvBundle({
     mitmEnabled: existingCfg?.proxy?.mitm?.enabled !== false,
     myelinCaBundle: managed.caBundlePath,
+    // Usable if it already exists, or a full install (not --update-apply) will
+    // create it this run. Guards the rare update-apply-with-missing-bundle case
+    // from registering a nonexistent CAfile (which curl/git would fail hard on).
+    myelinCaBundleUsable: existsSync(managed.caBundlePath) || !flags['update-apply'],
     detectedBundles: caBundles,
   }));
   const initialEnginePlan = buildEngineInstancePlan(existingCfg);
