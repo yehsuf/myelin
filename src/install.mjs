@@ -1688,6 +1688,24 @@ export function installCopilotSkills({
     mkdirSyncImpl(dir, { recursive: true });
     writeFileSyncImpl(join(dir, 'SKILL.md'), constitutionSkillMd(managedRuntimeCommandPath));
   }
+
+  // ── updating-services ─────────────────────────────────────────────────────────
+  // The SKILL.md is a git-tracked repo file (skills/updating-services/SKILL.md) so
+  // its append-only "Learnings" section is the single source of truth and grows via
+  // PRs. Deploy it exactly like compact-prepare.mjs: symlink on POSIX (repo updates
+  // reflected immediately), copy on Windows (symlinks need developer-mode/admin).
+  {
+    const dir = join(skillsDir, 'updating-services');
+    mkdirSyncImpl(dir, { recursive: true });
+    const src = fileURLToPath(new URL('../skills/updating-services/SKILL.md', import.meta.url));
+    const dst = join(dir, 'SKILL.md');
+    if (os === 'windows') {
+      copyFileSyncImpl(src, dst);
+    } else {
+      try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
+      symlinkSyncImpl(src, dst);
+    }
+  }
 }
 
 /** SKILL.md content for myelin-compact (environment-independent). */

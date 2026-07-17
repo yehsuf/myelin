@@ -1671,6 +1671,37 @@ describe('installCopilotSkills', () => {
     assert.ok(!skill[1].includes('~/tokenstack'), 'must NOT hardcode ~/tokenstack');
   });
 
+  it('creates updating-services SKILL.md symlink from the repo file on POSIX', () => {
+    const links = [];
+    installCopilotSkills({
+      home: '/home/t', copilot: true, repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: () => {}, unlinkSyncImpl: () => {},
+    });
+    const link = links.find(([, d]) => d.includes('updating-services') && d.endsWith('SKILL.md'));
+    assert.ok(link, 'updating-services SKILL.md symlink must be created');
+    assert.ok(link[0].includes('skills/updating-services/SKILL.md'), `src must point to repo skill file: ${link[0]}`);
+    assert.ok(!link[0].includes('~/tokenstack'), 'must NOT hardcode ~/tokenstack');
+  });
+
+  it('copies updating-services SKILL.md on Windows instead of symlinking', () => {
+    const copies = []; const links = [];
+    installCopilotSkills({
+      home: 'C:\\Users\\t', copilot: true, repoRoot: 'C:\\Users\\t\\.myelin\\repo', os: 'windows',
+      managedRuntimeCommandPath: 'C:\\Users\\t\\.myelin\\bin\\myelin.cmd',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: () => {},
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: (s, d) => copies.push([s, d]),
+      unlinkSyncImpl: () => {},
+    });
+    assert.ok(copies.some(([, d]) => d.includes('updating-services') && d.endsWith('SKILL.md')), 'must copy updating-services on Windows');
+    assert.ok(!links.some(([, d]) => d.includes('updating-services')), 'must NOT symlink updating-services on Windows');
+  });
+
   it('copies compact-prepare.mjs on Windows instead of symlinking', () => {
     const copies = []; const links = [];
     installCopilotSkills({
