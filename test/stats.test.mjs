@@ -70,7 +70,7 @@ describe('renderLocalStatsRows', () => {
     ]);
   });
 
-  it('returns unavailable for copilot-headroom payloads with a zero token baseline', () => {
+  it('reports a reachable copilot-headroom with a zero token baseline as running (no data yet)', () => {
     assert.deepEqual(renderLocalStatsRows({
       summary: {
         api_requests: 100,
@@ -81,9 +81,37 @@ describe('renderLocalStatsRows', () => {
         },
       },
     }), {
-      available: false,
-      rows: [['Status', 'unavailable']],
+      available: true,
+      rows: [['Status', 'running (no data yet)']],
     });
+  });
+
+  it('reports a freshly started idle copilot-headroom as running (no data yet)', () => {
+    assert.deepEqual(renderLocalStatsRows({
+      summary: {
+        api_requests: 0,
+        compression: {
+          requests_compressed: 0,
+          total_tokens_before_with_cli_filtering: 0,
+          total_tokens_saved_with_cli_filtering: 0,
+        },
+      },
+    }), {
+      available: true,
+      rows: [['Status', 'running (no data yet)']],
+    });
+  });
+
+  it('reports only the compression count for a compress-only sidecar (proxy_requests 0)', () => {
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 0,
+      compress_requests: 392,
+      compress_pct: '0.1',
+      compress_tokens_saved: 20853,
+    });
+    assert.equal(result.available, true);
+    assert.equal(result.rows.find(([k]) => k === 'Requests')?.[1], '392 compressed');
   });
 
   it('advertises --wide in myelin stats --help', () => {
