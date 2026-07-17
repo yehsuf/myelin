@@ -1652,6 +1652,7 @@ export function installCopilotSkills({
   symlinkSyncImpl = symlinkSync,
   copyFileSyncImpl = copyFileSync,
   unlinkSyncImpl = unlinkSync,
+  existsSyncImpl = existsSync,
 } = {}) {
   if (!copilot && !claudeCC) return;
 
@@ -1695,15 +1696,21 @@ export function installCopilotSkills({
   // PRs. Deploy it exactly like compact-prepare.mjs: symlink on POSIX (repo updates
   // reflected immediately), copy on Windows (symlinks need developer-mode/admin).
   {
-    const dir = join(skillsDir, 'updating-services');
-    mkdirSyncImpl(dir, { recursive: true });
     const src = fileURLToPath(new URL('../skills/updating-services/SKILL.md', import.meta.url));
-    const dst = join(dir, 'SKILL.md');
-    if (os === 'windows') {
-      copyFileSyncImpl(src, dst);
+    // Guard a corrupt/partial checkout: a missing source would make copyFileSync
+    // throw ENOENT on Windows and abort the whole skill install. Warn and skip.
+    if (!existsSyncImpl(src)) {
+      warn('updating-services skill source missing — skipped');
     } else {
-      try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
-      symlinkSyncImpl(src, dst);
+      const dir = join(skillsDir, 'updating-services');
+      mkdirSyncImpl(dir, { recursive: true });
+      const dst = join(dir, 'SKILL.md');
+      if (os === 'windows') {
+        copyFileSyncImpl(src, dst);
+      } else {
+        try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
+        symlinkSyncImpl(src, dst);
+      }
     }
   }
 }
