@@ -163,3 +163,16 @@ myelin-done <task-id> "<pr-evidence>"   # moves row to Recently Completed, remov
 | BRANCH-001b | closed | `feat/unified-observability` (50 post-PR#19 commits): all Bug A fixes absorbed by PR#24 / `9e38d85`. Main's `engine-runtime.mjs`, `verify.mjs`, `windows.mjs` are more evolved. No unique code to recover. | Branch deleted 2026-07-15. |
 | STATS-001 | done | Added `myelin stats --wide`. | PR #9, `9e3829d` |
 | COMPACT-001 | done | Reject oversized compact clipboard hints. | PR #10, `b0deb20` |
+
+## B5 Candidates (from B4 upstream scan, 2026-07-17)
+
+These are additional portability candidates from scanning upstream headroom commits since 2026-06-01.
+All are portable within headroom-lite's deterministic/zero-dep/lossless constraints.
+
+| ID | P | Description |
+|----|---|-------------|
+| HLITE-B5-CACHE-001 | P3 | **Cache collision fix** — hash full ordered system-text payload instead of first-500-chars. Upstream: fix(cache) GH #1827. Files: normalize/openai-cache-key.mjs |
+| HLITE-B5-JSON-001 | P3 | **Space-separated JSON detection** — SerpAPI/Tavily return `{"id":1} {"id":2}` instead of array. Currently 0% compression. 30-40% compression win. Upstream: fix(content-detector) GH #1742. Files: new normalize step + json-minifier.mjs |
+| HLITE-B5-PARAM-001 | P4 | **OpenAI max_tokens → max_completion_tokens translation** — GPT-5/o-series reject legacy param. Upstream: fix(proxy/openai) GH #1774. Files: normalize/openai-params.mjs (new) |
+| HLITE-B5-COST-001 | P4 | **Cache write premium accounting** — subtract write premiums from net savings. Upstream: fix(proxy) GH #1800. Files: observability/ledger.mjs |
+| HLITE-B6-CACHE-001 | P5 | **Provider-agnostic cache delta + prefix** — cross-provider cache consistency metrics. Large effort. Upstream: feat(cache) GH #1868 |
