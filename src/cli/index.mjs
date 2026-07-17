@@ -1,8 +1,9 @@
 import { Command } from 'commander';
 import { configCommand } from './config-cmd.mjs';
+import { resolveCliVersion } from './cli-version.mjs';
 
 const program = new Command();
-program.name('myelin').description('Myelin — the neural insulation layer for AI coding agents').version('1.0.0');
+program.name('myelin').description('Myelin — the neural insulation layer for AI coding agents').version(resolveCliVersion());
 
 program.addCommand(configCommand());
 
