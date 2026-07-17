@@ -47,6 +47,7 @@ function isRecord(value) {
 function toFiniteNumber(value) {
   if (Number.isFinite(value)) return value;
   if (typeof value === 'string') {
+    if (value.trim() === '') return null;
     const n = Number(value);
     return Number.isFinite(n) ? n : null;
   }
@@ -95,7 +96,8 @@ function renderHeadroomLiteStatsRows(payload) {
   const lifetimeModels = payload?.lifetime?.compression?.models;
   if (isRecord(lifetimeModels)) {
     const modelEntries = Object.entries(lifetimeModels)
-      .filter(([, n]) => Number.isFinite(n) && n > 0)
+      .map(([m, v]) => [m, toFiniteNumber(v)])
+      .filter(([, n]) => n !== null && n > 0)
       .sort(([, a], [, b]) => b - a);
     if (modelEntries.length > 0) {
       rows.push(['Models (lifetime)', modelEntries.map(([m, n]) => `${m} (${formatCount(n)})`).join(', ')]);
@@ -106,7 +108,8 @@ function renderHeadroomLiteStatsRows(payload) {
   const sessionModels = payload?.session?.compression?.models;
   if (isRecord(sessionModels)) {
     const sessionEntries = Object.entries(sessionModels)
-      .filter(([, n]) => Number.isFinite(n) && n > 0)
+      .map(([m, v]) => [m, toFiniteNumber(v)])
+      .filter(([, n]) => n !== null && n > 0)
       .sort(([, a], [, b]) => b - a);
     if (sessionEntries.length > 0) {
       rows.push(['Models (session)', sessionEntries.map(([m, n]) => `${m} (${formatCount(n)})`).join(', ')]);

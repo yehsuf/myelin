@@ -419,6 +419,37 @@ describe('renderLocalStatsRows', () => {
     assert.equal(result.rows.find(([k]) => k === 'Compression')?.[1], '28.5%');
   });
 
+  it('returns unavailable when compress_pct is an empty string', () => {
+    // empty string must not be coerced to 0 — it means the value is missing
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 10,
+      compress_requests: 5,
+      compress_pct: '',
+      compress_tokens_saved: 500,
+    });
+    assert.equal(result.available, false);
+  });
+
+  it('parses model counts when returned as numeric strings (same bug class as compress_pct)', () => {
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 10,
+      compress_requests: 5,
+      compress_pct: '0.0',
+      compress_tokens_saved: 0,
+      lifetime: {
+        compression: {
+          models: { claude: '4074', gpt: '891' },
+        },
+      },
+    });
+    assert.equal(result.available, true);
+    const modelRow = result.rows.find(([k]) => k === 'Models (lifetime)');
+    assert.ok(modelRow, 'should have Models (lifetime) row with string counts');
+    assert.match(modelRow[1], /claude.*4,074/);
+  });
+
   it('shows lifetime model breakdown when present in headroom-lite payload', () => {
     const result = renderLocalStatsRows({
       service: 'headroom-lite',
