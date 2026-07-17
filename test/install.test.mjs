@@ -13,6 +13,7 @@ import {
   buildHeadroomStopExec,
   ensureManagedHeadroomService,
   ensureManagedVenv,
+  finalizeAndExit,
   installPipPackageInManagedVenv,
   isNativeBuildToolchainError,
   resolveLitellmSpec,
@@ -1721,5 +1722,61 @@ describe('installCopilotSkills', () => {
     });
     assert.equal(created.length, 0, 'no writes when both flags false');
     assert.equal(links.length, 0, 'no symlinks when both flags false');
+  });
+});
+
+describe('finalizeAndExit (installer force-exit — cures "install stuck at Shell profile reload")', () => {
+  const noopTimer = () => ({ unref() {} });
+
+  it('flushes every provided stream then exits with the given code', () => {
+    const writes = [];
+    const mkStream = () => ({ write: (s, cb) => { writes.push(s); cb(); } });
+    let exited;
+    finalizeAndExit(0, {
+      streams: [mkStream(), mkStream()],
+      exit: (c) => { exited = c; },
+      setTimeoutImpl: noopTimer,
+    });
+    assert.equal(exited, 0);
+    assert.deepEqual(writes, ['', ''], 'both streams flushed with an empty write');
+  });
+
+  it('exits exactly once even when several streams flush', () => {
+    let count = 0;
+    finalizeAndExit(1, {
+      streams: [{ write: (_s, cb) => cb() }, { write: (_s, cb) => cb() }],
+      exit: () => { count++; },
+      setTimeoutImpl: noopTimer,
+    });
+    assert.equal(count, 1);
+  });
+
+  it('force-exits via the safety timer when a stream never drains', () => {
+    let exited = null;
+    let timerCb = null;
+    finalizeAndExit(3, {
+      streams: [{ write: () => { /* never invokes the flush callback */ } }],
+      exit: (c) => { exited = c; },
+      setTimeoutImpl: (cb) => { timerCb = cb; return { unref() {} }; },
+    });
+    assert.equal(exited, null, 'does not exit while the stream is still (never) flushing');
+    timerCb();
+    assert.equal(exited, 3, 'the 1s guard timer forces the exit');
+  });
+
+  it('exits immediately when there are no writable streams', () => {
+    let exited = null;
+    finalizeAndExit(0, { streams: [], exit: (c) => { exited = c; }, setTimeoutImpl: noopTimer });
+    assert.equal(exited, 0);
+  });
+
+  it('unrefs the guard timer so it never itself keeps the loop alive', () => {
+    let unrefed = false;
+    finalizeAndExit(0, {
+      streams: [{ write: (_s, cb) => cb() }],
+      exit: () => {},
+      setTimeoutImpl: () => ({ unref() { unrefed = true; } }),
+    });
+    assert.equal(unrefed, true);
   });
 });
