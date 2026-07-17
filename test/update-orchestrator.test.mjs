@@ -889,7 +889,11 @@ import { syncReleasePair } from '../src/update/update-orchestrator.mjs';
 import { readCurrentRelease } from '../src/runtime/release-store.mjs';
 
 describe('syncReleasePair', { concurrency: false }, () => {
-  it('writes current.json and updates the current symlink atomically', async () => {
+  // Windows: directory symlinks require elevated privileges or Developer Mode;
+  // skip the symlink-creating tests on win32.
+  const skipOnWindows = process.platform === 'win32';
+
+  it('writes current.json and updates the current symlink atomically', { skip: skipOnWindows }, async () => {
     const home = mkdtempSync(join(tmpdir(), 'sync-release-pair-'));
     try {
       const releasesRoot = join(home, '.myelin', 'releases');
@@ -926,7 +930,7 @@ describe('syncReleasePair', { concurrency: false }, () => {
     }
   });
 
-  it('keeps current.json in sync when called from restoreReleasePair scenario', async () => {
+  it('keeps current.json in sync when called from restoreReleasePair scenario', { skip: skipOnWindows }, async () => {
     const home = mkdtempSync(join(tmpdir(), 'sync-release-restore-'));
     try {
       const releasesRoot = join(home, '.myelin', 'releases');
