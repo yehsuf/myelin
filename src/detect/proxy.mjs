@@ -74,3 +74,21 @@ export function buildCorporateSslEnv(caBundle = null) {
     HEADROOM_CA_BUNDLE:  caBundle,  // headroom proxy
   };
 }
+
+/**
+ * Choose which CA bundle the CA env vars (SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, …)
+ * should point at.
+ *
+ * Prefer the myelin-managed combined bundle (~/.myelin/ca-bundle.pem) whenever
+ * mitmproxy interception is enabled: that is the bundle the installer rebuilds
+ * from the system CAs PLUS the mitmproxy CA, so it is guaranteed to trust the
+ * interception proxy. A detected system bundle (e.g. /etc/ssl/certs/…) is often
+ * root-owned/read-only, so the installer cannot add the mitmproxy CA to it —
+ * registering it would make every client fail TLS to the proxy with
+ * "UnknownIssuer" (the exact Linux breakage this fixes). Fall back to the first
+ * detected bundle only when mitmproxy is disabled (no interception CA to trust).
+ */
+export function resolveCaEnvBundle({ mitmEnabled = true, myelinCaBundle = null, detectedBundles = [] } = {}) {
+  if (mitmEnabled && myelinCaBundle) return myelinCaBundle;
+  return detectedBundles?.[0]?.path ?? null;
+}

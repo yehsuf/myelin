@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { join } from 'node:path';
 import { detectOS, detectShell } from '../src/detect/os.mjs';
 import { detectTool, detectUv, detectNode, detectCopilotHud, detectCodegraph, detectHeadroom } from '../src/detect/tools.mjs';
-import { detectCorporateProxy, detectCaBundles } from '../src/detect/proxy.mjs';
+import { detectCorporateProxy, detectCaBundles, resolveCaEnvBundle } from '../src/detect/proxy.mjs';
 import { isPortFree, findFreePort } from '../src/detect/port.mjs';
 
 describe('detectOS', () => {
@@ -135,6 +135,44 @@ describe('detectCaBundles', () => {
       assert.ok('path' in b, 'missing path');
       assert.ok('source' in b, 'missing source');
     }
+  });
+});
+
+describe('resolveCaEnvBundle', () => {
+  const myelin = '/home/u/.myelin/ca-bundle.pem';
+  const system = [{ path: '/etc/ssl/certs/ca-certificates.crt', source: 'system' }];
+
+  it('registers the myelin bundle when mitmproxy is enabled (has the mitmproxy CA)', () => {
+    assert.equal(
+      resolveCaEnvBundle({ mitmEnabled: true, myelinCaBundle: myelin, detectedBundles: system }),
+      myelin,
+    );
+  });
+
+  it('never returns a read-only system bundle when interception is on', () => {
+    // The exact Linux bug: env vars pointed at /etc/ssl/certs/... which cannot
+    // receive the mitmproxy CA → UnknownIssuer.
+    const chosen = resolveCaEnvBundle({ mitmEnabled: true, myelinCaBundle: myelin, detectedBundles: system });
+    assert.notEqual(chosen, system[0].path);
+  });
+
+  it('falls back to the first detected bundle when mitmproxy is disabled', () => {
+    assert.equal(
+      resolveCaEnvBundle({ mitmEnabled: false, myelinCaBundle: myelin, detectedBundles: system }),
+      system[0].path,
+    );
+  });
+
+  it('falls back to the detected bundle when no myelin bundle is known', () => {
+    assert.equal(
+      resolveCaEnvBundle({ mitmEnabled: true, myelinCaBundle: null, detectedBundles: system }),
+      system[0].path,
+    );
+  });
+
+  it('returns null when nothing is available', () => {
+    assert.equal(resolveCaEnvBundle({ mitmEnabled: false, myelinCaBundle: null, detectedBundles: [] }), null);
+    assert.equal(resolveCaEnvBundle({}), null);
   });
 });
 

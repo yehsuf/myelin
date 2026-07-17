@@ -15,7 +15,7 @@ import { detectOS, detectShell, powerShellExecutable } from './detect/os.mjs';
 import { isWsl } from './detect/wsl.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
-import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv } from './detect/proxy.mjs';
+import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv, resolveCaEnvBundle } from './detect/proxy.mjs';
 import { isPortFree, findFreePort } from './detect/port.mjs';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
@@ -2570,12 +2570,22 @@ async function main() {
   const tools     = await detectAll();
   const { proxy: corpProxy } = detectCorporateProxy();
   const caBundles = detectCaBundles();
-  const sslEnv    = buildCorporateSslEnv(caBundles[0]?.path ?? null);
 
   if (flags.check) { printStateTable(tools, caBundles, corpProxy); process.exit(0); }
 
   mkdirSync(managed.root, { recursive: true });
   const existingCfg = await loadConfig(DEFAULT_CONFIG_PATH);
+  // Register the myelin-managed combined bundle (system CAs + mitmproxy CA) for
+  // the CA env vars whenever interception is enabled — it is the bundle the
+  // installer guarantees contains the mitmproxy CA. Registering a detected,
+  // often read-only system bundle (e.g. /etc/ssl/certs/ca-certificates.crt) that
+  // the installer cannot add the CA to made clients fail TLS to the proxy with
+  // "UnknownIssuer" (observed on Linux).
+  const sslEnv = buildCorporateSslEnv(resolveCaEnvBundle({
+    mitmEnabled: existingCfg?.proxy?.mitm?.enabled !== false,
+    myelinCaBundle: managed.caBundlePath,
+    detectedBundles: caBundles,
+  }));
   const initialEnginePlan = buildEngineInstancePlan(existingCfg);
   const initialPrimaryInstance = initialEnginePlan.instances.find(({ role }) => role === 'primary');
   const installsPythonHeadroomPackage = shouldInstallPythonHeadroomPackage({ cfg: existingCfg, flags });
