@@ -23,10 +23,13 @@ describe('resolveCliVersion', () => {
 
   it('reads <root>/package.json relative to the cli module location', () => {
     const seen = [];
-    const fakeMeta = pathToFileURL(join('/fake', 'root', 'src', 'cli', 'index.mjs')).href;
+    // Use a platform-absolute root so pathToFileURL round-trips without adding
+    // a drive letter on Windows (which would desync the expected path).
+    const root = process.platform === 'win32' ? 'C:\\fake\\root' : '/fake/root';
+    const fakeMeta = pathToFileURL(join(root, 'src', 'cli', 'index.mjs')).href;
     const version = resolveCliVersion(fakeMeta, (p) => { seen.push(p); return JSON.stringify({ version: '9.9.9' }); });
     assert.equal(version, '9.9.9');
-    assert.equal(seen[0], join('/fake', 'root', 'package.json'));
+    assert.equal(seen[0], join(root, 'package.json'));
   });
 
   it('falls back to 0.0.0 when package.json cannot be read', () => {
