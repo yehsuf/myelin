@@ -96,8 +96,11 @@ describe('installMitmService skip logic (launchd)', () => {
     const addonPath = join(dir, 'addon.py');
     writeFileSync(addonPath, '# addon');
 
-    // Call with skip=false — launchctl will fail in test env but plist write
-    // must go to sandboxed dir, never ~/Library/LaunchAgents.
+    // Call with skip=false — the plist write must go to the sandboxed dir, and
+    // the launchd bootstrap MUST be refused for a temp/sandbox plist so a test
+    // can never hijack the real com.myelin.mitmproxy label. Inject a spy exec
+    // to prove no launchctl command is ever run.
+    let launchctlCalled = false;
     try {
       launchdInstallMitmService({
         mitmdumpBin: '/usr/bin/mitmdump',
@@ -107,10 +110,12 @@ describe('installMitmService skip logic (launchd)', () => {
         home: dir,
         _isPortResponding: () => false,
         _isPlistUnchanged: () => false,
+        execSyncImpl: (cmd) => { if (String(cmd).includes('launchctl')) launchctlCalled = true; return ''; },
       });
     } catch {
-      // launchctl/plutil may fail in test env — that is expected
+      // The temp-plist guard throws — expected. Plist write happened first.
     }
+    assert.equal(launchctlCalled, false, 'must never run launchctl against a sandboxed temp plist');
     const sandboxedPlist = join(dir, 'Library', 'LaunchAgents', 'com.myelin.mitmproxy.plist');
     const realPlist = join(homedir(), 'Library', 'LaunchAgents', 'com.myelin.mitmproxy.plist');
     // The plist MUST have been written to the sandboxed dir, and if it was
