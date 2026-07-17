@@ -229,6 +229,21 @@ Edit: `myelin config set <key> <value>` → then `myelin install` to apply.
 
 ---
 
+## Developer-only skills (NOT shipped to users)
+
+Some skills under `skills/` are for developing myelin itself and are deliberately
+**not** wired into `installCopilotSkills` (so `myelin install` never ships them to
+end users):
+
+| Skill | Purpose | Enable locally |
+|-------|---------|----------------|
+| `skills/updating-services/` | Bump a pinned managed component in `component-manifest.mjs` (headroom-lite, serena, semble, agentcairn, rtk, winsw, …); paired ref/checksum rules, release + prerelease-`N` flow, append-only Learnings. | `ln -sf ~/tokenstack/skills/updating-services/SKILL.md ~/.copilot/skills/updating-services/SKILL.md` |
+
+`~/tokenstack` stays on clean `main`, so `git pull` refreshes these skills in place.
+Append new Learnings to the repo file via a PR — that's how the skill improves over time.
+
+---
+
 ## Windows-specific notes
 - Services run via registry Run key (default) or WinSW (opt-in).
 - `myelin update` stops `headroom` / `serena-agent` / `semble` processes before uv upgrades to avoid file-lock errors (os error 32/5).

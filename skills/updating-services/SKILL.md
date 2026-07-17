@@ -5,6 +5,11 @@ description: Use when bumping a pinned managed component/service version in myel
 
 # updating-services — bump a managed component version
 
+> **Developer-only skill.** This is internal tooling for people **developing myelin
+> itself** — it is deliberately NOT wired into `installCopilotSkills`, so `myelin
+> install` never ships it to end users. Developers get it via the one-time symlink
+> in "Developer setup" below (see CLAUDE.md).
+
 Myelin provisions external tools as **immutable pinned components** defined in
 `src/update/component-manifest.mjs`. Updating one is never "just change a number":
 the pin format, the paired git-ref, checksums, and the assertion tests all move
@@ -16,6 +21,23 @@ together, and every bump is validated on all 3 platforms before it ships.
 - `myelin update`/`install` errors: `version must be an exact pinned version`,
   `ref must be a valid git ref pin`, `require verified checksum`, or a component
   installs the wrong version.
+
+## Developer setup (one-time, per dev machine)
+
+This skill is NOT installed by `myelin install` (dev-only). Make it discoverable by
+symlinking the git-tracked repo copy from your clean reference checkout into the
+Copilot skills dir:
+
+```bash
+mkdir -p ~/.copilot/skills/updating-services
+ln -sf ~/tokenstack/skills/updating-services/SKILL.md \
+       ~/.copilot/skills/updating-services/SKILL.md
+```
+
+`~/tokenstack` stays on clean `main`, so `git pull` there refreshes the skill (and
+its Learnings) in place. On Windows/Linux dev boxes, point the link at that machine's
+myelin checkout instead.
+
 
 ## The manifest is the single source of truth
 

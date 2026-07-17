@@ -1693,7 +1693,6 @@ export function installCopilotSkills({
   symlinkSyncImpl = symlinkSync,
   copyFileSyncImpl = copyFileSync,
   unlinkSyncImpl = unlinkSync,
-  existsSyncImpl = existsSync,
 } = {}) {
   if (!copilot && !claudeCC) return;
 
@@ -1729,30 +1728,6 @@ export function installCopilotSkills({
     const dir = join(skillsDir, 'myelin-constitution');
     mkdirSyncImpl(dir, { recursive: true });
     writeFileSyncImpl(join(dir, 'SKILL.md'), constitutionSkillMd(managedRuntimeCommandPath));
-  }
-
-  // ── updating-services ─────────────────────────────────────────────────────────
-  // The SKILL.md is a git-tracked repo file (skills/updating-services/SKILL.md) so
-  // its append-only "Learnings" section is the single source of truth and grows via
-  // PRs. Deploy it exactly like compact-prepare.mjs: symlink on POSIX (repo updates
-  // reflected immediately), copy on Windows (symlinks need developer-mode/admin).
-  {
-    const src = fileURLToPath(new URL('../skills/updating-services/SKILL.md', import.meta.url));
-    // Guard a corrupt/partial checkout: a missing source would make copyFileSync
-    // throw ENOENT on Windows and abort the whole skill install. Warn and skip.
-    if (!existsSyncImpl(src)) {
-      warn('updating-services skill source missing — skipped');
-    } else {
-      const dir = join(skillsDir, 'updating-services');
-      mkdirSyncImpl(dir, { recursive: true });
-      const dst = join(dir, 'SKILL.md');
-      if (os === 'windows') {
-        copyFileSyncImpl(src, dst);
-      } else {
-        try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
-        symlinkSyncImpl(src, dst);
-      }
-    }
   }
 }
 
