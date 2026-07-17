@@ -45,7 +45,12 @@ function isRecord(value) {
 }
 
 function toFiniteNumber(value) {
-  return Number.isFinite(value) ? value : null;
+  if (Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function formatCount(value) {
@@ -79,15 +84,36 @@ function renderHeadroomLiteStatsRows(payload) {
     return unavailableStatsRows();
   }
 
-  return {
-    available: true,
-    rows: [
-      ['Status', 'running'],
-      ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
-      ['Compression', formatPercent(compressionPct)],
-      ['Tokens', `${formatCount(tokensSaved)} saved`],
-    ],
-  };
+  const rows = [
+    ['Status', 'running'],
+    ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+    ['Compression', formatPercent(compressionPct)],
+    ['Tokens', `${formatCount(tokensSaved)} saved`],
+  ];
+
+  // Show model breakdown from lifetime.compression.models if present
+  const lifetimeModels = payload?.lifetime?.compression?.models;
+  if (isRecord(lifetimeModels)) {
+    const modelEntries = Object.entries(lifetimeModels)
+      .filter(([, n]) => Number.isFinite(n) && n > 0)
+      .sort(([, a], [, b]) => b - a);
+    if (modelEntries.length > 0) {
+      rows.push(['Models (lifetime)', modelEntries.map(([m, n]) => `${m} (${formatCount(n)})`).join(', ')]);
+    }
+  }
+
+  // Show session model breakdown if present and non-empty
+  const sessionModels = payload?.session?.compression?.models;
+  if (isRecord(sessionModels)) {
+    const sessionEntries = Object.entries(sessionModels)
+      .filter(([, n]) => Number.isFinite(n) && n > 0)
+      .sort(([, a], [, b]) => b - a);
+    if (sessionEntries.length > 0) {
+      rows.push(['Models (session)', sessionEntries.map(([m, n]) => `${m} (${formatCount(n)})`).join(', ')]);
+    }
+  }
+
+  return { available: true, rows };
 }
 
 function renderCopilotHeadroomStatsRows(payload) {

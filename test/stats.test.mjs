@@ -406,6 +406,72 @@ describe('renderLocalStatsRows', () => {
     });
   });
 
+  it('parses headroom-lite compress_pct when returned as a numeric string', () => {
+    // headroom-lite /stats returns compress_pct as a string (e.g. "0.0" or "28.5")
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 10,
+      compress_requests: 5,
+      compress_pct: '28.5',
+      compress_tokens_saved: 500,
+    });
+    assert.equal(result.available, true);
+    assert.equal(result.rows.find(([k]) => k === 'Compression')?.[1], '28.5%');
+  });
+
+  it('shows lifetime model breakdown when present in headroom-lite payload', () => {
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 10,
+      compress_requests: 5,
+      compress_pct: '0.0',
+      compress_tokens_saved: 0,
+      lifetime: {
+        compression: {
+          models: { claude: 4074, gpt: 891, gemini: 37, other: 1438 },
+        },
+      },
+    });
+    assert.equal(result.available, true);
+    const modelRow = result.rows.find(([k]) => k === 'Models (lifetime)');
+    assert.ok(modelRow, 'should have a Models (lifetime) row');
+    assert.match(modelRow[1], /claude.*4,074/);
+    assert.match(modelRow[1], /gpt.*891/);
+    assert.match(modelRow[1], /gemini.*37/);
+  });
+
+  it('shows session model breakdown when present in headroom-lite payload', () => {
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 10,
+      compress_requests: 5,
+      compress_pct: '0.0',
+      compress_tokens_saved: 0,
+      session: {
+        compression: {
+          models: { claude: 28, gpt: 4 },
+        },
+      },
+    });
+    assert.equal(result.available, true);
+    const modelRow = result.rows.find(([k]) => k === 'Models (session)');
+    assert.ok(modelRow, 'should have a Models (session) row');
+    assert.match(modelRow[1], /claude.*28/);
+  });
+
+  it('omits model rows when models map is empty or missing', () => {
+    const result = renderLocalStatsRows({
+      service: 'headroom-lite',
+      proxy_requests: 0,
+      compress_requests: 0,
+      compress_pct: '0.0',
+      compress_tokens_saved: 0,
+      lifetime: { compression: { models: {} } },
+    });
+    assert.equal(result.available, true);
+    assert.ok(!result.rows.find(([k]) => k.startsWith('Models')), 'should not have model rows when empty');
+  });
+
   it('returns an explicit unavailable result for invalid payloads', () => {
     assert.deepEqual(renderLocalStatsRows(null), {
       available: false,
