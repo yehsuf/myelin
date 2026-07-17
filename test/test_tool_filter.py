@@ -582,6 +582,85 @@ def test_68_result_is_subset_by_identity(monkeypatch):
         assert any(r is t for t in tools)
 
 
+def _mk_tool_defer(name, defer, desc=''):
+    return {'name': name, 'description': desc, 'defer_loading': defer}
+
+
+def test_68a_deferred_tools_present_skips_filtering(monkeypatch):
+    # When the client uses deferred tool loading, filtering must be a no-op so
+    # it can never drop every defer_loading=false tool (provider 400) or hide a
+    # deferred tool from tool-search.
+    monkeypatch.setattr(tf, 'MIN_TOOLS', 2)
+    monkeypatch.setattr(tf, 'TOP_K', 1)
+    tools = [
+        _mk_tool_defer('anchor', False, 'the one eager tool'),
+        _mk_tool_defer('search_flights', True, 'search flights'),
+        _mk_tool_defer('drop_table', True, 'drop database'),
+    ]
+    msgs = [_mk_user('completely unrelated query')]
+    result, changed = tf.filter_tools(tools, msgs)
+    assert result is tools, 'must pass tools through untouched when deferral is active'
+    assert changed is False
+
+
+def test_68b_at_least_one_non_deferred_survives(monkeypatch):
+    # The invariant the provider enforces: at least one defer_loading=false tool
+    # must remain in the forwarded array.
+    monkeypatch.setattr(tf, 'MIN_TOOLS', 2)
+    monkeypatch.setattr(tf, 'TOP_K', 1)
+    tools = [_mk_tool_defer('anchor', False, 'eager anchor')] + [
+        _mk_tool_defer(f'deferred_{i}', True, f'irrelevant {i}') for i in range(20)
+    ]
+    msgs = [_mk_user('nothing matches these tools at all zzz')]
+    result, _ = tf.filter_tools(tools, msgs)
+    assert any(t.get('defer_loading') is False for t in result), \
+        'at least one defer_loading=false tool must survive'
+
+
+def test_68c_no_defer_field_filters_normally(monkeypatch):
+    # Requests without any deferred tools filter as before (no regression).
+    monkeypatch.setattr(tf, 'MIN_TOOLS', 2)
+    monkeypatch.setattr(tf, 'TOP_K', 1)
+    tools = [
+        _mk_tool('search_flights', 'search for flights in a city'),
+        _mk_tool('drop_table', 'drop a database table'),
+        _mk_tool('bake_cake', 'bake a chocolate cake'),
+    ]
+    msgs = [_mk_user('find flights in Paris city')]
+    result, _ = tf.filter_tools(tools, msgs)
+    assert len(result) < len(tools)
+
+
+def test_68d_defer_loading_false_only_filters_normally(monkeypatch):
+    # All tools explicitly non-deferred (defer_loading=false) → filter normally.
+    monkeypatch.setattr(tf, 'MIN_TOOLS', 2)
+    monkeypatch.setattr(tf, 'TOP_K', 1)
+    tools = [
+        _mk_tool_defer('search_flights', False, 'search for flights in a city'),
+        _mk_tool_defer('drop_table', False, 'drop a database table'),
+        _mk_tool_defer('bake_cake', False, 'bake a chocolate cake'),
+    ]
+    msgs = [_mk_user('find flights in Paris city')]
+    result, _ = tf.filter_tools(tools, msgs)
+    assert len(result) < len(tools)
+
+
+def test_68e_truthy_defer_value_still_skips(monkeypatch):
+    # Non-standard truthy defer_loading (e.g. a string) errs toward NOT
+    # filtering, so it can never trip the provider 400.
+    monkeypatch.setattr(tf, 'MIN_TOOLS', 2)
+    monkeypatch.setattr(tf, 'TOP_K', 1)
+    tools = [
+        _mk_tool_defer('anchor', False, 'eager'),
+        {'name': 'weird', 'description': 'x', 'defer_loading': 'true'},
+        _mk_tool('other', 'y'),
+    ]
+    msgs = [_mk_user('unrelated')]
+    result, changed = tf.filter_tools(tools, msgs)
+    assert result is tools
+    assert changed is False
+
+
 # ---------------------------------------------------------------------------
 # GROUP I — _referenced_tool_names (69-76)
 # ---------------------------------------------------------------------------
