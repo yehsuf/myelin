@@ -168,8 +168,8 @@ describe('component install plans', () => {
       '@ast-grep/cli@0.44.1',
     ]]);
     assert.deepEqual(npmGit.commands, [[
-      'npm', 'install', '--prefix', '/components/headroomLite/0.31.0-2',
-      'github:yehsuf/headroom-lite#v0.31.0-2',
+      'npm', 'install', '--prefix', '/components/headroomLite/0.31.0-3',
+      'github:yehsuf/headroom-lite#v0.31.0-3',
     ]]);
     assert.deepEqual(git.commands, [
       [
