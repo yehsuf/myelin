@@ -151,6 +151,8 @@ myelin-done <task-id> "<pr-evidence>"   # moves row to Recently Completed, remov
 
 ## Recently Completed
 
+| UPDATE-PATH-001 | done | **Fix `myelin update` node PATH for NVM users** — `npm ci` failed with `env: node: No such file or directory` when Homebrew npm (first in PATH, `#!/usr/bin/env node`) has no co-located node and NVM node is not in subprocess PATH. Fix: prepend `dirname(process.execPath)` to PATH in all stageRelease subprocesses; injectable `nodeExecPath` for testability; Windows case-insensitive key + empty-PATH guards. | PR #67, 88f1eaf |
+
 | ID | Status | Work | Evidence |
 | --- | --- | --- | --- |
 | DEP-UPDATE-SERENA-001 | done | **Bump managed `serena` 1.5.4.dev0 → v1.6.0** — latest tag `v1.6.0` = SHA `93b9544ea9def8e93cb6a90f8ea67befe3c8fee4`. `uv-git` kind: update `version` AND `ref` together; ref MUST be full 40-hex SHA (no `v` prefix). Serena is code-discovery MCP — validate MCP still starts + `myelin verify` passes on all 3 platforms. Use the `updating-services` skill. | PR #64, eb5f89f |
