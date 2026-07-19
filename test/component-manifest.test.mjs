@@ -39,6 +39,7 @@ describe('component manifest', () => {
         package: 'headroom-ai[proxy]',
         version: '0.31.0',
         bin: 'headroom',
+        optional: true,
       },
       serena: {
         kind: 'uv-git',
