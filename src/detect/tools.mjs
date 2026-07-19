@@ -91,10 +91,19 @@ export async function detectCopilotHud({
   }
 }
 
-export async function detectAll() {
+export async function detectAll({ compressionBackend } = {}) {
   ensureToolPath();
+  // When compressionBackend is provided and is not 'headroom-original', skip
+  // headroom detection. This prevents myelin update from running
+  // `uv pip install headroom-ai[proxy]` on machines using headroom-lite —
+  // which would fail on Windows due to litellm requiring Rust/maturin to
+  // build from source when no pre-built wheel is available (WIN-LITELLM-001).
+  const skipHeadroom = compressionBackend != null && compressionBackend !== 'headroom-original';
+  const headroomDetect = skipHeadroom
+    ? Promise.resolve({ installed: false, version: null, path: null })
+    : detectHeadroom();
   const [node, uv, headroom, rtk, serena, semble, astgrep, codegraph] = await Promise.all([
-    detectNode(), detectUv(), detectHeadroom(), detectRtk(),
+    detectNode(), detectUv(), headroomDetect, detectRtk(),
     detectSerena(), detectSemble(), detectAstGrep(), detectCodegraph(),
   ]);
   return { node, uv, headroom, rtk, serena, semble, astgrep, codegraph };

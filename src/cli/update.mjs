@@ -18,25 +18,13 @@ import { runUpdate as runAtomicUpdate } from '../update/update-orchestrator.mjs'
 
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
 
-function upgradeCommands(os, { home = homedir(), env = process.env } = {}) {
+function upgradeCommands(os, { home = homedir(), env = process.env, compressionBackend } = {}) {
   // Resolve the managed venv through managedPaths so a relocated MYELIN_DIR is
   // honored — headroom lives in the managed root's venv, not a hardcoded
   // ~/.myelin/venv.
   const venv = managedPaths({ home, env, platform: os }).venvPath;
-  return {
+  const cmds = {
     uv:       { upgrade: 'uv self update' },
-    // headroom installed via uv pip in venv, not uv tool. The managed venv path
-    // is MYELIN_DIR-derived (arbitrary user-supplied), so it is executed as an
-    // argument-array (never a shell string) — an arg element is not shell-parsed,
-    // so a `$(...)`/quote/space in the relocated root can never inject. `display`
-    // is a human-readable dry-run rendering only; it is never handed to a shell.
-    headroom: {
-      upgrade: {
-        file: 'uv',
-        args: ['pip', 'install', '--python', venv, HEADROOM_AI_SPEC],
-        display: `uv pip install --python "${venv}" "${HEADROOM_AI_SPEC}"`,
-      },
-    },
     // serena installed via uv tool as 'serena-agent'
     // No --python flag on upgrade: reuse whatever Python is in the existing env.
     // --python 3.12 is only used on fresh install (install.mjs) to avoid the
@@ -54,6 +42,27 @@ function upgradeCommands(os, { home = homedir(), env = process.env } = {}) {
              : 'npm update -g @ast-grep/cli',
     },
   };
+  // Include headroom upgrade only when headroom-original is the active backend.
+  // Omitting the entry lets the existing `if (!cmd) continue` guard skip it —
+  // preventing `uv pip install headroom-ai[proxy]` from running for headroom-lite
+  // users where litellm requires Rust/maturin to build from source on Windows
+  // (WIN-LITELLM-001). When compressionBackend is null/undefined (config unreadable)
+  // we include headroom to preserve backward-compatible behaviour.
+  if (compressionBackend == null || compressionBackend === 'headroom-original') {
+    cmds.headroom = {
+      // headroom installed via uv pip in venv, not uv tool. The managed venv path
+      // is MYELIN_DIR-derived (arbitrary user-supplied), so it is executed as an
+      // argument-array (never a shell string) — an arg element is not shell-parsed,
+      // so a `$(...)`/quote/space in the relocated root can never inject. `display`
+      // is a human-readable dry-run rendering only; it is never handed to a shell.
+      upgrade: {
+        file: 'uv',
+        args: ['pip', 'install', '--python', venv, HEADROOM_AI_SPEC],
+        display: `uv pip install --python "${venv}" "${HEADROOM_AI_SPEC}"`,
+      },
+    };
+  }
+  return cmds;
 }
 
 const _UPGRADE_STOP_PROCESS = {
@@ -196,12 +205,21 @@ export async function runToolUpdates(options = {}, deps = {}) {
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
   const os = deps.os ?? (deps.detectOSFn ?? detectOS)();
-  const tools = await (deps.detectAllFn ?? detectAll)();
+  // Load config to determine active backend. Used in upgradeCommands to omit
+  // headroom when headroom-lite is active — prevents uv pip install of
+  // headroom-ai[proxy] which requires Rust/maturin on Windows (WIN-LITELLM-001).
+  let compressionBackend;
+  try {
+    const config = await (deps.loadConfigFn ?? loadConfig)();
+    compressionBackend = resolveCompressionConfig(config).backend;
+  } catch { /* unreadable config: fall through, upgradeCommands will include headroom */ }
+
+  const tools = await (deps.detectAllFn ?? detectAll)({ compressionBackend });
   const exec = deps.execSyncFn ?? execSync;
   const execFile = deps.execFileSyncFn ?? execFileSync;
   const log = deps.log ?? console.log;
   const warn = deps.warn ?? console.warn;
-  const cmds = upgradeCommands(os, { home, env });
+  const cmds = upgradeCommands(os, { home, env, compressionBackend });
   const repoDir = repoDirFromMetaUrl();
   const installerCmd = `node "${join(repoDir, 'src', 'install.mjs')}" --yes`;
   log(`\nMyelin Update ${check ? '(dry-run)' : ''}\n${'─'.repeat(55)}`);

@@ -76,3 +76,67 @@ describe('update CLI contract', () => {
     assert.match(output, /headroomLite@0\.31\.0/u);
   });
 });
+
+describe('runToolUpdates — headroom upgrade guard (WIN-LITELLM-001)', () => {
+  it('does not run headroom uv pip install when backend is headroom-lite', async () => {
+    const { runToolUpdates } = await import('../src/cli/update.mjs');
+    const upgradeCalls = [];
+    await runToolUpdates(
+      { check: false },
+      {
+        os: 'linux',
+        log: () => {},
+        warn: () => {},
+        loadConfigFn: async () => ({ compression: { backend: 'headroom-lite' } }),
+        detectAllFn: async () => ({
+          node: { installed: true, version: 'v20.0.0' },
+          uv: { installed: false, version: null },
+          headroom: { installed: true, version: '0.31.0' },
+          rtk: { installed: false, version: null },
+          serena: { installed: false, version: null },
+          semble: { installed: false, version: null },
+          astgrep: { installed: false, version: null },
+          codegraph: { installed: false, version: null },
+        }),
+        execSyncFn: (cmd) => { upgradeCalls.push({ cmd }); },
+        execFileSyncFn: (file, args) => { upgradeCalls.push({ file, args }); },
+      },
+    );
+    const headroomCall = upgradeCalls.find(
+      c => c.args?.includes('headroom-ai') || (c.cmd ?? '').includes('headroom-ai'),
+    );
+    assert.equal(headroomCall, undefined, `headroom upgrade should not run for headroom-lite, got: ${JSON.stringify(headroomCall)}`);
+  });
+
+  it('runs headroom uv pip install when backend is headroom-original', async () => {
+    const { runToolUpdates } = await import('../src/cli/update.mjs');
+    const upgradeCalls = [];
+    await runToolUpdates(
+      { check: false },
+      {
+        os: 'linux',
+        log: () => {},
+        warn: () => {},
+        loadConfigFn: async () => ({ compression: { backend: 'headroom-original' } }),
+        detectAllFn: async () => ({
+          node: { installed: false, version: null },
+          uv: { installed: false, version: null },
+          headroom: { installed: true, version: '0.31.0' },
+          rtk: { installed: false, version: null },
+          serena: { installed: false, version: null },
+          semble: { installed: false, version: null },
+          astgrep: { installed: false, version: null },
+          codegraph: { installed: false, version: null },
+        }),
+        execSyncFn: (cmd) => { upgradeCalls.push({ cmd }); },
+        execFileSyncFn: (file, args) => { upgradeCalls.push({ file, args }); },
+      },
+    );
+    const headroomCall = upgradeCalls.find(
+      c => c.args?.some(a => String(a).includes('headroom-ai')),
+    );
+    assert.ok(headroomCall !== undefined, 'headroom upgrade should run for headroom-original');
+    assert.equal(headroomCall.file, 'uv');
+    assert.ok(headroomCall.args.includes('pip'));
+  });
+});
