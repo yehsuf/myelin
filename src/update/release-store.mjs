@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import * as nodeFs from 'node:fs';
 import {
   dirname,
+  isAbsolute,
   join,
   posix,
   win32,
@@ -626,6 +627,7 @@ function normalizeStageOptions(input) {
   const version = validateReleaseVersion(target.version);
   if (typeof input.exec !== 'function') throw new TypeError('exec must be a function.');
   if (typeof input.nodeExecPath !== 'string' || !input.nodeExecPath) throw new TypeError('nodeExecPath must be a non-empty string.');
+  if (!isAbsolute(input.nodeExecPath)) throw new TypeError('nodeExecPath must be an absolute path.');
   if (!input.fs || typeof input.fs !== 'object') throw new TypeError('fs must be an object.');
   if (typeof input.extract !== 'function') throw new TypeError('extract must be a function.');
 
@@ -714,11 +716,17 @@ export async function stageRelease({
     // regardless of whether the shell loaded NVM, mise, Homebrew, etc.
     const nodeBinDir = dirname(options.nodeExecPath);
     const pathSep = options.platform === 'win32' ? ';' : ':';
-    const existingPath = process.env.PATH ?? '';
-    const subprocessPath = existingPath.split(pathSep).includes(nodeBinDir)
+    // On Windows, the env key may be 'Path' rather than 'PATH' — find it
+    // case-insensitively so we don't create duplicate keys in the child env.
+    const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    const existingPath = process.env[pathKey] ?? '';
+    const inPath = options.platform === 'win32'
+      ? existingPath.split(pathSep).some(e => e.toLowerCase() === nodeBinDir.toLowerCase())
+      : existingPath.split(pathSep).includes(nodeBinDir);
+    const subprocessPath = inPath
       ? existingPath
-      : `${nodeBinDir}${pathSep}${existingPath}`;
-    const subprocessEnv = { ...process.env, PATH: subprocessPath };
+      : (existingPath ? `${nodeBinDir}${pathSep}${existingPath}` : nodeBinDir);
+    const subprocessEnv = { ...process.env, [pathKey]: subprocessPath };
 
     await runCommand(
       options.exec,

@@ -1480,9 +1480,10 @@ describe('managed release store', { concurrency: false }, () => {
     // node bin dir must be present in PATH so npm's shebang finds node
     const nodeBinDir = dirname(process.execPath);
     const pathSep = process.platform === 'win32' ? ';' : ':';
+    const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
     assert.ok(
-      commands.every(({ options }) => options.env?.PATH?.split(pathSep).includes(nodeBinDir)),
-      'subprocess env.PATH must include dirname(process.execPath)',
+      commands.every(({ options }) => options.env?.[pathKey]?.split(pathSep).includes(nodeBinDir)),
+      'subprocess env PATH must include dirname(process.execPath)',
     );
   });
 
@@ -1509,8 +1510,11 @@ describe('managed release store', { concurrency: false }, () => {
     });
 
     assert.ok(
-      commands.every(({ options }) => options.env?.PATH?.split(sep)[0] === expectedDir),
-      'subprocess env.PATH must start with dirname(nodeExecPath)',
+      commands.every(({ options }) => {
+        const pathKey = Object.keys(options.env ?? {}).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+        return options.env?.[pathKey]?.split(sep)[0] === expectedDir;
+      }),
+      'subprocess env PATH must start with dirname(nodeExecPath)',
     );
   });
 
