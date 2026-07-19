@@ -178,7 +178,7 @@ All are portable within headroom-lite's deterministic/zero-dep/lossless constrai
 | ID | P | Description |
 |----|---|-------------|
 | HLITE-B5-CACHE-001 | P3 | **Cache collision fix** — hash full ordered system-text payload instead of first-500-chars. Upstream: fix(cache) GH #1827. Files: normalize/openai-cache-key.mjs |
-| HLITE-B5-JSON-001 | P3 | **Space-separated JSON detection** — SerpAPI/Tavily return `{"id":1} {"id":2}` instead of array. Currently 0% compression. 30-40% compression win. Upstream: fix(content-detector) GH #1742. Files: new normalize step + json-minifier.mjs |
+| HLITE-B5-JSON-001 | P3 | **done** | **Space-separated JSON minification** — headroom-lite PR #23 (`69f4981`), v0.31.0-2, myelin manifest bump PR #63. Phase 1 minifyJson now handles `{"a":1} {"b":2}` sequences; 7-23% byte savings on real SerpAPI/Tavily tool results. Mac/Linux/Win: 488/488/487 ✅ | |
 | HLITE-B5-PARAM-001 | P4 | **OpenAI max_tokens → max_completion_tokens translation** — GPT-5/o-series reject legacy param. Upstream: fix(proxy/openai) GH #1774. Files: normalize/openai-params.mjs (new) |
 | HLITE-B5-COST-001 | P4 | **Cache write premium accounting** — subtract write premiums from net savings. Upstream: fix(proxy) GH #1800. Files: observability/ledger.mjs |
 | HLITE-B6-CACHE-001 | P5 | **Provider-agnostic cache delta + prefix** — cross-provider cache consistency metrics. Large effort. Upstream: feat(cache) GH #1868 |
