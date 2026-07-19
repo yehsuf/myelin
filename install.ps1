@@ -46,6 +46,18 @@ $RepoUrl = if ($env:MYELIN_REPO_URL) { $env:MYELIN_REPO_URL } else { "https://gi
 $Activate = -not ($DryRun -or $Check)
 
 function Check-Node {
+    # If fnm is installed, use it to activate the pinned Node version first.
+    # fnm env --use-on-cd doesn't help in scripts, so call it explicitly.
+    if (-not (Get-Command node -ErrorAction SilentlyContinue) -or
+        [int]((node --version 2>&1).TrimStart('v').Split('.')[0]) -lt 20) {
+        if (Get-Command fnm -ErrorAction SilentlyContinue) {
+            # Activate version from .nvmrc/.node-version if present, else v20 LTS
+            try { fnm use 2>$null } catch {}
+            if ($LASTEXITCODE -ne 0) { try { fnm use 20 2>$null } catch {} }
+        } elseif (Get-Command nvm -ErrorAction SilentlyContinue) {
+            try { nvm use 2>$null } catch {}
+        }
+    }
     try {
         $ver = (node --version 2>&1).Trim()
         $major = [int]($ver.TrimStart('v').Split('.')[0])

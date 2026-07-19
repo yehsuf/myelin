@@ -124,7 +124,7 @@ describe('component install plans', () => {
     );
 
     assert.deepEqual(plan.commands, [
-      ['uv', 'venv', '/components/semble/0.4.2'],
+      ['uv', 'venv', '--python', '3.12', '/components/semble/0.4.2'],
       [
         'uv', 'pip', 'install',
         '--python', '/components/semble/0.4.2',
@@ -540,7 +540,7 @@ describe('staging and managed detection', () => {
     assert.deepEqual(calls, [
       {
         file: 'uv',
-        args: ['venv', '/components/semble/0.4.2'],
+        args: ['venv', '--python', '3.12', '/components/semble/0.4.2'],
         options: { stdio: 'inherit' },
       },
       {

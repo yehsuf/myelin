@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
+import { MANAGED_PYTHON_VERSION } from '../update/component-manifest.mjs';
 
 // Pin the classic Python headroom package to a fixed version for reproducible
 // installs. Single source of truth referenced by install.mjs and update.mjs so
@@ -49,7 +50,7 @@ export async function installHeadroom({
   // user text) and must reach `uv` as ONE literal argv element, never composed
   // into a shell string. A relocated root containing `"`, `$(...)`, backticks or
   // `'` therefore cannot break out into command execution.
-  execFileSyncImpl('uv', ['venv', venv], { stdio: 'inherit' });
+  execFileSyncImpl('uv', ['venv', '--python', MANAGED_PYTHON_VERSION, venv], { stdio: 'inherit' });
   execFileSyncImpl('uv', ['pip', 'install', '--python', venv, HEADROOM_AI_SPEC], { stdio: 'inherit' });
   const binPath = headroomBinPath({ home, env });
   return { binPath, ok: existsSyncImpl(binPath) };
