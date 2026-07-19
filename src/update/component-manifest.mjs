@@ -146,6 +146,15 @@ export function validateComponentManifest(manifest) {
     if (EXECUTABLE_KINDS.has(component.kind)) {
       requireField(componentName, 'bin', component.bin);
     }
+
+    if (component.pythonVersion !== undefined) {
+      if (typeof component.pythonVersion !== 'string'
+        || !/^\d+\.\d+$/u.test(component.pythonVersion.trim())) {
+        throw new Error(
+          `${componentName}.pythonVersion must be a "major.minor" string (e.g. "3.12").`,
+        );
+      }
+    }
   }
 
   return true;

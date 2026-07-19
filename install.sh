@@ -36,12 +36,14 @@ done
 check_node() {
   # If nvm is installed but not yet in PATH, source it so we can use the version
   # pinned in .nvmrc. This is a no-op when node is already on PATH at >=20.
-  if ! command -v node >/dev/null 2>&1 || node -e "process.exit(+process.versions.node.split('.')[0]<20)" 2>/dev/null; then
+  if ! command -v node >/dev/null 2>&1 || node -e "process.exit(Number(process.versions.node.split('.')[0])<20?1:0)" 2>/dev/null; then
     if [ -s "$HOME/.nvm/nvm.sh" ]; then
       # shellcheck disable=SC1091
       . "$HOME/.nvm/nvm.sh"
-      # Use the version from .nvmrc if present, otherwise fall back to v20 LTS.
-      nvm use 2>/dev/null || nvm use 20 2>/dev/null || true
+      # Use version from .nvmrc if present; otherwise install+use Node 20 LTS.
+      # `nvm use` only activates already-installed versions; `nvm install` also
+      # installs if missing then activates.
+      nvm use 2>/dev/null || nvm install 20 2>/dev/null || true
     fi
   fi
   if ! command -v node >/dev/null 2>&1; then
