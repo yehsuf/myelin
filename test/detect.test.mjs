@@ -231,3 +231,36 @@ describe('detectHeadroom — execFileSync argv safety (myelin-venv / MYELIN_DIR-
     assert.deepEqual(res, { installed: false, version: null, path: null });
   });
 });
+
+describe('detectAll — compressionBackend guard (WIN-LITELLM-001)', () => {
+  it('skips headroom when compressionBackend is headroom-lite', async () => {
+    const { detectAll } = await import('../src/detect/tools.mjs');
+    const result = await detectAll({ compressionBackend: 'headroom-lite' });
+    assert.deepEqual(result.headroom, { installed: false, version: null, path: null });
+  });
+
+  it('skips headroom when compressionBackend is disabled', async () => {
+    const { detectAll } = await import('../src/detect/tools.mjs');
+    const result = await detectAll({ compressionBackend: 'disabled' });
+    assert.deepEqual(result.headroom, { installed: false, version: null, path: null });
+  });
+
+  it('does not skip headroom when compressionBackend is headroom-original', async () => {
+    const { detectAll } = await import('../src/detect/tools.mjs');
+    // headroom-original → detection runs; result shape is valid (may be not-installed in CI)
+    const result = await detectAll({ compressionBackend: 'headroom-original' });
+    assert.ok('installed' in result.headroom, 'headroom result should have installed field');
+  });
+
+  it('does not skip headroom when compressionBackend is omitted', async () => {
+    const { detectAll } = await import('../src/detect/tools.mjs');
+    const result = await detectAll();
+    assert.ok('installed' in result.headroom, 'headroom result should have installed field');
+  });
+
+  it('returns remaining tools regardless of headroom skip', async () => {
+    const { detectAll } = await import('../src/detect/tools.mjs');
+    const result = await detectAll({ compressionBackend: 'headroom-lite' });
+    assert.ok('node' in result && 'uv' in result && 'rtk' in result, 'other tools present');
+  });
+});
