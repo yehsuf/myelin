@@ -1075,6 +1075,39 @@ async function installMitmproxyCA(home, interactive = true) {
       }
     }
   }
+  // Windows: extract trusted root CAs from the Windows certificate store.
+  // On Windows, there are no standard PEM bundle files (the Linux seed paths
+  // don't exist) and no `security` CLI. Use PowerShell to export every cert
+  // from the LocalMachine and CurrentUser Root stores in PEM format.
+  // Runs on native Windows (process.platform === 'win32') for both interactive
+  // and SSH sessions — both share the same Windows certificate store.
+  if (process.platform === 'win32') {
+    const psExport = `
+$stores = @('Cert:\\LocalMachine\\Root', 'Cert:\\CurrentUser\\Root')
+foreach ($store in $stores) {
+  try {
+    Get-ChildItem -Path $store -ErrorAction SilentlyContinue | ForEach-Object {
+      $b = [Convert]::ToBase64String($_.RawData, [System.Base64FormattingOptions]::InsertLineBreaks)
+      "-----BEGIN CERTIFICATE-----"
+      $b
+      "-----END CERTIFICATE-----"
+    }
+  } catch {}
+}
+`;
+    const tmpPs1 = join(tmpdir(), `myelin-win-ca-export-${process.pid}.ps1`);
+    try {
+      writeFileSync(tmpPs1, psExport, 'utf8');
+      const psCerts = execFileSync(
+        powerShellExecutable(),
+        ['-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmpPs1],
+        { stdio: ['ignore', 'pipe', 'ignore'], timeout: 15000 },
+      ).toString();
+      if (psCerts.trim()) sysCerts += '\n' + psCerts.replace(/\r\n/g, '\n');
+    } catch (e) { warn(`Windows CA store extraction failed: ${e.message} — bundle may be incomplete`); }
+    finally { try { unlinkSync(tmpPs1); } catch {} }
+  }
+
   // Strip old mitmproxy CA entry, re-add fresh
   const withoutMitm = sysCerts.replace(/\n?# mitmproxy CA[\s\S]*?-----END CERTIFICATE-----\n?/g, '');
   writeFileSync(ourBundle, appendMitmCA(withoutMitm || '', mitmCert), 'utf8');
