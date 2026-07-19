@@ -861,3 +861,50 @@ describe('staging and managed detection', () => {
     assert.equal(calls[0].options.windowsVerbatimArguments, true);
   });
 });
+
+describe('buildComponentInstallPlan — noBuildOnPlatforms (WIN-HEADROOM-BINONLY-001)', () => {
+  const component = {
+    kind: 'uv-venv',
+    package: 'headroom-ai[proxy]',
+    version: '0.31.0',
+    bin: 'headroom',
+    optional: true,
+    noBuildOnPlatforms: ['win32'],
+  };
+
+  it('adds --only-binary :all: on win32 for noBuildOnPlatforms components', () => {
+    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
+    assert.ok(pipCmd, 'should have uv pip install command');
+    assert.ok(pipCmd.includes('--only-binary'), 'should include --only-binary');
+    assert.ok(pipCmd.includes(':all:'), 'should specify :all:');
+  });
+
+  it('does not add --only-binary on linux for noBuildOnPlatforms components', () => {
+    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.31.0', 'linux');
+    const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
+    assert.ok(pipCmd, 'should have uv pip install command');
+    assert.equal(pipCmd.includes('--only-binary'), false, 'should not include --only-binary on linux');
+  });
+
+  it('does not add --only-binary on darwin for noBuildOnPlatforms components', () => {
+    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.31.0', 'darwin');
+    const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
+    assert.equal(pipCmd.includes('--only-binary'), false, 'should not include --only-binary on darwin');
+  });
+
+  it('does not add --only-binary when noBuildOnPlatforms is absent', () => {
+    const noFlag = { ...component, noBuildOnPlatforms: undefined };
+    const plan = buildComponentInstallPlan(noFlag, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
+    assert.equal(pipCmd.includes('--only-binary'), false);
+  });
+
+  it('--only-binary appears before --python in the pip install command', () => {
+    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
+    const binaryIdx = pipCmd.indexOf('--only-binary');
+    const pythonIdx = pipCmd.indexOf('--python');
+    assert.ok(binaryIdx < pythonIdx, '--only-binary should precede --python');
+  });
+});

@@ -173,11 +173,13 @@ const RELEASED_COMPONENTS = {
     package: 'headroom-ai[proxy]',
     version: '0.31.0',
     bin: 'headroom',
-    // Optional: headroom-ai[proxy] depends on ast-grep-cli (a Rust binary) which
-    // Windows Defender may block, causing uv to attempt a source build that
-    // requires MSVC (link.exe). Mark optional so a failed install warns rather
-    // than aborting the entire update (WIN-LITELLM-001).
+    // optional: ast-grep-cli (a Rust binary dep) is blocked by Windows Defender on
+    // some machines. Failed installs warn and continue rather than aborting.
     optional: true,
+    // noBuildOnPlatforms: prevents uv from falling back to a Rust source build
+    // when the binary wheel is blocked. Fail fast with a clear Defender error
+    // instead of a confusing "link.exe not found" MSVC error (WIN-HEADROOM-BINONLY-001).
+    noBuildOnPlatforms: ['win32'],
   },
   serena: {
     kind: 'uv-git',

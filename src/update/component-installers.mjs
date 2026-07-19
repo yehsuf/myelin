@@ -312,11 +312,18 @@ export function buildComponentInstallPlan(component, destination, platform = pro
   switch (component.kind) {
     case 'uv-venv': {
       const pyVersion = component.pythonVersion ?? MANAGED_PYTHON_VERSION;
+      // noBuildOnPlatforms: skip source builds on listed platforms. This prevents
+      // uv from invoking Rust/maturin when a binary wheel is Defender-blocked,
+      // producing a clear "no binary wheel" error instead of "link.exe not found"
+      // (WIN-HEADROOM-BINONLY-001). normalizedPlatform is { os, arch } — compare .os.
+      const noBuildPlatforms = Array.isArray(component.noBuildOnPlatforms) ? component.noBuildOnPlatforms : [];
+      const noBuild = noBuildPlatforms.includes(normalizedPlatform.os);
       return {
         ...base,
         commands: [
           ['uv', 'venv', '--python', pyVersion, normalizedDestination],
-          ['uv', 'pip', 'install', '--python', normalizedDestination, `${component.package}==${component.version}`],
+          ['uv', 'pip', 'install', ...(noBuild ? ['--only-binary', ':all:'] : []),
+            '--python', normalizedDestination, `${component.package}==${component.version}`],
         ],
       };
     }

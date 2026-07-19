@@ -1210,12 +1210,29 @@ function journalFor(plan, snapshot, desired, transactionId) {
   };
 }
 
+// Maps backend identifiers to their managed component name.
+const BACKEND_COMPONENT_NAME = {
+  'headroom-original': 'headroomOriginal',
+  'headroom-lite': 'headroomLite',
+};
+
+// Fallback backend when the active one fails (only headroom-original supports fallback).
+const BACKEND_FALLBACK = { 'headroom-original': 'headroom-lite' };
+
+/**
+ * Stages all selected components. Returns an object with:
+ * - staged: array of successfully staged component results
+ * - backendFallback: 'headroom-lite' when the active backend's optional component
+ *   failed (WIN-HEADROOM-FALLBACK-001), null otherwise
+ */
 async function stageSelectedComponents(plan, deps, context) {
   if (typeof deps.stageComponents === 'function') {
-    return mutate(deps, context, deps.stageComponents, plan);
+    const staged = await mutate(deps, context, deps.stageComponents, plan);
+    return { staged: Array.isArray(staged) ? staged : [], backendFallback: null };
   }
-  if (typeof deps.stageComponent !== 'function') return [];
+  if (typeof deps.stageComponent !== 'function') return { staged: [], backendFallback: null };
   const staged = [];
+  let backendFallback = null;
   for (const component of [...(plan.components ?? [])].sort((left, right) => (
     left.name.localeCompare(right.name)
   ))) {
@@ -1232,12 +1249,22 @@ async function stageSelectedComponents(plan, deps, context) {
       if (isOptional) {
         // Optional component: log the failure but don't abort the update.
         console.warn(`[myelin] Optional component '${component.name}' failed to stage — skipping: ${error.message}`);
+        // WIN-HEADROOM-FALLBACK-001: when the active backend's component fails,
+        // record a fallback so activateUpdate can switch config to headroom-lite.
+        const activeBackendComponent = BACKEND_COMPONENT_NAME[plan.backend];
+        if (component.name === activeBackendComponent && BACKEND_FALLBACK[plan.backend]) {
+          backendFallback = BACKEND_FALLBACK[plan.backend];
+          console.warn(
+            `[myelin] Active backend '${plan.backend}' unavailable — switching config to '${backendFallback}'.`,
+            '\n  Run "myelin fix headroom-win" to re-enable headroom-original after adding a Defender exclusion.',
+          );
+        }
       } else {
         throw error;
       }
     }
   }
-  return staged;
+  return { staged, backendFallback };
 }
 
 function componentPairsFromPlan(plan, snapshot) {
@@ -1443,13 +1470,58 @@ export async function recoverUpdateJournal(deps = {}, context = {}) {
 }
 
 /**
+ * Creates a new plan with the compression backend switched to `fallbackBackend`.
+ * Updates both the in-memory config (used for service/engine decisions) and the
+ * raw config snapshot (written to disk) so the fallback persists across restarts.
+ */
+function applyBackendFallback(plan, fallbackBackend) {
+  const updatedConfig = {
+    ...plan.config,
+    compression: { ...(plan.config?.compression ?? {}), backend: fallbackBackend },
+  };
+  let updatedDesiredConfig = plan.desiredConfig;
+  if (plan.desiredConfig?.bytes) {
+    try {
+      const parsed = loadYaml(plan.desiredConfig.bytes.toString('utf8')) ?? {};
+      if (typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsed.compression = { ...(parsed.compression ?? {}), backend: fallbackBackend };
+        updatedDesiredConfig = {
+          ...plan.desiredConfig,
+          bytes: Buffer.from(dumpYaml(parsed, { lineWidth: 120 }), 'utf8'),
+        };
+      }
+    } catch { /* leave desiredConfig as-is; in-memory config still updated */ }
+  }
+  // Remove the failed backend component from plan.components so applyComponentPairs
+  // does not attempt to activate a version directory that was never staged.
+  // (provisionManagedCompressionComponent in install.mjs handles headroomLite
+  // provisioning when the engine is headroom_lite after the config switch.)
+  const failedComponent = BACKEND_COMPONENT_NAME[plan.backend];
+  const filteredComponents = failedComponent
+    ? (plan.components ?? []).filter(c => c.name !== failedComponent)
+    : plan.components;
+  return {
+    ...plan,
+    config: updatedConfig,
+    backend: fallbackBackend,
+    desiredConfig: updatedDesiredConfig,
+    components: filteredComponents,
+  };
+}
+
+/**
  * Activates staged state transactionally. Staging is intentionally included so
  * callers that invoke this directly get the same inactive-state failure path.
  */
 export async function activateUpdate(plan, deps = {}, context = {}) {
   let stagedComponents;
   try {
-    stagedComponents = await stageSelectedComponents(plan, deps, context);
+    const { staged, backendFallback } = await stageSelectedComponents(plan, deps, context);
+    stagedComponents = staged;
+    // WIN-HEADROOM-FALLBACK-001: when the active backend's component was
+    // optional-skipped, switch plan to the fallback backend so service
+    // decisions and the written config both use headroom-lite.
+    if (backendFallback) plan = applyBackendFallback(plan, backendFallback); // eslint-disable-line no-param-reassign
   } catch (error) {
     try {
       await mutate(deps, context, deps.cleanupStaging ?? (() => {}), plan, error);
@@ -1560,6 +1632,7 @@ export async function activateUpdate(plan, deps = {}, context = {}) {
         snapshot,
         desired: journal.desired,
         stagedComponents,
+        plan,
         error: cleanupError,
       };
     }
@@ -1569,6 +1642,7 @@ export async function activateUpdate(plan, deps = {}, context = {}) {
       snapshot,
       desired: journal.desired,
       stagedComponents,
+      plan,
     };
   } catch (error) {
     if (!snapshot) throw error;
@@ -2454,13 +2528,27 @@ function defaultDependencies({
     for (const name of Object.keys(pairs).sort()) {
       await fenceBeforeMutation(deps, context);
       const pair = pairs[name];
-      restoreComponent({
-        root: paths.componentsRoot,
-        name,
-        pointers: pair,
-        platform: storagePlatform,
-        fs,
-      });
+      // Optional components (e.g. headroomOriginal on Windows) may have been
+      // skipped during staging. Attempting to activate a missing version
+      // directory would throw ERR_COMPONENT_TARGET_MISSING. Skip gracefully
+      // when the component is optional — the existing installation (if any)
+      // is unchanged (WIN-HEADROOM-FALLBACK-001).
+      const isOptional = COMPONENTS[name]?.optional === true;
+      try {
+        restoreComponent({
+          root: paths.componentsRoot,
+          name,
+          pointers: pair,
+          platform: storagePlatform,
+          fs,
+        });
+      } catch (e) {
+        if (isOptional && (e?.code === 'ERR_COMPONENT_TARGET_MISSING' || e?.code === 'ERR_COMPONENT_DIRECTORY_UNSAFE')) {
+          console.warn(`[myelin] Optional component '${name}' not activated (staged directory missing) — keeping previous installation as-is.`);
+          continue;
+        }
+        throw e;
+      }
     }
   };
 
@@ -2738,7 +2826,9 @@ export async function runUpdate(options = {}, injectedDeps = {}) {
     const activation = await activateUpdate(plan, deps, context);
     result = {
       ...activation,
-      plan,
+      // Use the plan from activation in case the backend was switched to a
+      // fallback (WIN-HEADROOM-FALLBACK-001) — reflects the actual backend used.
+      plan: activation.plan ?? plan,
       migration: prepared.migration,
     };
   } catch (error) {

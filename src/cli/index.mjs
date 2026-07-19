@@ -183,4 +183,18 @@ program.command('rtk-guard')
     runRtkGuardCli(target);
   });
 
+program.command('fix')
+  .description('Self-healing fixes for platform-specific install issues')
+  .argument('<issue>', 'Issue to fix: headroom-win (Windows Defender exclusion + headroom-original retry)')
+  .action(async (issue) => {
+    if (issue === 'headroom-win') {
+      const { runFixHeadroomWin } = await import('./fix.mjs');
+      const result = await runFixHeadroomWin();
+      process.exit(result.status === 'ok' || result.status === 'skip' ? 0 : 1);
+    } else {
+      console.error(`Unknown fix target: ${issue}. Available: headroom-win`);
+      process.exit(1);
+    }
+  });
+
 program.parse();

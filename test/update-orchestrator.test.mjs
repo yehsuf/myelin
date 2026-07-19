@@ -956,3 +956,184 @@ describe('syncReleasePair', { concurrency: false }, () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// WIN-HEADROOM-FALLBACK-001: auto-switch to headroom-lite when headroom-original
+// optional component fails to stage
+// ---------------------------------------------------------------------------
+describe('WIN-HEADROOM-FALLBACK-001: backend fallback on optional stage failure', { concurrency: false }, () => {
+  const manifestWithOptionalOriginal = {
+    headroomLite: {
+      kind: 'npm-git',
+      package: 'github:yehsuf/headroom-lite',
+      version: '0.31.0',
+      ref: 'v0.31.0',
+      bin: 'headroom-lite',
+    },
+    headroomOriginal: {
+      kind: 'uv-venv',
+      package: 'headroom-ai[proxy]',
+      version: '0.31.0',
+      bin: 'headroom',
+      optional: true,
+      noBuildOnPlatforms: ['win32'],
+    },
+  };
+
+  it('switches backend to headroom-lite when headroom-original optional stage fails', async () => {
+    const events = [];
+    const configWritten = [];
+    const deps = baseDeps(events);
+    // Override stageComponent to fail for headroomOriginal
+    deps.stageComponent = async ({ name }) => {
+      events.push(`stage:${name}`);
+      if (name === 'headroomOriginal') throw new Error('uv pip install failed: ast-grep-cli Defender blocked');
+    };
+    deps.writeConfig = async (config) => {
+      events.push('write-config');
+      configWritten.push(config);
+    };
+    deps.readStagedManifest = async () => manifestWithOptionalOriginal;
+
+    const plan = {
+      ...planUpdate({
+        config: { compression: { backend: 'headroom-original' } },
+        manifest: manifestWithOptionalOriginal,
+        target: { version: '1.1.0' },
+      }),
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+      desiredConfig: {
+        exists: true,
+        bytes: Buffer.from('compression:\n  backend: headroom-original\n', 'utf8'),
+        mode: 0o600,
+        metadata: {},
+      },
+    };
+
+    const result = await activateUpdate(plan, deps);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.plan.backend, 'headroom-lite', 'result plan should reflect fallback backend');
+    assert.equal(result.plan.config.compression.backend, 'headroom-lite');
+    // headroomOriginal must be removed from components so applyComponentPairs
+    // does not try to activate a version directory that was never staged.
+    const names = (result.plan.components ?? []).map(c => c.name);
+    assert.equal(names.includes('headroomOriginal'), false, 'headroomOriginal removed from plan.components');
+  });
+
+  it('writes headroom-lite into the desired config bytes on fallback', async () => {
+    const load = (await import('js-yaml')).load;
+    const events = [];
+    const writtenConfigs = [];
+    const deps = baseDeps(events);
+    deps.stageComponent = async ({ name }) => {
+      if (name === 'headroomOriginal') throw new Error('install failed');
+    };
+    deps.writeConfig = async (rawConfig) => { writtenConfigs.push(rawConfig); };
+    deps.readStagedManifest = async () => manifestWithOptionalOriginal;
+
+    const plan = {
+      ...planUpdate({
+        config: { compression: { backend: 'headroom-original' } },
+        manifest: manifestWithOptionalOriginal,
+        target: { version: '1.1.0' },
+      }),
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+      desiredConfig: {
+        exists: true,
+        bytes: Buffer.from('compression:\n  backend: headroom-original\n', 'utf8'),
+        mode: 0o600,
+        metadata: {},
+      },
+    };
+
+    await activateUpdate(plan, deps);
+
+    assert.ok(writtenConfigs.length > 0, 'writeConfig should be called');
+    const lastConfig = writtenConfigs.at(-1);
+    if (lastConfig?.bytes) {
+      const parsed = load(lastConfig.bytes.toString('utf8'));
+      assert.equal(parsed?.compression?.backend, 'headroom-lite',
+        'written config bytes should have headroom-lite as backend');
+    }
+  });
+
+  it('does not fallback when a non-optional component fails', async () => {
+    const events = [];
+    const deps = baseDeps(events);
+    const manifest = {
+      headroomOriginal: {
+        kind: 'uv-venv',
+        package: 'headroom-ai[proxy]',
+        version: '0.31.0',
+        bin: 'headroom',
+        // NO optional: true
+      },
+    };
+    deps.stageComponent = async ({ name }) => {
+      if (name === 'headroomOriginal') throw new Error('non-optional failure');
+    };
+    deps.readStagedManifest = async () => manifest;
+
+    const plan = {
+      ...planUpdate({
+        config: { compression: { backend: 'headroom-original' } },
+        manifest,
+        target: { version: '1.1.0' },
+      }),
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+    };
+
+    const result = await activateUpdate(plan, deps);
+    assert.equal(result.status, 'staging-failed');
+  });
+});
+
+describe('WIN-HEADROOM-FALLBACK-001: defaultApplyComponentPairs skips missing optional component dirs', { concurrency: false }, () => {
+  it('continues when optional component activation throws ERR_COMPONENT_TARGET_MISSING', async () => {
+    const events = [];
+    const deps = baseDeps(events);
+    // headroomOriginal is optional in the manifest returned by readStagedManifest
+    deps.readStagedManifest = async () => ({
+      headroomLite: {
+        kind: 'npm-git', package: 'github:yehsuf/headroom-lite',
+        version: '0.31.0', ref: 'v0.31.0', bin: 'headroom-lite',
+      },
+      headroomOriginal: {
+        kind: 'uv-venv', package: 'headroom-ai[proxy]', version: '0.31.0',
+        bin: 'headroom', optional: true,
+      },
+    });
+    deps.stageComponent = async ({ name }) => {
+      // headroomOriginal fails (optional — should not abort)
+      if (name === 'headroomOriginal') throw new Error('install failed');
+    };
+    // applyComponentPairs will try to activate headroomOriginal — inject a dep
+    // that throws ERR_COMPONENT_TARGET_MISSING for it.
+    const componentErrors = new Map([
+      ['headroomOriginal', Object.assign(new Error('dir missing'), { code: 'ERR_COMPONENT_TARGET_MISSING' })],
+    ]);
+    deps.applyComponentPairs = async (pairs) => {
+      for (const name of Object.keys(pairs)) {
+        if (componentErrors.has(name)) throw componentErrors.get(name);
+        events.push(`activate:${name}`);
+      }
+    };
+
+    const plan = {
+      ...planUpdate({
+        config: { compression: { backend: 'headroom-original' } },
+        manifest: {
+          headroomLite: { kind: 'npm-git', package: 'github:yehsuf/headroom-lite', version: '0.31.0', ref: 'v0.31.0', bin: 'headroom-lite' },
+          headroomOriginal: { kind: 'uv-venv', package: 'headroom-ai[proxy]', version: '0.31.0', bin: 'headroom', optional: true },
+        },
+        target: { version: '1.1.0' },
+      }),
+      stagedRelease: { version: '1.1.0', directory: '/managed/releases/1.1.0' },
+    };
+
+    // Should NOT throw even though headroomOriginal activation fails
+    const result = await activateUpdate(plan, deps);
+    assert.equal(result.ok, true);
+  });
+});

@@ -40,6 +40,7 @@ describe('component manifest', () => {
         version: '0.31.0',
         bin: 'headroom',
         optional: true,
+        noBuildOnPlatforms: ['win32'],
       },
       serena: {
         kind: 'uv-git',
