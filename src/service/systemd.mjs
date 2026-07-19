@@ -446,7 +446,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   const caBundle = envVars.SSL_CERT_FILE || envVars.REQUESTS_CA_BUNDLE ||
                    envVars.NODE_EXTRA_CA_CERTS || envVars.HEADROOM_CA_BUNDLE || '';
   if (caBundle) args.push('--set', `ssl_verify_upstream_trusted_ca=${caBundle}`);
-  args.push('--ignore-hosts', String.raw`.*\.akamai\.com|.*\.corp\.akamai\.com|.*\.akamaized\.net|.*\.akamaihd\.net`);
+  args.push('--ignore-hosts', String.raw`.*\.akamai\.com|.*\.corp\.akamai\.com|.*\.akamaized\.net|.*\.akamaihd\.net|api\.github\.com|.*\.github\.com|github\.com`);
   const content = validateSystemdUnit(generateMitmUnit({
     mitmdumpBin, port, addonPath, args,
     envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },

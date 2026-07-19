@@ -144,6 +144,8 @@ const MITM_IGNORE_HOSTS = [
   String.raw`.*\.akamaihd\.net`,
   String.raw`api\.github\.com`,
   String.raw`.*\.github\.com`,
+  // Bare github.com (HTTPS git operations) — see launchd.mjs comment.
+  String.raw`github\.com`,
 ].join('|');
 
 function withPowerShell(args, powershellExe = powerShellExecutable()) {
