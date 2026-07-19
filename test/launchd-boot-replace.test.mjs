@@ -59,9 +59,35 @@ describe('bootReplaceLaunchdService', () => {
     });
     const boots = calls.filter(c => c.includes('bootstrap'));
     const outs = calls.filter(c => c.includes('bootout'));
+    const enables = calls.filter(c => c.includes('enable'));
     assert.equal(boots.length, 1, 'exactly one bootstrap on success');
     assert.ok(outs.length >= 1, 'at least one bootout first');
     assert.ok(boots[0].includes('gui/501') && boots[0].includes(REAL_PLIST));
+    assert.equal(enables.length, 1, 'exactly one enable call');
+    assert.ok(enables[0].includes('gui/501/com.myelin.mitmproxy'), 'enable uses gui/<uid>/<label>');
+    // enable must come before bootstrap
+    assert.ok(calls.indexOf(enables[0]) < calls.indexOf(boots[0]), 'enable fires before bootstrap');
+  });
+
+  it('clears disabled-override: enable is called even when first bootstrap would fail with EIO', () => {
+    // Simulates the real bug: service is in "disabled" override state.
+    // Without the enable call, all bootstrap attempts return EIO (code 5).
+    const calls = [];
+    let enableCalled = false;
+    bootReplaceLaunchdService({
+      uid: '502', label: 'com.myelin.watchdog', plistPath: REAL_PLIST,
+      execSyncImpl: (cmd) => {
+        calls.push(cmd);
+        if (cmd.includes('enable')) { enableCalled = true; return ''; }
+        if (cmd.includes('bootstrap') && !enableCalled) {
+          throw new Error('Bootstrap failed: 5: Input/output error');
+        }
+        return '';
+      },
+      sleepImpl: () => {},
+    });
+    assert.ok(enableCalled, 'enable must be called before bootstrap');
+    assert.ok(calls.some(c => c.includes('bootstrap') && c.includes('gui/502')), 'bootstrap ran after enable');
   });
 
   it('retries bootstrap on EIO (error 5) then succeeds', () => {
@@ -174,6 +200,15 @@ describe('generateLaunchdWatchdogScript — never kill a healthy service', () =>
     assert.match(script, /for t in 1 2 3 4 5/);
     assert.match(script, /launchctl bootstrap "gui\/\$UID_N" "\$plist"/);
     assert.match(script, /FAILED to revive/);
+  });
+
+  it('clears disabled-override before each bootstrap retry', () => {
+    assert.match(script, /launchctl enable "gui\/\$UID_N\/\$label"/);
+    // enable must appear before bootstrap in the retry loop
+    const enableIdx = script.indexOf('launchctl enable');
+    const bootstrapIdx = script.indexOf('launchctl bootstrap');
+    assert.ok(enableIdx !== -1 && bootstrapIdx !== -1 && enableIdx < bootstrapIdx,
+      'enable must precede bootstrap in the watchdog script');
   });
 
   it('still checks the configured service ports', () => {
