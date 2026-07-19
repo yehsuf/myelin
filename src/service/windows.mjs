@@ -2537,7 +2537,7 @@ export function removeMitmService({
 }
 
 export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry', forceRestart = false, _isPortResponding = isPortResponding, _isWinswConfigUnchanged = isWinswConfigUnchanged }) {
-  const persistedEnv = withForwardedMyelinDir(envVars, env);
+  const persistedEnv = withForwardedMyelinDir({ PYTHONOPTIMIZE: '1', ...envVars }, env);
   if (manager !== 'winsw') {
     runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, home }), { home, env });
     return { ok: true, manager: 'registry' };
@@ -2548,7 +2548,7 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
     description: 'Myelin mitmproxy LLM compression proxy',
     executable: mitmdumpBin,
     arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, upstreamProxy }),
-    envVars: { PYTHONOPTIMIZE: '1', ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
+    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
     logPath,
     home,
     env,

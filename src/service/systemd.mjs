@@ -449,7 +449,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
   args.push('--ignore-hosts', String.raw`.*\.akamai\.com|.*\.corp\.akamai\.com|.*\.akamaized\.net|.*\.akamaihd\.net|api\.github\.com|.*\.github\.com|github\.com`);
   const content = validateSystemdUnit(generateMitmUnit({
     mitmdumpBin, port, addonPath, args,
-    envVars: { PYTHONOPTIMIZE: '1', ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars },
+    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...envVars, PYTHONOPTIMIZE: '1' },
     env,
   }));
   const p = mitmUnitPath(home ?? homedir());
