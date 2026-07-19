@@ -217,6 +217,9 @@ export function bootReplaceLaunchdService({
   const sleep = sleepImpl ?? ((ms) => { try { execSyncImpl(`sleep ${Math.max(0, ms) / 1000}`); } catch {} });
   const bootout = () => { try { execSyncImpl(`launchctl bootout gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {} };
   bootout();
+  // Clear any stale disabled-override so bootstrap doesn't fail with EIO (code 5).
+  // Safe to call even when the service is already enabled — it's idempotent.
+  try { execSyncImpl(`launchctl enable gui/${uid}/${label}`, { stdio: 'ignore' }); } catch {}
   let lastErr = null;
   for (let i = 0; i < Math.max(1, maxTries); i++) {
     // First wait preserves the original ~1s settle; later waits are shorter.
@@ -553,6 +556,7 @@ check_and_revive() {
   local t
   for t in 1 2 3 4 5; do
     launchctl bootout "gui/$UID_N/$label" 2>/dev/null
+    launchctl enable "gui/$UID_N/$label" 2>/dev/null
     sleep 1
     if launchctl bootstrap "gui/$UID_N" "$plist" 2>/dev/null; then
       echo "[watchdog] $(date '+%Y-%m-%d %H:%M:%S') revived $name ($label)" >> ${posixSingleQuote(watchdogLog)}
