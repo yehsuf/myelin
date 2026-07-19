@@ -624,11 +624,24 @@ export function resolveStagedCompressionBinary({
   componentsRoot,
   platform,
   resolveBinary = resolveManagedCompressionBinary,
+  warnFn = warn,
 } = {}) {
   if (!updateApply) return null;
   const backend = selectedBackend(cfg);
   if (backend === 'disabled') return null;
-  return resolveBinary({ backend, componentsRoot, platform })?.binPath ?? null;
+  try {
+    return resolveBinary({ backend, componentsRoot, platform })?.binPath ?? null;
+  } catch (e) {
+    // Optional components (e.g. headroomOriginal when headroom-ai[proxy] fails
+    // to install on Windows due to Defender/MSVC) may leave no staged binary.
+    // Fall back to the legacy managed-venv headroom path so the update
+    // completes rather than hard-failing (WIN-LITELLM-001).
+    if (e?.code === 'ERR_UPDATE_PINNED_EXECUTABLE_MISSING') {
+      warnFn(`  ⚠ staged ${backend} binary unavailable — falling back to legacy install: ${e.message}`);
+      return null;
+    }
+    throw e;
+  }
 }
 
 /**

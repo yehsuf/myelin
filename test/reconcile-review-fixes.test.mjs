@@ -693,3 +693,42 @@ describe('finding 3: staged apply suppresses global component installs and fence
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// WIN-LITELLM-001: when headroomOriginal is optional and fails to install,
+// resolveStagedCompressionBinary must return null (not throw) so the update
+// can fall back to the legacy managed-venv headroom path and succeed.
+// ---------------------------------------------------------------------------
+describe('WIN-LITELLM-001: optional headroomOriginal staged binary fallback', () => {
+  it('returns null when resolveBinary throws ERR_UPDATE_PINNED_EXECUTABLE_MISSING', () => {
+    const warned = [];
+    const err = new Error('Pinned headroomOriginal executable is missing at C:\\...');
+    err.code = 'ERR_UPDATE_PINNED_EXECUTABLE_MISSING';
+    const bin = resolveStagedCompressionBinary({
+      updateApply: true,
+      cfg: { proxy: { engine: 'headroom' } },
+      componentsRoot: '/components',
+      platform: 'win32',
+      resolveBinary: () => { throw err; },
+      warnFn: (msg) => warned.push(msg),
+    });
+    assert.equal(bin, null);
+    assert.ok(warned.length > 0, 'should emit a warning');
+    assert.ok(warned[0].includes('headroom-original'), 'warning should mention backend');
+  });
+
+  it('re-throws errors other than ERR_UPDATE_PINNED_EXECUTABLE_MISSING', () => {
+    const otherErr = new Error('network failure');
+    otherErr.code = 'ECONNRESET';
+    assert.throws(
+      () => resolveStagedCompressionBinary({
+        updateApply: true,
+        cfg: { proxy: { engine: 'headroom' } },
+        componentsRoot: '/components',
+        platform: 'linux',
+        resolveBinary: () => { throw otherErr; },
+      }),
+      (e) => e === otherErr,
+    );
+  });
+});
