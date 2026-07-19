@@ -152,6 +152,8 @@ myelin-done <task-id> "<pr-evidence>"   # moves row to Recently Completed, remov
 
 ## Recently Completed
 
+| LAUNCHD-ENABLE-001 | done | **Fix `launchctl enable` before bootstrap** — `Bootstrap failed: 5: Input/output error` when launchd disabled-override DB blocks re-registration. Fix: call `launchctl enable gui/${uid}/${label}` after bootout, before retry loop in `bootReplaceLaunchdService` and watchdog shell script. | PR #68, 29e1f20 |
+
 | UPDATE-PATH-001 | done | **Fix `myelin update` node PATH for NVM users** — `npm ci` failed with `env: node: No such file or directory` when Homebrew npm (first in PATH, `#!/usr/bin/env node`) has no co-located node and NVM node is not in subprocess PATH. Fix: prepend `dirname(process.execPath)` to PATH in all stageRelease subprocesses; injectable `nodeExecPath` for testability; Windows case-insensitive key + empty-PATH guards. | PR #67, 88f1eaf |
 
 | ID | Status | Work | Evidence |
