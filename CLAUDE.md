@@ -150,6 +150,12 @@ branch → push branch to origin periodically → run all tests on **all 3 envir
 the branch is rebased on latest `origin/main`) → **ask the human to approve the PR merge**.
 The branch is never the final destination, and never merge without explicit approval.
 
+**Commit message rules:**
+- Use Conventional Commits format: `type(scope): description`
+- **No emoji in commit messages** — use plain ASCII only. Emoji break Windows cp125x codepage decoding in git tools and are unprofessional in a project log.
+- Em-dashes (`—`), arrows (`→`), and similar Unicode punctuation in message bodies are acceptable.
+- Examples of correct types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `perf`
+
 **Exception — direct-to-main:** ONLY for agents doing concurrent work or emergency hotfixes.
 - **All other work uses worktrees + a PR** (see "Feature development workflow" above).
 - Always `git fetch origin && git pull --rebase origin main` before committing when working concurrently.

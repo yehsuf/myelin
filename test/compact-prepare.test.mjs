@@ -492,3 +492,147 @@ describe('clipboard mode', () => {
     assert.doesNotMatch(r.stderr, /truncated|exceeded/i, 'should not truncate or reject at exactly 4000');
   });
 });
+
+
+
+// ─── claims helpers unit tests ────────────────────────────────
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { readActiveClaims, resolveClaimsDirs } from '../src/cli/compact-prepare.mjs';
+
+describe('resolveClaimsDirs', () => {
+  it('returns empty array when no claim dirs exist', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'claims-home-'));
+    try {
+      const dirs = resolveClaimsDirs(fakeHome);
+      assert.equal(dirs.length, 0, 'empty home must yield no claim dirs');
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+
+  it('AGENT_CLAIMS_DIR env var takes priority and is returned when it exists', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'claims-home2-'));
+    const fakeDir = path.join(fakeHome, 'custom-claims');
+    mkdirSync(fakeDir);
+    const orig = process.env.AGENT_CLAIMS_DIR;
+    process.env.AGENT_CLAIMS_DIR = fakeDir;
+    try {
+      const dirs = resolveClaimsDirs(fakeHome);
+      assert.ok(dirs.includes(fakeDir), 'AGENT_CLAIMS_DIR must be in results');
+      assert.equal(dirs[0], fakeDir, 'AGENT_CLAIMS_DIR must be first');
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      if (orig !== undefined) process.env.AGENT_CLAIMS_DIR = orig; else delete process.env.AGENT_CLAIMS_DIR;
+    }
+  });
+
+  it('deduplicates when AGENT_CLAIMS_DIR and MYELIN_DIR point to same resolved path', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'claims-dup-'));
+    const claimsDir = path.join(fakeHome, 'claims');
+    mkdirSync(claimsDir);
+    const origAcd = process.env.AGENT_CLAIMS_DIR;
+    const origMd = process.env.MYELIN_DIR;
+    process.env.AGENT_CLAIMS_DIR = claimsDir;
+    process.env.MYELIN_DIR = fakeHome;
+    try {
+      const dirs = resolveClaimsDirs(fakeHome);
+      const count = dirs.filter(d => path.resolve(d) === path.resolve(claimsDir)).length;
+      assert.equal(count, 1, 'same resolved path must appear only once');
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      if (origAcd !== undefined) process.env.AGENT_CLAIMS_DIR = origAcd; else delete process.env.AGENT_CLAIMS_DIR;
+      if (origMd !== undefined) process.env.MYELIN_DIR = origMd; else delete process.env.MYELIN_DIR;
+    }
+  });
+});
+
+describe('readActiveClaims', () => {
+  it('returns empty array when claims dir is empty', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-empty-'));
+    const claims = mkdirSync(path.join(fakeHome, '.myelin', 'claims'), { recursive: true }) || path.join(fakeHome, '.myelin', 'claims');
+    try {
+      assert.deepEqual(readActiveClaims('sess1', fakeHome), []);
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+
+  it('reads active claim and marks mine correctly', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-active-'));
+    const claimsDir = path.join(fakeHome, '.myelin', 'claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(path.join(claimsDir, 'TASK-1.json'), JSON.stringify({
+      task_id: 'TASK-1', agent_name: 'agent-a', session_id: 'sess-mine',
+      claimed_at: now, heartbeat_at: now, ttl_minutes: 120,
+    }));
+    try {
+      const claims = readActiveClaims('sess-mine', fakeHome);
+      assert.equal(claims.length, 1);
+      assert.equal(claims[0].taskId, 'TASK-1');
+      assert.equal(claims[0].mine, true);
+      assert.equal(claims[0].expired, false);
+      assert.ok(claims[0].ageMins != null && claims[0].ageMins >= 0);
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+
+  it('treats missing heartbeat/claimed_at as expired with null ageMins', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-notime-'));
+    const claimsDir = path.join(fakeHome, '.myelin', 'claims');
+    mkdirSync(claimsDir, { recursive: true });
+    writeFileSync(path.join(claimsDir, 'TASK-2.json'), JSON.stringify({
+      task_id: 'TASK-2', agent_name: 'agent-b', session_id: 'sess-other',
+    }));
+    try {
+      const claims = readActiveClaims('sess-mine', fakeHome);
+      assert.equal(claims.length, 1);
+      assert.equal(claims[0].expired, true, 'missing timestamp must be treated as expired');
+      assert.equal(claims[0].ageMins, null, 'ageMins must be null when timestamp missing');
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+
+  it('marks claim as expired when heartbeat exceeds TTL', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-exp-'));
+    const claimsDir = path.join(fakeHome, '.myelin', 'claims');
+    mkdirSync(claimsDir, { recursive: true });
+    const oldTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    writeFileSync(path.join(claimsDir, 'TASK-3.json'), JSON.stringify({
+      task_id: 'TASK-3', agent_name: 'agent-c', session_id: 'sess-old',
+      heartbeat_at: oldTs, ttl_minutes: 120,
+    }));
+    try {
+      const claims = readActiveClaims('sess-mine', fakeHome);
+      assert.equal(claims[0].expired, true, '3h-old claim with 120m TTL must be expired');
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+
+  it('deduplicates same taskId across two claim dirs (AGENT_CLAIMS_DIR + MYELIN_DIR)', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-dup-'));
+    const dir1 = path.join(fakeHome, 'custom-claims');
+    const fakeMyelin = path.join(fakeHome, '.myelin');
+    const myelinClaims = path.join(fakeMyelin, 'claims');
+    mkdirSync(dir1, { recursive: true });
+    mkdirSync(myelinClaims, { recursive: true });
+    const now = new Date().toISOString();
+    const claim = JSON.stringify({ task_id: 'TASK-X', agent_name: 'a', session_id: 's1', heartbeat_at: now });
+    writeFileSync(path.join(dir1, 'TASK-X.json'), claim);
+    writeFileSync(path.join(myelinClaims, 'TASK-X.json'), claim);
+    const origAcd = process.env.AGENT_CLAIMS_DIR;
+    process.env.AGENT_CLAIMS_DIR = dir1;
+    try {
+      const claims = readActiveClaims('s1', fakeHome);
+      assert.equal(claims.filter(c => c.taskId === 'TASK-X').length, 1, 'TASK-X must appear exactly once');
+    } finally {
+      rmSync(fakeHome, { recursive: true, force: true });
+      if (origAcd !== undefined) process.env.AGENT_CLAIMS_DIR = origAcd; else delete process.env.AGENT_CLAIMS_DIR;
+    }
+  });
+
+  it('skips malformed JSON files without throwing', () => {
+    const fakeHome = mkdtempSync(path.join(tmpdir(), 'ra-bad-'));
+    const claimsDir = path.join(fakeHome, '.myelin', 'claims');
+    mkdirSync(claimsDir, { recursive: true });
+    writeFileSync(path.join(claimsDir, 'BAD.json'), 'not json {{{');
+    try {
+      assert.doesNotThrow(() => readActiveClaims('s1', fakeHome));
+      assert.deepEqual(readActiveClaims('s1', fakeHome), []);
+    } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+});
