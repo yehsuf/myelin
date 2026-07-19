@@ -1602,14 +1602,40 @@ describe('installCopilotSkills', () => {
     assert.ok(!links.some(([, d]) => d.includes('compact-prepare.mjs')), 'must NOT symlink on Windows');
   });
 
-  it('skips all skills when copilot=false', () => {
-    const created = [];
+  it('installs compact-prepare.mjs when claudeCC=true even without copilot', () => {
+    const created = []; const links = [];
     installCopilotSkills({
-      home: '/home/t', copilot: false, repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      home: '/home/t', copilot: false, claudeCC: true,
+      repoRoot: '/home/t/.myelin/repo', os: 'linux',
+      managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
+      mkdirSyncImpl: () => {},
+      writeFileSyncImpl: (p, c) => created.push([p, c]),
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: () => {},
+      unlinkSyncImpl: () => {},
+    });
+    // compact-prepare.mjs symlink created (needed by Claude compact.md)
+    const link = links.find(([, d]) => d.includes('compact-prepare.mjs'));
+    assert.ok(link, 'compact-prepare.mjs symlink must be created for claudeCC');
+    // Copilot SKILL.md should NOT be written when copilot=false
+    const skill = created.find(([p]) => p.includes('myelin-compact') && p.endsWith('SKILL.md'));
+    assert.equal(skill, undefined, 'SKILL.md must NOT be written when copilot=false');
+    // Constitution SKILL.md must also be skipped (copilot=false)
+    const constSkill = created.find(([p]) => p.includes('myelin-constitution'));
+    assert.equal(constSkill, undefined, 'constitution SKILL.md must NOT be written when copilot=false');
+  });
+
+  it('skips all skills when both copilot=false and claudeCC=false', () => {
+    const created = []; const links = [];
+    installCopilotSkills({
+      home: '/home/t', copilot: false, claudeCC: false,
+      repoRoot: '/home/t/.myelin/repo', os: 'linux',
       managedRuntimeCommandPath: '/home/t/.myelin/bin/myelin',
       mkdirSyncImpl: () => {}, writeFileSyncImpl: (p, c) => created.push([p, c]),
-      symlinkSyncImpl: () => {}, copyFileSyncImpl: () => {}, unlinkSyncImpl: () => {},
+      symlinkSyncImpl: (s, d) => links.push([s, d]),
+      copyFileSyncImpl: () => {}, unlinkSyncImpl: () => {},
     });
-    assert.equal(created.length, 0, 'no writes when copilot=false');
+    assert.equal(created.length, 0, 'no writes when both flags false');
+    assert.equal(links.length, 0, 'no symlinks when both flags false');
   });
 });

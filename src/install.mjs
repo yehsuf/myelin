@@ -1555,6 +1555,7 @@ export function mitmAddonPath(home) {
 export function installCopilotSkills({
   home,
   copilot,
+  claudeCC = false,
   repoRoot,
   managedRuntimeCommandPath,
   os,
@@ -1564,7 +1565,7 @@ export function installCopilotSkills({
   copyFileSyncImpl = copyFileSync,
   unlinkSyncImpl = unlinkSync,
 } = {}) {
-  if (!copilot) return;
+  if (!copilot && !claudeCC) return;
 
   const skillsDir = join(home, '.copilot', 'skills');
 
@@ -1573,10 +1574,11 @@ export function installCopilotSkills({
   // skill directory so the path is always ~/.copilot/skills/myelin-compact/…
   // (environment-agnostic). On POSIX we symlink so repo updates are reflected
   // immediately; on Windows we copy (symlinks need developer-mode/admin).
+  // Install compact-prepare.mjs for both Copilot and Claude (Claude compact.md
+  // references the same path).
   {
     const dir = join(skillsDir, 'myelin-compact');
     mkdirSyncImpl(dir, { recursive: true });
-    writeFileSyncImpl(join(dir, 'SKILL.md'), COMPACT_SKILL_MD);
     const src = fileURLToPath(new URL('./cli/compact-prepare.mjs', import.meta.url));
     const dst = join(dir, 'compact-prepare.mjs');
     if (os === 'windows') {
@@ -1585,12 +1587,15 @@ export function installCopilotSkills({
       try { unlinkSyncImpl(dst); } catch { /* not present yet */ }
       symlinkSyncImpl(src, dst);
     }
+    if (copilot) {
+      writeFileSyncImpl(join(dir, 'SKILL.md'), COMPACT_SKILL_MD);
+    }
   }
 
   // ── myelin-constitution ──────────────────────────────────────────────────────
   // The SKILL.md instructs the agent to run `myelin constitution <cmd>` using
   // the managed runtime binary — never a hardcoded ~/tokenstack path.
-  {
+  if (copilot) {
     const dir = join(skillsDir, 'myelin-constitution');
     mkdirSyncImpl(dir, { recursive: true });
     writeFileSyncImpl(join(dir, 'SKILL.md'), constitutionSkillMd(managedRuntimeCommandPath));
@@ -3263,6 +3268,24 @@ allowed-tools: [Bash]
 
 ${initSkillBody}`);
       ok('~/.claude/commands/myelin/init.md (invoke: /myelin:init)');
+
+      writeFileSync(join(cmdDir, 'compact.md'), `---
+description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
+argument-hint: "[prepare|resume] — prepare before /compact, resume after (post-compact)"
+allowed-tools: [Bash, mcp__sqlite__query]
+---
+
+${COMPACT_SKILL_MD.replace(/^---[\s\S]*?---\n/, '')}`);
+      ok('~/.claude/commands/myelin/compact.md (invoke: /myelin:compact)');
+
+      writeFileSync(join(cmdDir, 'constitution.md'), `---
+description: Loads, checks, and manages the project constitution (.github/copilot-instructions.md). Run at session start or after /compact to ensure project invariants are active.
+argument-hint: "[show|check|init]"
+allowed-tools: [Bash]
+---
+
+${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '')}`);
+      ok('~/.claude/commands/myelin/constitution.md (invoke: /myelin:constitution)');
     }
   }
 
@@ -3270,6 +3293,7 @@ ${initSkillBody}`);
   installCopilotSkills({
     home,
     copilot,
+    claudeCC,
     repoRoot: runtimeBridge.root,
     managedRuntimeCommandPath: managedRuntime.commandPath,
     os,
