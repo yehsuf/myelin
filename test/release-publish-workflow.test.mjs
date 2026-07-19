@@ -140,10 +140,10 @@ test('publisher requires the exact version format stable release discovery accep
   );
 });
 
-test('publisher pins and verifies the headroom-lite v0.31.0-1 tag exists before publishing', () => {
+test('publisher pins and verifies the headroom-lite v0.31.0-2 tag exists before publishing', () => {
   const steps = loadPublishSteps();
-  const pinCheck = findStepByName(steps, 'Verify headroom-lite v0.31.0-1 tag exists');
-  assert.match(pinCheck.run, /headroom-lite\/git\/ref\/tags\/v0\.31\.0-1/);
+  const pinCheck = findStepByName(steps, 'Verify headroom-lite v0.31.0-2 tag exists');
+  assert.match(pinCheck.run, /headroom-lite\/git\/ref\/tags\/v0\.31\.0-2/);
 });
 
 function runTagCheckStep(dir, version) {
