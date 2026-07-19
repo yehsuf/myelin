@@ -1477,6 +1477,45 @@ describe('managed release store', { concurrency: false }, () => {
       ['node', ['--test', 'test/component-manifest.test.mjs']],
     ]);
     assert.ok(commands.every(({ options }) => options.cwd.endsWith(join('releases', '.1.1.0.staging'))));
+    // node bin dir must be present in PATH so npm's shebang finds node
+    const nodeBinDir = dirname(process.execPath);
+    const pathSep = process.platform === 'win32' ? ';' : ':';
+    const pathKey = Object.keys(process.env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+    assert.ok(
+      commands.every(({ options }) => options.env?.[pathKey]?.split(pathSep).includes(nodeBinDir)),
+      'subprocess env PATH must include dirname(process.execPath)',
+    );
+  });
+
+  it('injects custom nodeExecPath bin dir into subprocess PATH', async () => {
+    const root = makeRoot();
+    const releasesRoot = join(root, '.myelin', 'releases');
+    const source = join(root, 'source');
+    writeReleaseSource(source);
+    const commands = [];
+    const customNodeExecPath = process.platform === 'win32'
+      ? 'C:\\custom\\node\\node.exe'
+      : '/custom/node/bin/node';
+    const expectedDir = dirname(customNodeExecPath);
+    const sep = process.platform === 'win32' ? ';' : ':';
+
+    await stageRelease({
+      target: { channel: 'stable', version: '1.1.0', source: { type: 'directory', path: source } },
+      releasesRoot,
+      nodeExecPath: customNodeExecPath,
+      exec: (file, args, options) => {
+        commands.push({ file, args, options });
+        return '';
+      },
+    });
+
+    assert.ok(
+      commands.every(({ options }) => {
+        const pathKey = Object.keys(options.env ?? {}).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+        return options.env?.[pathKey]?.split(sep)[0] === expectedDir;
+      }),
+      'subprocess env PATH must start with dirname(nodeExecPath)',
+    );
   });
 
   it('cleans failed staging and leaves the active pointer unchanged', async () => {
