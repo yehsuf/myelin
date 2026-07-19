@@ -225,8 +225,8 @@ describe('headroomHealthUrl', () => {
 
 describe('HEADROOM_AI_SPEC (pinned classic-headroom version)', () => {
   it('pins headroom-ai[all] to a fixed version', () => {
-    assert.equal(HEADROOM_AI_VERSION, '0.31.0');
-    assert.equal(HEADROOM_AI_SPEC, 'headroom-ai[all]==0.31.0');
+    assert.equal(HEADROOM_AI_VERSION, '0.32.1');
+    assert.equal(HEADROOM_AI_SPEC, 'headroom-ai[all]==0.32.1');
   });
   it('is a single argv element (no shell metacharacters / spaces)', () => {
     assert.ok(!/\s/.test(HEADROOM_AI_SPEC));
@@ -255,9 +255,9 @@ describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', (
     // uv venv --python 3.12 <venv>
     assert.equal(calls[0].file, 'uv');
     assert.deepEqual(calls[0].args, ['venv', '--python', '3.12', venv]);
-    // uv pip install --python <venv> headroom-ai[all]==0.31.0 (pinned)
+    // uv pip install --python <venv> headroom-ai[all]==0.32.1 (pinned)
     assert.equal(calls[1].file, 'uv');
-    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]==0.31.0']);
+    assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]==0.32.1']);
     // Every arg is a discrete element; no arg is a composed shell command.
     for (const c of calls) {
       assert.ok(Array.isArray(c.args));

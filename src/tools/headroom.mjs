@@ -8,7 +8,7 @@ import { MANAGED_PYTHON_VERSION } from '../update/component-manifest.mjs';
 // installs. Single source of truth referenced by install.mjs and update.mjs so
 // the pin can never drift across call sites. HEADROOM_AI_SPEC is a single argv
 // element (no shell parsing of the `[all]`/`==` markers).
-export const HEADROOM_AI_VERSION = '0.31.0';
+export const HEADROOM_AI_VERSION = '0.32.1';
 export const HEADROOM_AI_SPEC = `headroom-ai[all]==${HEADROOM_AI_VERSION}`;
 
 export function parseHeadroomVersion(raw = '') {

@@ -119,16 +119,16 @@ describe('component install plans', () => {
   it('pins uv packages exactly', () => {
     const plan = buildComponentInstallPlan(
       COMPONENTS.semble,
-      '/components/semble/0.4.2',
+      '/components/semble/0.5.1',
       'linux',
     );
 
     assert.deepEqual(plan.commands, [
-      ['uv', 'venv', '--python', '3.12', '/components/semble/0.4.2'],
+      ['uv', 'venv', '--python', '3.12', '/components/semble/0.5.1'],
       [
         'uv', 'pip', 'install',
-        '--python', '/components/semble/0.4.2',
-        'semble[mcp]==0.4.2',
+        '--python', '/components/semble/0.5.1',
+        'semble[mcp]==0.5.1',
       ],
     ]);
   });
@@ -536,19 +536,19 @@ describe('staging and managed detection', () => {
       },
     });
 
-    assert.equal(result.destination, '/components/semble/0.4.2');
+    assert.equal(result.destination, '/components/semble/0.5.1');
     assert.deepEqual(calls, [
       {
         file: 'uv',
-        args: ['venv', '--python', '3.12', '/components/semble/0.4.2'],
+        args: ['venv', '--python', '3.12', '/components/semble/0.5.1'],
         options: { stdio: 'inherit' },
       },
       {
         file: 'uv',
         args: [
           'pip', 'install',
-          '--python', '/components/semble/0.4.2',
-          'semble[mcp]==0.4.2',
+          '--python', '/components/semble/0.5.1',
+          'semble[mcp]==0.5.1',
         ],
         options: { stdio: 'inherit' },
       },
@@ -642,12 +642,12 @@ describe('staging and managed detection', () => {
       platform: { os: 'linux', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
-        return Buffer.from('cairn 0.23.0\n');
+        return Buffer.from('cairn 0.25.1\n');
       },
     });
 
     assert.deepEqual(calls, [{
-      file: '/components/agentcairn/0.23.0/bin/cairn',
+      file: '/components/agentcairn/0.25.1/bin/cairn',
       args: ['--version'],
       options: { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     }]);
@@ -681,13 +681,13 @@ describe('staging and managed detection', () => {
       platform: { os: 'linux', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
-        return Buffer.from('0.4.2\n');
+        return Buffer.from('0.5.1\n');
       },
     });
 
     assert.equal(state.pinnedVersionMatches, true);
     assert.deepEqual(calls, [{
-      file: '/components/semble/0.4.2/bin/python',
+      file: '/components/semble/0.5.1/bin/python',
       args: ['-c', 'from importlib.metadata import version; print(version("semble"))'],
       options: { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     }]);
@@ -866,14 +866,14 @@ describe('buildComponentInstallPlan — noBuildOnPlatforms (WIN-HEADROOM-BINONLY
   const component = {
     kind: 'uv-venv',
     package: 'headroom-ai[proxy]',
-    version: '0.31.0',
+    version: '0.32.1',
     bin: 'headroom',
     optional: true,
     noBuildOnPlatforms: ['win32'],
   };
 
   it('adds --only-binary :all: on win32 for noBuildOnPlatforms components', () => {
-    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.32.1', 'win32');
     const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
     assert.ok(pipCmd, 'should have uv pip install command');
     assert.ok(pipCmd.includes('--only-binary'), 'should include --only-binary');
@@ -881,27 +881,27 @@ describe('buildComponentInstallPlan — noBuildOnPlatforms (WIN-HEADROOM-BINONLY
   });
 
   it('does not add --only-binary on linux for noBuildOnPlatforms components', () => {
-    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.31.0', 'linux');
+    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.32.1', 'linux');
     const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
     assert.ok(pipCmd, 'should have uv pip install command');
     assert.equal(pipCmd.includes('--only-binary'), false, 'should not include --only-binary on linux');
   });
 
   it('does not add --only-binary on darwin for noBuildOnPlatforms components', () => {
-    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.31.0', 'darwin');
+    const plan = buildComponentInstallPlan(component, '/components/headroomOriginal/0.32.1', 'darwin');
     const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
     assert.equal(pipCmd.includes('--only-binary'), false, 'should not include --only-binary on darwin');
   });
 
   it('does not add --only-binary when noBuildOnPlatforms is absent', () => {
     const noFlag = { ...component, noBuildOnPlatforms: undefined };
-    const plan = buildComponentInstallPlan(noFlag, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const plan = buildComponentInstallPlan(noFlag, 'C:\\components\\headroomOriginal\\0.32.1', 'win32');
     const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
     assert.equal(pipCmd.includes('--only-binary'), false);
   });
 
   it('--only-binary appears before --python in the pip install command', () => {
-    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.31.0', 'win32');
+    const plan = buildComponentInstallPlan(component, 'C:\\components\\headroomOriginal\\0.32.1', 'win32');
     const pipCmd = plan.commands.find(c => c[0] === 'uv' && c.includes('install'));
     const binaryIdx = pipCmd.indexOf('--only-binary');
     const pythonIdx = pipCmd.indexOf('--python');
