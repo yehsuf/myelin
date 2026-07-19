@@ -37,7 +37,7 @@ describe('component manifest', () => {
       headroomOriginal: {
         kind: 'uv-venv',
         package: 'headroom-ai[proxy]',
-        version: '0.31.0',
+        version: '0.32.1',
         bin: 'headroom',
         optional: true,
         noBuildOnPlatforms: ['win32'],
@@ -53,13 +53,13 @@ describe('component manifest', () => {
       semble: {
         kind: 'uv-venv',
         package: 'semble[mcp]',
-        version: '0.4.2',
+        version: '0.5.1',
         bin: 'semble',
       },
       agentcairn: {
         kind: 'uv-venv',
         package: 'agentcairn',
-        version: '0.23.0',
+        version: '0.25.1',
         bin: 'cairn',
       },
       rtk: {
