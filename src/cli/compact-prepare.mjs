@@ -27,6 +27,83 @@ const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
 const MAX_HINT = 4000; // Copilot CLI customInstructions hard cap
 
+// ─── multi-session claims reader ──────────────────────────────
+/**
+ * Resolve candidate claim directories in priority order.
+ * Generic — not tied to any specific multi-session runtime:
+ *   1. AGENT_CLAIMS_DIR env var  (explicit override, any tool)
+ *   2. MYELIN_DIR/claims         (myelin runtime, if MYELIN_DIR is set)
+ *   3. ~/.myelin/claims          (myelin default location)
+ *   4. ~/.agent-state/claims     (generic fallback for non-myelin setups)
+ * Multiple dirs are merged so mixed-runtime environments work correctly.
+ */
+export function resolveClaimsDirs(homeDir = HOME) {
+  const candidates = [
+    process.env.AGENT_CLAIMS_DIR,
+    process.env.MYELIN_DIR ? path.join(process.env.MYELIN_DIR, 'claims') : null,
+    path.join(homeDir, '.myelin', 'claims'),
+    path.join(homeDir, '.agent-state', 'claims'),
+  ].filter(Boolean);
+  const seen = new Set();
+  return candidates.filter(d => {
+    const r = path.resolve(d);
+    if (seen.has(r)) return false;
+    seen.add(r);
+    return existsSync(r);
+  });
+}
+
+/**
+ * Resolve the agents registration directory (sibling 'agents/' next to claims/).
+ * Returns the first found path, or null if none exists.
+ */
+export function resolveAgentsDir(homeDir = HOME) {
+  for (const d of resolveClaimsDirs(homeDir)) {
+    const a = path.join(path.dirname(d), 'agents');
+    if (existsSync(a)) return a;
+  }
+  return null;
+}
+
+/**
+ * Read all active claims from all known claim directories.
+ * Returns array of { taskId, agentName, sessionId, ageMins, expired, mine }.
+ * Never throws — missing dirs or malformed JSON are silently skipped.
+ */
+export function readActiveClaims(mySession = '', homeDir = HOME) {
+  const claims = [];
+  const nowMs = Date.now();
+  for (const dir of resolveClaimsDirs(homeDir)) {
+    let files;
+    try { files = readdirSync(dir).filter(f => f.endsWith('.json')); }
+    catch { continue; }
+    for (const f of files) {
+      try {
+        const d = JSON.parse(readFileSync(path.join(dir, f), 'utf8'));
+        const ttl = (d.ttl_minutes ?? 120) * 60 * 1000;
+        const rawTs = d.heartbeat_at ?? d.claimed_at;
+        const heartbeat = rawTs ? new Date(rawTs).getTime() : NaN;
+        // Missing or unparseable timestamp: treat as expired (safest — don't block on stale data)
+        const validHeartbeat = Number.isFinite(heartbeat);
+        const expired = !validHeartbeat || (nowMs - heartbeat) > ttl;
+        claims.push({
+          taskId:    d.task_id ?? f.replace('.json', ''),
+          agentName: d.agent_name ?? d.agent ?? '?',
+          sessionId: d.session_id ?? '',
+          ageMins:   validHeartbeat ? Math.floor((nowMs - heartbeat) / 60000) : null,
+          expired,
+          mine:      Boolean(mySession && d.session_id === mySession),
+        });
+      } catch { /* malformed — skip */ }
+    }
+  }
+  // deduplicate by taskId (first seen wins across dirs)
+  const seen = new Set();
+  return claims.filter(c => { if (seen.has(c.taskId)) return false; seen.add(c.taskId); return true; });
+}
+
+
+
 // ─── small helpers ────────────────────────────────────────────
 function tryRead(p) {
   try { return readFileSync(p, 'utf8'); } catch { return null; }
@@ -493,6 +570,19 @@ function dashboard(data, hintChars) {
     console.log(`  Rules:    ${g + s} (${g} global + ${s} session)`);
   }
   console.log(`  Hint:     ${hintChars} chars`);
+
+  // ── Active claims from other sessions ──────────────────────
+  const claims = readActiveClaims(data.sid);
+  const otherActive = claims.filter(c => !c.mine && !c.expired);
+  const mine = claims.filter(c => c.mine && !c.expired);
+  if (mine.length) {
+    console.log(`  Claims:   YOU own: ${mine.map(c => c.taskId).join(', ')}`);
+  }
+  if (otherActive.length) {
+    for (const c of otherActive) {
+      console.log(`  ⚠ CLAIMED: ${c.taskId} → ${c.agentName} (${c.ageMins != null ? c.ageMins + "m ago" : "stale"}) — do NOT start this task`);
+    }
+  }
 }
 
 function modePrepare(data) {
@@ -609,6 +699,28 @@ function modeResume(data) {
     const nextText = firstLine((data.planNext || data.compactNext || '').trim());
     if (nextText) console.log(`  No in-progress todos. Next: ${truncate(nextText, 200)}`);
     else console.log('  No in-progress todos. No next-action recorded.');
+  }
+
+  // ── Before-you-start enforcement reminder ─────────────────
+  const claims = readActiveClaims(data.sid);
+  const otherActive = claims.filter(c => !c.mine && !c.expired);
+  if (otherActive.length) {
+    console.log('─'.repeat(64));
+    console.log('  ⛔ ACTIVE CLAIMS FROM OTHER SESSIONS:');
+    for (const c of otherActive) {
+      console.log(`     ${c.taskId.padEnd(24)} ← ${c.agentName} (${c.ageMins != null ? c.ageMins + "m ago" : "stale"})`);
+    }
+    console.log('  Do NOT start these tasks. Check your project\'s claim tool to verify.');
+  }
+  // Warn if this session has no registered agent identity in any known runtime.
+  const agentsDir = resolveAgentsDir();
+  const unregistered = agentsDir
+    ? !existsSync(path.join(agentsDir, `${data.sid}.json`))
+    : false; // no claim system detected — skip the warning
+  if (unregistered) {
+    console.log('─'.repeat(64));
+    console.log('  ⚠  This session has no registered agent identity.');
+    console.log('     Register with your project\'s claim tool before starting any task.');
   }
   console.log('─'.repeat(64));
 }

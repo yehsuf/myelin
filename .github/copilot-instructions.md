@@ -29,6 +29,12 @@
 - Each agent develops inside its own workspace `~/myelin-agents/<agent>/` (one git worktree per repo). The source of truth is a **bare** canonical repo at `~/myelin-agents/.bare/<repo>.git` that is never worked in directly.
 - Scratch/tmp/experiment files NEVER go inside a repo working tree (including `~/tokenstack`) — put them in `~/myelin-agents/<agent>/scratch/` or `~/.copilot/session-state/<id>/files/`.
 - Never rewrite git history on shared branches (main, dev).
+- **No emoji in commit messages.** Use plain ASCII only — emoji break Windows codepage decoding in git tools. Format: `type(scope): description` (Conventional Commits). Em-dashes and arrows in the body are acceptable.
+- **Multi-agent claim protocol — MANDATORY before starting any backlog task:**
+  1. `myelin-agent init <name>` — register this session if not already done.
+  2. `myelin-claims` — check for active claims. If your target task is claimed by another live session, STOP and pick a different task (or ask the human).
+  3. `myelin-claim <task-id>` — claim BEFORE creating any branch or writing any code.
+  4. Never use `--force` without explicit human approval.
 
 ## Local development workspace
 - Layout: `~/myelin-agents/.bare/<repo>.git` (bare canonical) + `~/myelin-agents/<agent>/<repo>/` (per-agent worktree) + `~/myelin-agents/<agent>/scratch/`.
