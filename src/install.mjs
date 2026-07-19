@@ -3272,10 +3272,56 @@ ${initSkillBody}`);
       writeFileSync(join(cmdDir, 'compact.md'), `---
 description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
 argument-hint: "[prepare|resume] — prepare before /compact, resume after (post-compact)"
-allowed-tools: [Bash, mcp__sqlite__query]
+allowed-tools: [Bash]
 ---
 
-${COMPACT_SKILL_MD.replace(/^---[\s\S]*?---\n/, '')}`);
+# compact — generic /compact pipeline
+
+Generates a ready-to-paste \`/compact\` hint from live session state. Works in any repo.
+
+> **Note:** Requires a Copilot CLI session context (\`COPILOT_AGENT_SESSION_ID\` must be
+> set). If invoked from a standalone Claude Code session without Copilot CLI, the script
+> will exit 2 with "Run this inside an active Copilot CLI session."
+
+## When to use
+- Context is getting long and \`/compact\` is imminent → invoke with \`prepare\`
+- Immediately after \`/compact\` completes → invoke with \`resume\`
+
+## Instructions for the agent
+
+Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`prepare\` or \`resume\`.
+
+### Mode: prepare
+
+1. Run:
+   \`\`\`bash
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
+   \`\`\`
+   (The script reads todos directly via its own sqlite3 fallback — no separate SQL step needed.)
+
+2. Print the full script output verbatim.
+
+3. **YOU (the agent) now compose the actual compact hint** using the \`<<<SESSION_STATE_BRIEF>>>\` block as source of truth. Maximum 4000 characters total.
+
+4. Print the hint between \`>>> COMPACT HINT >>>\` and \`<<< END COMPACT HINT <<<\` sentinels.
+
+5. Tell the user to paste it after \`/compact \` in the next message.
+
+6. Do NOT run \`/compact\` yourself.
+
+### Mode: resume
+
+1. Run:
+   \`\`\`bash
+   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
+   \`\`\`
+2. Print the output verbatim.
+3. In ≤3 lines, state the top priority.
+
+## Error handling
+- Exit 2: tell user "Run this inside an active Copilot CLI session."
+- \`sqlite3\` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
+`);
       ok('~/.claude/commands/myelin/compact.md (invoke: /myelin:compact)');
 
       writeFileSync(join(cmdDir, 'constitution.md'), `---
