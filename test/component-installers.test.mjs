@@ -136,13 +136,13 @@ describe('component install plans', () => {
   it('pins Serena to an immutable commit', () => {
     const plan = buildComponentInstallPlan(
       COMPONENTS.serena,
-      '/components/serena/e08e964d0c8703401f7ad419b9bf69d85d35188d',
+      '/components/serena/93b9544ea9def8e93cb6a90f8ea67befe3c8fee4',
       'linux',
     );
 
     assert.match(
       plan.commands[1].at(-1),
-      /serena\.git@e08e964d0c8703401f7ad419b9bf69d85d35188d$/,
+      /serena\.git@93b9544ea9def8e93cb6a90f8ea67befe3c8fee4$/,
     );
   });
 
