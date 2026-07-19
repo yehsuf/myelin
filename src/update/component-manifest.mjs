@@ -1,5 +1,12 @@
 export const COMPONENT_MANIFEST_VERSION = 1;
 
+/**
+ * Python version used for all managed uv venvs. mitmproxy and agentcairn both
+ * require >=3.12; 3.12 is the minimum that satisfies all managed components and
+ * is the version uv downloads when no system Python is available.
+ */
+export const MANAGED_PYTHON_VERSION = '3.12';
+
 const COMPONENT_KINDS = Object.freeze([
   'npm-git',
   'uv-venv',

@@ -252,9 +252,9 @@ describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', (
 
     const venv = `${env.MYELIN_DIR}/venv`;
     assert.equal(calls.length, 2, 'exactly the venv-create and pip-install calls');
-    // uv venv <venv>
+    // uv venv --python 3.12 <venv>
     assert.equal(calls[0].file, 'uv');
-    assert.deepEqual(calls[0].args, ['venv', venv]);
+    assert.deepEqual(calls[0].args, ['venv', '--python', '3.12', venv]);
     // uv pip install --python <venv> headroom-ai[all]==0.31.0 (pinned)
     assert.equal(calls[1].file, 'uv');
     assert.deepEqual(calls[1].args, ['pip', 'install', '--python', venv, 'headroom-ai[all]==0.31.0']);
@@ -264,7 +264,7 @@ describe('installHeadroom (C: MYELIN_DIR-derived venv never reaches a shell)', (
       assert.ok(!c.args.some((a) => /uv (venv|pip)/.test(a)), 'no shell command string may be built');
     }
     // The venv element is byte-for-byte the MYELIN_DIR-derived path.
-    assert.equal(calls[0].args[1], venv);
+    assert.equal(calls[0].args[3], venv);
     assert.equal(calls[1].args[3], venv);
   });
 });

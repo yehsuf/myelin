@@ -5,6 +5,7 @@ import { join, posix, win32 } from 'node:path';
 import { gunzipSync, inflateRawSync } from 'node:zlib';
 import {
   validateComponentManifest,
+  MANAGED_PYTHON_VERSION,
 } from './component-manifest.mjs';
 import { componentVersionDir } from './version-store.mjs';
 
@@ -309,22 +310,26 @@ export function buildComponentInstallPlan(component, destination, platform = pro
   };
 
   switch (component.kind) {
-    case 'uv-venv':
+    case 'uv-venv': {
+      const pyVersion = component.pythonVersion ?? MANAGED_PYTHON_VERSION;
       return {
         ...base,
         commands: [
-          ['uv', 'venv', normalizedDestination],
+          ['uv', 'venv', '--python', pyVersion, normalizedDestination],
           ['uv', 'pip', 'install', '--python', normalizedDestination, `${component.package}==${component.version}`],
         ],
       };
-    case 'uv-git':
+    }
+    case 'uv-git': {
+      const pyVersion = component.pythonVersion ?? MANAGED_PYTHON_VERSION;
       return {
         ...base,
         commands: [
-          ['uv', 'venv', normalizedDestination],
+          ['uv', 'venv', '--python', pyVersion, normalizedDestination],
           ['uv', 'pip', 'install', '--python', normalizedDestination, `git+${component.repository}@${component.ref}`],
         ],
       };
+    }
     case 'npm':
       return {
         ...base,
