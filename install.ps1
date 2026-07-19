@@ -51,11 +51,16 @@ function Check-Node {
     if (-not (Get-Command node -ErrorAction SilentlyContinue) -or
         [int]((node --version 2>&1).TrimStart('v').Split('.')[0]) -lt 20) {
         if (Get-Command fnm -ErrorAction SilentlyContinue) {
-            # Activate version from .nvmrc/.node-version if present, else v20 LTS
+            # fnm reads .nvmrc/.node-version; fall back to explicit 20 install if needed
             try { fnm use 2>$null } catch {}
-            if ($LASTEXITCODE -ne 0) { try { fnm use 20 2>$null } catch {} }
+            if ($LASTEXITCODE -ne 0) {
+                try { fnm install 20 2>$null; fnm use 20 2>$null } catch {}
+            }
         } elseif (Get-Command nvm -ErrorAction SilentlyContinue) {
-            try { nvm use 2>$null } catch {}
+            # nvm-windows does NOT read .nvmrc/.node-version automatically;
+            # must specify the version explicitly. Install then activate.
+            try { nvm install 20 2>$null } catch {}
+            try { nvm use 20 2>$null } catch {}
         }
     }
     try {

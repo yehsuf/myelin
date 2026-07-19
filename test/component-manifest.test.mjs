@@ -227,4 +227,28 @@ describe('component manifest', () => {
       /winsw\.bin.*required/i,
     );
   });
+
+  it('rejects a non-string or malformed pythonVersion override', () => {
+    const manifest = cloneComponents();
+
+    // non-string
+    manifest.semble.pythonVersion = 312;
+    assert.throws(
+      () => validateComponentManifest(manifest),
+      /pythonVersion.*major\.minor/i,
+    );
+
+    // semver patch — must be major.minor only
+    manifest.semble.pythonVersion = '3.12.0';
+    assert.throws(
+      () => validateComponentManifest(manifest),
+      /pythonVersion.*major\.minor/i,
+    );
+  });
+
+  it('accepts a valid pythonVersion override', () => {
+    const manifest = cloneComponents();
+    manifest.semble.pythonVersion = '3.11';
+    assert.ok(validateComponentManifest(manifest));
+  });
 });
