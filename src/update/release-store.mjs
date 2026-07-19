@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import * as nodeFs from 'node:fs';
 import {
+  dirname,
   join,
   posix,
   win32,
@@ -624,6 +625,7 @@ function normalizeStageOptions(input) {
   }
   const version = validateReleaseVersion(target.version);
   if (typeof input.exec !== 'function') throw new TypeError('exec must be a function.');
+  if (typeof input.nodeExecPath !== 'string' || !input.nodeExecPath) throw new TypeError('nodeExecPath must be a non-empty string.');
   if (!input.fs || typeof input.fs !== 'object') throw new TypeError('fs must be an object.');
   if (typeof input.extract !== 'function') throw new TypeError('extract must be a function.');
 
@@ -678,6 +680,7 @@ export async function stageRelease({
   extract = extractTarGzip,
   platform = process.platform,
   pathImpl,
+  nodeExecPath = process.execPath,
 } = {}) {
   const options = normalizeStageOptions({
     target,
@@ -688,6 +691,7 @@ export async function stageRelease({
     extract,
     platform,
     pathImpl,
+    nodeExecPath,
   });
   const source = sourceForTarget(options.target);
 
@@ -705,25 +709,36 @@ export async function stageRelease({
     validateSourceTree(options.staging, options);
     const packageJson = validatePackage(options.staging, options.target, options);
 
+    // Prepend the running node's bin dir to PATH so that npm's shebang
+    // (#!/usr/bin/env node) resolves the same node that launched myelin,
+    // regardless of whether the shell loaded NVM, mise, Homebrew, etc.
+    const nodeBinDir = dirname(options.nodeExecPath);
+    const pathSep = options.platform === 'win32' ? ';' : ':';
+    const existingPath = process.env.PATH ?? '';
+    const subprocessPath = existingPath.split(pathSep).includes(nodeBinDir)
+      ? existingPath
+      : `${nodeBinDir}${pathSep}${existingPath}`;
+    const subprocessEnv = { ...process.env, PATH: subprocessPath };
+
     await runCommand(
       options.exec,
       'npm',
       ['ci', '--ignore-scripts=false'],
-      { cwd: options.staging, stdio: 'inherit' },
+      { cwd: options.staging, stdio: 'inherit', env: subprocessEnv },
       options.platform,
     );
     await runCommand(
       options.exec,
       'node',
       ['bin/myelin', '--version'],
-      { cwd: options.staging, stdio: 'inherit' },
+      { cwd: options.staging, stdio: 'inherit', env: subprocessEnv },
       options.platform,
     );
     await runCommand(
       options.exec,
       'node',
       ['--test', 'test/component-manifest.test.mjs'],
-      { cwd: options.staging, stdio: 'inherit' },
+      { cwd: options.staging, stdio: 'inherit', env: subprocessEnv },
       options.platform,
     );
 
