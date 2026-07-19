@@ -1,6 +1,6 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, mkdirSync, chmodSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
@@ -2766,6 +2766,81 @@ describe('linkGlobalBin', () => {
     } finally {
       chmodSync(binDir, 0o755);
       rmSync(roDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips copy and protects committed bin/myelin when prefix matches repoRoot', () => {
+    const fakeRepo = mkdtempSync(join(tmpdir(), 'myelin-repo-'));
+    const binDir = join(fakeRepo, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(join(binDir, 'myelin'), '#!/usr/bin/env node\nimport("../src/cli/index.mjs");\n');
+    try {
+      const result = linkGlobalBin({ os: 'linux', prefix: fakeRepo, repoRoot: fakeRepo });
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('committed bin/myelin protected'), `unexpected reason: ${result.reason}`);
+      // Committed file must be untouched
+      const content = readFileSync(join(binDir, 'myelin'), 'utf8');
+      assert.ok(content.startsWith('#!/usr/bin/env node'), 'committed ESM wrapper must not be overwritten');
+    } finally {
+      rmSync(fakeRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('skips copy when prefix package.json has bin.myelin (auto-detection, no repoRoot)', () => {
+    const fakeRepo = mkdtempSync(join(tmpdir(), 'myelin-pkg-'));
+    const binDir = join(fakeRepo, 'bin');
+    mkdirSync(binDir);
+    writeFileSync(join(fakeRepo, 'package.json'), JSON.stringify({ name: 'myelin', bin: { myelin: 'bin/myelin' } }));
+    writeFileSync(join(binDir, 'myelin'), '#!/usr/bin/env node\nimport("../src/cli/index.mjs");\n');
+    try {
+      const result = linkGlobalBin({ os: 'linux', prefix: fakeRepo });
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('committed bin/myelin protected'), `unexpected reason: ${result.reason}`);
+      const content = readFileSync(join(binDir, 'myelin'), 'utf8');
+      assert.ok(content.startsWith('#!/usr/bin/env node'), 'committed ESM wrapper must not be overwritten');
+    } finally {
+      rmSync(fakeRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('does not create <repo>/bin via mkdirSync before the checkout guard fires', () => {
+    // Regression test for CR finding #2: isWritable called mkdirSync(globalBinDir)
+    // before the guard — guard must run first so the bin/ dir is never created.
+    const fakeRepo = mkdtempSync(join(tmpdir(), 'myelin-repo-guard-'));
+    // No bin/ dir exists yet — if isWritable runs first it would create it.
+    try {
+      const result = linkGlobalBin({ os: 'linux', prefix: fakeRepo, repoRoot: fakeRepo });
+      assert.equal(result.linked, false);
+      assert.ok(result.reason.includes('committed bin/myelin protected'));
+      // bin/ must NOT have been created by the isWritable mkdirSync side-effect.
+      assert.ok(!existsSync(join(fakeRepo, 'bin')), '<repo>/bin must not be created before the guard fires');
+    } finally {
+      rmSync(fakeRepo, { recursive: true, force: true });
+    }
+  });
+
+  it('breaks an existing npm-link symlink before copying the launcher shim', { skip: process.platform === 'win32' }, () => {
+    const fakeRepo = mkdtempSync(join(tmpdir(), 'myelin-link-'));
+    const globalPrefix = mkdtempSync(join(tmpdir(), 'myelin-global-'));
+    const globalBin = join(globalPrefix, 'bin');
+    mkdirSync(globalBin);
+    const committedFile = join(fakeRepo, 'bin', 'myelin');
+    mkdirSync(join(fakeRepo, 'bin'), { recursive: true });
+    writeFileSync(committedFile, '#!/usr/bin/env node\nimport("../src/cli/index.mjs");\n');
+    // Simulate `npm link` — <global-bin>/myelin symlink → committed file
+    symlinkSync(committedFile, join(globalBin, 'myelin'));
+    try {
+      const result = linkGlobalBin({ os: 'linux', prefix: globalPrefix });
+      assert.equal(result.linked, true, `expected linked but got: ${result.reason}`);
+      // The symlink must have been replaced by a real file (not a symlink)
+      const stat = lstatSync(join(globalBin, 'myelin'));
+      assert.ok(!stat.isSymbolicLink(), 'symlink must be replaced by a real file');
+      // The committed file must be untouched
+      const content = readFileSync(committedFile, 'utf8');
+      assert.ok(content.startsWith('#!/usr/bin/env node'), 'committed file must not be overwritten');
+    } finally {
+      rmSync(fakeRepo, { recursive: true, force: true });
+      rmSync(globalPrefix, { recursive: true, force: true });
     }
   });
 });
