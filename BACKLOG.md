@@ -177,7 +177,7 @@ All are portable within headroom-lite's deterministic/zero-dep/lossless constrai
 
 | ID | P | Description |
 |----|---|-------------|
-| HLITE-B5-CACHE-001 | P3 | **Cache collision fix** — hash full ordered system-text payload instead of first-500-chars. Upstream: fix(cache) GH #1827. Files: normalize/openai-cache-key.mjs |
+| HLITE-B5-CACHE-001 | P3 | **done** | Cache key collision fix — headroom-lite PR #24 (`d887229`), v0.31.0-3, myelin manifest PR #66 (`bfbc767`). `extractSystemText()` now collects all system messages joined with `\u0000`. Mac/Linux/Win: 491/491/490 ✅ | | |
 | HLITE-B5-JSON-001 | P3 | **done** | **Space-separated JSON minification** — headroom-lite PR #23 (`69f4981`), v0.31.0-2, myelin manifest bump PR #63. Phase 1 minifyJson now handles `{"a":1} {"b":2}` sequences; 7-23% byte savings on real SerpAPI/Tavily tool results. Mac/Linux/Win: 488/488/487 ✅ | |
 | HLITE-B5-PARAM-001 | P4 | **OpenAI max_tokens → max_completion_tokens translation** — GPT-5/o-series reject legacy param. Upstream: fix(proxy/openai) GH #1774. Files: normalize/openai-params.mjs (new) |
 | HLITE-B5-COST-001 | P4 | **Cache write premium accounting** — subtract write premiums from net savings. Upstream: fix(proxy) GH #1800. Files: observability/ledger.mjs |
