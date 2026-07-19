@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, lstatSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, posix as pathPosix } from 'node:path';
 import { writeManagedLauncher } from '../runtime/launcher.mjs';
@@ -61,6 +61,14 @@ export function linkGlobalBin({ os, prefix = null, home = homedir() } = {}) {
 
     const linkedCommandPath = join(globalBinDir, basename(launcher.commandPath));
     if (linkedCommandPath !== launcher.commandPath) {
+      // Break any existing symlink before copying — copyFileSync follows symlinks,
+      // so a prior `npm link` that points <global-bin>/myelin to the repo's
+      // bin/myelin would cause us to overwrite the committed checkout file.
+      try {
+        if (lstatSync(linkedCommandPath).isSymbolicLink()) {
+          unlinkSync(linkedCommandPath);
+        }
+      } catch { /* file doesn't exist yet — ok */ }
       copyFileSync(launcher.commandPath, linkedCommandPath);
       makeExecutable(linkedCommandPath);
     }

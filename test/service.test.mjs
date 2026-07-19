@@ -1,6 +1,6 @@
 import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, chmodSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdtempSync, mkdirSync, chmodSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from 'node:net';
@@ -2766,6 +2766,44 @@ describe('linkGlobalBin', () => {
     } finally {
       chmodSync(binDir, 0o755);
       rmSync(roDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not overwrite repo bin/myelin when global bin has a symlink pointing there', { skip: process.platform === 'win32' }, () => {
+    // Reproduce the INSTALL-BIN-002 scenario: `npm link` leaves a symlink
+    // <global-bin>/myelin -> <repo>/bin/myelin. Without the fix, copyFileSync
+    // follows the symlink and overwrites the committed ESM wrapper.
+    const tmpHome = mkdtempSync(join(tmpdir(), 'myelin-home-'));
+    const repoDir = mkdtempSync(join(tmpdir(), 'myelin-repo-'));
+    const prefix = mkdtempSync(join(tmpdir(), 'myelin-pfx-'));
+    const globalBinDir = join(prefix, 'bin');
+    mkdirSync(globalBinDir);
+    const repoBinDir = join(repoDir, 'bin');
+    mkdirSync(repoBinDir);
+
+    const COMMITTED_CONTENT = "#!/usr/bin/env node\nimport('../src/cli/index.mjs').catch(e => { console.error(e); process.exit(1); });\n";
+    const repoBinMyelin = join(repoBinDir, 'myelin');
+    writeFileSync(repoBinMyelin, COMMITTED_CONTENT, 'utf8');
+
+    // Simulate what `npm link` leaves behind: a symlink in the npm global bin
+    // dir pointing back to the repo's committed bin/myelin.
+    const globalBinMyelin = join(globalBinDir, 'myelin');
+    symlinkSync(repoBinMyelin, globalBinMyelin);
+
+    try {
+      const result = linkGlobalBin({ home: tmpHome, os: 'linux', prefix });
+      assert.equal(result.linked, true, 'linking should succeed with writable prefix');
+
+      // The committed repo file must NOT have been overwritten.
+      const afterContent = readFileSync(repoBinMyelin, 'utf8');
+      assert.equal(afterContent, COMMITTED_CONTENT, 'committed bin/myelin must not be overwritten');
+
+      // The global bin entry must now be a regular file (the shim), not a symlink.
+      assert.ok(!lstatSync(globalBinMyelin).isSymbolicLink(), 'global bin entry must be a regular file after fix');
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+      rmSync(repoDir, { recursive: true, force: true });
+      rmSync(prefix, { recursive: true, force: true });
     }
   });
 });
