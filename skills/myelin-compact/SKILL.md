@@ -32,6 +32,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 2. Run:
    ```bash
+   [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true
    node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
    ```
 
@@ -80,6 +81,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 1. Run:
    ```bash
+   [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true
    node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
    ```
 
