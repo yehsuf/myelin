@@ -2548,7 +2548,7 @@ export async function installMitmService({ mitmdumpBin, port, addonPath, envVars
     description: 'Myelin mitmproxy LLM compression proxy',
     executable: mitmdumpBin,
     arguments: buildMitmArgumentString({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, upstreamProxy }),
-    envVars: { ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
+    envVars: { PYTHONOPTIMIZE: '1', ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}), ...persistedEnv },
     logPath,
     home,
     env,

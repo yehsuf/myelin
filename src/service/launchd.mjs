@@ -439,6 +439,12 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     command: mitmdumpBin,
     args,
     envVars: withForwardedMyelinDir({
+      // PYTHONOPTIMIZE=1 disables Python assert statements (__debug__=False).
+      // mitmproxy's @expect decorator is guarded by `if __debug__ is True:` —
+      // without this flag it raises AssertionError when ResponseProtocolError
+      // arrives during response streaming (incomplete chunked read from the API
+      // mid-stream), crashing the process with no traceback.
+      PYTHONOPTIMIZE: '1',
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
