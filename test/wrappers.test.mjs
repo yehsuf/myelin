@@ -273,8 +273,11 @@ describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
 
   it('POSIX _copilot wrapper kills daemon on exit', () => {
     const wrapper = buildCopilotWrapper({ os: 'darwin' });
+    // Cleanup must use ';' not '&&' so rm -f runs even when kill fails (dead daemon)
     assert.ok(wrapper.includes('kill "$_osc52_pid"'), 'should kill daemon on exit');
     assert.ok(wrapper.includes('rm -f "$_osc52_sock"'), 'should clean up socket on exit');
+    // Key: rm -f must not be gated on kill exit code (stale-socket regression)
+    assert.ok(!wrapper.match(/kill.*osc52_pid.*&&.*rm -f/), 'rm -f must not be && chained after kill');
   });
 
   it('POSIX _claude wrapper starts osc52d before the claude call', () => {

@@ -167,7 +167,7 @@ function _copilot() {
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
     env ${unsetFlags} $_osc52_env copilot "$@"
   fi
-  [ -n "$_osc52_pid" ] && kill "$_osc52_pid" 2>/dev/null && rm -f "$_osc52_sock" 2>/dev/null
+  [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
 }
 
@@ -271,6 +271,6 @@ function _claude() {
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
     env ${unsetFlags} $_osc52_env claude "$@"
   fi
-  [ -n "$_osc52_pid" ] && kill "$_osc52_pid" 2>/dev/null && rm -f "$_osc52_sock" 2>/dev/null
+  [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
 }
