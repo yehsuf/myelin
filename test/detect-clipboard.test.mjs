@@ -103,3 +103,61 @@ describe('detectClipboardCandidates', () => {
     }
   });
 });
+
+import { buildOsc52Candidate } from '../src/detect/clipboard.mjs';
+
+describe('buildOsc52Candidate (COMPACT-CLIP-001)', () => {
+  it('returns null when OSC52_SOCKET is absent', () => {
+    assert.equal(buildOsc52Candidate({}), null);
+    assert.equal(buildOsc52Candidate({ OTHER: 'val' }), null);
+  });
+
+  it('returns python3 socket-client candidate when OSC52_SOCKET is set', () => {
+    const c = buildOsc52Candidate({ OSC52_SOCKET: '/tmp/osc52d-501.sock' });
+    assert.ok(c !== null, 'should return a candidate');
+    assert.equal(c.cmd, 'python3');
+    assert.ok(Array.isArray(c.args));
+    assert.equal(c.args[0], '-c');
+    assert.ok(c.args[1].includes('/tmp/osc52d-501.sock'), 'script should embed socket path');
+    assert.ok(c.args[1].includes('socket.AF_UNIX'), 'script should use Unix socket');
+    assert.ok(c.args[1].includes('sys.stdin.buffer.read()'), 'script should read stdin');
+  });
+
+  it('candidate script sends stdin content to socket (structure check)', () => {
+    const c = buildOsc52Candidate({ OSC52_SOCKET: '/tmp/test.sock' });
+    const script = c.args[1];
+    // Must import socket and sys, connect, sendall, close
+    assert.ok(script.includes('import socket'), 'must import socket');
+    assert.ok(script.includes('connect('), 'must connect to socket');
+    assert.ok(script.includes('sendall('), 'must sendall');
+    assert.ok(script.includes('close()'), 'must close');
+  });
+
+  it('rejects socket paths containing single quotes (injection guard)', () => {
+    const c = buildOsc52Candidate({ OSC52_SOCKET: "/tmp/osc52d-it's.sock" });
+    assert.equal(c, null, 'path with single quote should be rejected');
+  });
+
+  it('osc52 candidate comes first on darwin when OSC52_SOCKET is set', () => {
+    const candidates = detectClipboardCandidates({
+      platform: 'darwin',
+      env: { OSC52_SOCKET: '/tmp/osc52d-501.sock' },
+    });
+    assert.equal(candidates[0].cmd, 'python3', 'osc52 candidate should be first');
+    assert.equal(candidates[1].cmd, 'pbcopy', 'pbcopy should be second');
+  });
+
+  it('osc52 candidate comes first on linux when OSC52_SOCKET is set', () => {
+    const candidates = detectClipboardCandidates({
+      platform: 'linux',
+      env: { OSC52_SOCKET: '/tmp/osc52d-501.sock' },
+    });
+    assert.equal(candidates[0].cmd, 'python3', 'osc52 candidate should be first');
+  });
+
+  it('darwin without OSC52_SOCKET still returns only pbcopy', () => {
+    const candidates = detectClipboardCandidates({ platform: 'darwin', env: {} });
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].cmd, 'pbcopy');
+  });
+});

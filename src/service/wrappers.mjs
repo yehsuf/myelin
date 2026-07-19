@@ -146,15 +146,28 @@ ${restoreLines}
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
 # Falls back to plain copilot with a warning if mitmproxy is offline.
 function _copilot() {
+  # osc52d: start clipboard daemon so compact-prepare can reach the real tty
+  # via OSC 52 even from within the captured AI subprocess context.
+  local _osc52_pid="" _osc52_sock="/tmp/osc52d-$(id -u).sock"
+  local _osc52_bin="\${HOME}/.myelin/current/src/bin/osc52d.py"
+  if command -v python3 >/dev/null 2>&1 && [ -f "$_osc52_bin" ] && ! [ -S "$_osc52_sock" ]; then
+    OSC52_SOCKET="$_osc52_sock" python3 "$_osc52_bin" &
+    _osc52_pid=$!
+    local _i=0
+    while [ "$_i" -lt 20 ] && ! [ -S "$_osc52_sock" ]; do sleep 0.05; _i=$((_i+1)); done
+  fi
+  local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${mitmPort} 2>/dev/null; then
     env ${unsetFlags} \\
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
+      $_osc52_env \\
       copilot "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
-    env ${unsetFlags} copilot "$@"
+    env ${unsetFlags} $_osc52_env copilot "$@"
   fi
+  [ -n "$_osc52_pid" ] && kill "$_osc52_pid" 2>/dev/null && rm -f "$_osc52_sock" 2>/dev/null
 }`;
 }
 
@@ -237,14 +250,27 @@ ${restoreLines}
 # HTTPS_PROXY in the shell can never double-route Claude through mitmproxy.
 # Falls back to plain claude with a warning if headroom is offline.
 function _claude() {
+  # osc52d: start clipboard daemon so compact-prepare can reach the real tty
+  # via OSC 52 even from within the captured AI subprocess context.
+  local _osc52_pid="" _osc52_sock="/tmp/osc52d-$(id -u).sock"
+  local _osc52_bin="\${HOME}/.myelin/current/src/bin/osc52d.py"
+  if command -v python3 >/dev/null 2>&1 && [ -f "$_osc52_bin" ] && ! [ -S "$_osc52_sock" ]; then
+    OSC52_SOCKET="$_osc52_sock" python3 "$_osc52_bin" &
+    _osc52_pid=$!
+    local _i=0
+    while [ "$_i" -lt 20 ] && ! [ -S "$_osc52_sock" ]; do sleep 0.05; _i=$((_i+1)); done
+  fi
+  local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${headroomPort} 2>/dev/null; then
     env ${unsetFlags} \\
       ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
       ENABLE_PROMPT_CACHING_1H=1 \\
+      $_osc52_env \\
       claude "$@"
   else
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
-    env ${unsetFlags} claude "$@"
+    env ${unsetFlags} $_osc52_env claude "$@"
   fi
+  [ -n "$_osc52_pid" ] && kill "$_osc52_pid" 2>/dev/null && rm -f "$_osc52_sock" 2>/dev/null
 }`;
 }

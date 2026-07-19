@@ -252,3 +252,48 @@ describe('install.mjs regression — no global ANTHROPIC_BASE_URL', () => {
   });
 });
 
+
+describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
+  it('POSIX _copilot wrapper starts osc52d before the copilot call', () => {
+    const wrapper = buildCopilotWrapper({ os: 'darwin' });
+    assert.ok(wrapper.includes('osc52d'), 'should reference osc52d');
+    assert.ok(wrapper.includes('OSC52_SOCKET'), 'should set OSC52_SOCKET');
+    assert.ok(wrapper.includes('osc52d.py'), 'should reference daemon script path');
+  });
+
+  it('POSIX _copilot wrapper passes OSC52_SOCKET to copilot env', () => {
+    const wrapper = buildCopilotWrapper({ os: 'darwin' });
+    // OSC52_SOCKET must appear in the env block, not just in the setup
+    assert.ok(wrapper.includes('_osc52_env'), 'should use _osc52_env variable');
+    // Verify env block includes it: appears in the env ... copilot "$@" call
+    const envCallIdx = wrapper.indexOf('copilot "$@"');
+    const envSection = wrapper.slice(0, envCallIdx);
+    assert.ok(envSection.includes('_osc52_env'), '_osc52_env must be set before copilot call');
+  });
+
+  it('POSIX _copilot wrapper kills daemon on exit', () => {
+    const wrapper = buildCopilotWrapper({ os: 'darwin' });
+    assert.ok(wrapper.includes('kill "$_osc52_pid"'), 'should kill daemon on exit');
+    assert.ok(wrapper.includes('rm -f "$_osc52_sock"'), 'should clean up socket on exit');
+  });
+
+  it('POSIX _claude wrapper starts osc52d before the claude call', () => {
+    const wrapper = buildClaudeWrapper({ os: 'darwin', headroomPort: 8787 });
+    assert.ok(wrapper.includes('osc52d'), 'should reference osc52d');
+    assert.ok(wrapper.includes('OSC52_SOCKET'), 'should set OSC52_SOCKET');
+  });
+
+  it('Windows wrappers do not include osc52d (Unix sockets unsupported)', () => {
+    const copilotWin = buildCopilotWrapper({ os: 'windows' });
+    const claudeWin = buildClaudeWrapper({ os: 'windows', headroomPort: 8787 });
+    assert.ok(!copilotWin.includes('osc52d'), 'Windows _copilot should not reference osc52d');
+    assert.ok(!claudeWin.includes('osc52d'), 'Windows _claude should not reference osc52d');
+  });
+
+  it('isolation invariants preserved: _copilot still unsets Anthropic vars', () => {
+    const wrapper = buildCopilotWrapper({ os: 'linux' });
+    for (const v of ['ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY']) {
+      assert.ok(wrapper.includes(`-u ${v}`), `must still unset ${v}`);
+    }
+  });
+});
