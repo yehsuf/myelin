@@ -178,8 +178,8 @@ const RELEASED_COMPONENTS = {
     kind: 'uv-git',
     package: 'serena-agent',
     repository: 'https://github.com/oraios/serena.git',
-    version: '1.5.4.dev0',
-    ref: 'e08e964d0c8703401f7ad419b9bf69d85d35188d',
+    version: '1.6.0',
+    ref: '93b9544ea9def8e93cb6a90f8ea67befe3c8fee4',
     bin: 'serena',
   },
   semble: {
