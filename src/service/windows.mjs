@@ -144,6 +144,8 @@ const MITM_IGNORE_HOSTS = [
   String.raw`.*\.akamaihd\.net`,
   String.raw`api\.github\.com`,
   String.raw`.*\.github\.com`,
+  // Bare github.com (HTTPS git operations) — see launchd.mjs comment.
+  String.raw`github\.com`,
 ].join('|');
 
 function withPowerShell(args, powershellExe = powerShellExecutable()) {
@@ -2535,7 +2537,7 @@ export function removeMitmService({
 }
 
 export async function installMitmService({ mitmdumpBin, port, addonPath, envVars = {}, logPath, home, env = process.env, upstreamProxy, egressPort, manager = 'registry', forceRestart = false, _isPortResponding = isPortResponding, _isWinswConfigUnchanged = isWinswConfigUnchanged }) {
-  const persistedEnv = withForwardedMyelinDir(envVars, env);
+  const persistedEnv = withForwardedMyelinDir({ PYTHONOPTIMIZE: '1', ...envVars }, env);
   if (manager !== 'winsw') {
     runPs(generateMitmRunScript({ mitmdumpBin, port, addonPath, envVars: persistedEnv, egressPort, home }), { home, env });
     return { ok: true, manager: 'registry' };

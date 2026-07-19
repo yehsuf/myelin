@@ -427,6 +427,10 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     String.raw`.*\.akamaihd\.net`,
     String.raw`api\.github\.com`,
     String.raw`.*\.github\.com`,
+    // Bare github.com (HTTPS git operations) — .*\.github\.com only matches
+    // subdomains; the bare domain was missing, causing large git pack responses
+    // (~1.8 MB) to flow through mitmproxy and crash it.
+    String.raw`github\.com`,
   ].join('|');
   args.push('--ignore-hosts', IGNORE_HOSTS);
 
@@ -436,6 +440,15 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     args,
     envVars: withForwardedMyelinDir({
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
+      ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
+      ...envVars,
+      // PYTHONOPTIMIZE=1 disables Python assert statements (__debug__=False).
+      // mitmproxy's @expect decorator is guarded by `if __debug__ is True:` —
+      // without this flag it raises AssertionError when ResponseProtocolError
+      // arrives during response streaming (incomplete chunked read from the API
+      // mid-stream), crashing the process with no traceback. Placed last so it
+      // cannot be overridden by caller envVars.
+      PYTHONOPTIMIZE: '1',
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
       ...envVars,
     }, env),
