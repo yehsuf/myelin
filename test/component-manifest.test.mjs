@@ -21,8 +21,8 @@ describe('component manifest', () => {
   });
 
   it('pins the selected deterministic backend release', () => {
-    assert.equal(COMPONENTS.headroomLite.version, '0.31.0-4');
-    assert.equal(COMPONENTS.headroomLite.ref, 'v0.31.0-4');
+    assert.equal(COMPONENTS.headroomLite.version, '0.31.0-5');
+    assert.equal(COMPONENTS.headroomLite.ref, 'v0.31.0-5');
   });
 
   it('matches the released component pins from the brief', () => {
@@ -30,8 +30,8 @@ describe('component manifest', () => {
       headroomLite: {
         kind: 'npm-git',
         package: 'github:yehsuf/headroom-lite',
-        version: '0.31.0-4',
-        ref: 'v0.31.0-4',
+        version: '0.31.0-5',
+        ref: 'v0.31.0-5',
         bin: 'headroom-lite',
       },
       headroomOriginal: {

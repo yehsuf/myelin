@@ -99,10 +99,10 @@ jobs:
             exit 1
           fi
 
-      - name: Verify headroom-lite v0.31.0-4 tag exists
+      - name: Verify headroom-lite v0.31.0-5 tag exists
         run: |
-          if ! gh api "repos/yehsuf/headroom-lite/git/ref/tags/v0.31.0-4" >/dev/null 2>&1; then
-            echo "headroom-lite v0.31.0-4 tag was not found." >&2
+          if ! gh api "repos/yehsuf/headroom-lite/git/ref/tags/v0.31.0-5" >/dev/null 2>&1; then
+            echo "headroom-lite v0.31.0-5 tag was not found." >&2
             exit 1
           fi
 
