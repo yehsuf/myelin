@@ -2528,13 +2528,25 @@ function defaultDependencies({
     for (const name of Object.keys(pairs).sort()) {
       await fenceBeforeMutation(deps, context);
       const pair = pairs[name];
-      restoreComponent({
-        root: paths.componentsRoot,
-        name,
-        pointers: pair,
-        platform: storagePlatform,
-        fs,
-      });
+      // Optional components (e.g. headroomOriginal on Windows) may have been
+      // skipped during staging. Skip gracefully when activation fails because
+      // the staged directory is missing — keeps the previous install as-is.
+      const isOptional = COMPONENTS[name]?.optional === true;
+      try {
+        restoreComponent({
+          root: paths.componentsRoot,
+          name,
+          pointers: pair,
+          platform: storagePlatform,
+          fs,
+        });
+      } catch (e) {
+        if (isOptional && (e?.code === 'ERR_COMPONENT_TARGET_MISSING' || e?.code === 'ERR_COMPONENT_DIRECTORY_UNSAFE')) {
+          console.warn(`[myelin] Optional component '${name}' not activated (staged directory missing) — keeping previous installation as-is.`);
+          continue;
+        }
+        throw e;
+      }
     }
   };
 
