@@ -331,8 +331,8 @@ function readActivePointer(options, pointer, { allowMissingTarget = false } = {}
   };
 }
 
-function readPairUnsafe(options, { allowStalePrevious = false } = {}) {
-  const current = readActivePointer(options, 'current');
+function readPairUnsafe(options, { allowStalePrevious = false, allowStaleCurrent = false } = {}) {
+  const current = readActivePointer(options, 'current', { allowMissingTarget: allowStaleCurrent });
   const previous = readActivePointer(options, 'previous', {
     allowMissingTarget: allowStalePrevious,
   });
@@ -1197,7 +1197,10 @@ export function readPointersReadOnly(root, name, options = {}) {
   if (!componentDirectoryPresent(normalized, { allowMissing: true })) {
     return { current: null, previous: null };
   }
-  return readPairUnsafe(normalized).pointers;
+  // Allow stale pointers (junction/symlink exists but target directory was
+  // removed) so that a failed optional-component install that left a stale
+  // junction does not abort detectInstalled (WIN-HEADROOM-FALLBACK-001).
+  return readPairUnsafe(normalized, { allowStalePrevious: true, allowStaleCurrent: true }).pointers;
 }
 
 export const inspectPointers = readPointersReadOnly;
