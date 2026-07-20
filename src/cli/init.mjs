@@ -106,13 +106,18 @@ function noProxyEnv() {
   }
   // Prepend managed component venv bin dirs so the managed Python 3.12 binaries
   // win over any system-level tool installs (Python 3.13+ has stricter SSL checks).
+  // On Windows, process.env may use 'Path' rather than 'PATH' — resolve the key
+  // case-insensitively to avoid creating a duplicate key in the child env (which
+  // would cause one to silently shadow the other). See release-store.mjs for the
+  // same pattern.
   const sep = process.platform === 'win32' ? ';' : ':';
   const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin';
   const componentsRoot = join(managed.root, 'components');
-  for (const name of ['semble', 'agentcairn']) {
+  const pathKey = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
+  for (const name of ['semble', 'serena']) {
     const binDir = join(componentsRoot, name, 'current', scriptsDir);
-    if (existsSync(binDir) && !(env.PATH ?? '').split(sep).includes(binDir)) {
-      env.PATH = env.PATH ? binDir + sep + env.PATH : binDir;
+    if (existsSync(binDir) && !(env[pathKey] ?? '').split(sep).includes(binDir)) {
+      env[pathKey] = env[pathKey] ? binDir + sep + env[pathKey] : binDir;
     }
   }
   return env;
