@@ -81,7 +81,7 @@ function engineInstanceCommand(instance = {}, { headroomBin, headroomLiteBin } =
     return {
       executable: headroomLiteBin,
       arguments: '',
-      env: { HEADROOM_LITE_PORT: String(instance.port) },
+      env: { HEADROOM_LITE_PORT: String(instance.port), HEADROOM_LITE_STATS_PATH: pathWin32.join(instance.stateDir, 'telemetry.json') },
     };
   }
   throw new Error(`Unsupported engine instance engine: ${instance.engine}`);
