@@ -56,36 +56,53 @@ export function base64ToPem(b64) {
 }
 
 // Key Usage extension OID: 2.5.29.15 (encoded in DER as three bytes 55 1d 0f)
-const KEY_USAGE_OID_B0 = 0x55;
-const KEY_USAGE_OID_B1 = 0x1d;
-const KEY_USAGE_OID_B2 = 0x0f;
+// keyCertSign is bit 5 from MSB in the first BIT STRING content byte → mask 0x04.
 
 /**
- * Return true if the PEM-encoded certificate contains the Key Usage extension.
- * Uses a direct DER byte scan — no ASN.1 library needed.
- * The OID 2.5.29.15 (hex 55:1d:0f) uniquely identifies the extension.
+ * Return true if the PEM-encoded certificate has keyUsage.keyCertSign set.
+ *
+ * Uses a targeted DER scan: locates OID 2.5.29.15 (Key Usage) then reads
+ * the BIT STRING value to check bit 5 (keyCertSign). No ASN.1 library needed.
+ *
+ * DER layout after the OID value bytes [55 1d 0f]:
+ *   optional  01 01 ff        (BOOLEAN critical=true)
+ *             04 len          (OCTET STRING wrapper)
+ *             03 len pp bits  (BIT STRING: pp=padding count, bits=keyUsage flags)
+ *
+ * keyCertSign = bit 5 from MSB → mask 0x04 in the first bits byte.
+ *
  * @param {string} pem
  * @returns {boolean}
  */
-export function certHasKeyUsageExtension(pem) {
+export function certHasKeyCertSign(pem) {
   const b64 = pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
   if (!b64) return false;
   const der = Buffer.from(b64, 'base64');
   for (let i = 0; i < der.length - 2; i++) {
-    if (der[i] === KEY_USAGE_OID_B0 && der[i + 1] === KEY_USAGE_OID_B1 && der[i + 2] === KEY_USAGE_OID_B2) return true;
+    if (der[i] !== 0x55 || der[i + 1] !== 0x1d || der[i + 2] !== 0x0f) continue;
+    let p = i + 3; // advance past OID value bytes
+    // Skip optional BOOLEAN critical flag (01 01 ff)
+    if (p + 2 < der.length && der[p] === 0x01 && der[p + 1] === 0x01 && der[p + 2] === 0xff) p += 3;
+    // OCTET STRING: tag 04 followed by short-form length
+    if (p + 1 >= der.length || der[p] !== 0x04 || der[p + 1] >= 0x80) continue;
+    p += 2; // skip tag + length byte — now at first byte inside OCTET STRING
+    // BIT STRING: tag 03, short-form length, then padding byte, then bits
+    if (p + 3 >= der.length || der[p] !== 0x03 || der[p + 1] >= 0x80) continue;
+    p += 3; // skip tag + length + padding byte — now at first bits byte
+    return (der[p] & 0x04) !== 0; // bit 5 from MSB = keyCertSign
   }
   return false;
 }
 
 /**
- * Remove CA certificates that lack the Key Usage extension from a PEM bundle.
+ * Remove CA certificates that lack keyUsage.keyCertSign from a PEM bundle.
  *
  * Python 3.13+ requires every CA cert in the verified chain to have the
  * keyUsage extension with the keyCertSign bit set. Legacy corporate root CAs
  * (e.g. NetFree v1 roots, old per-ISP signing certs) were issued before this
  * extension was mandatory and will cause ssl.SSLCertVerificationError on
  * Python 3.13+. Modern CAs (certifi bundle, mitmproxy, NetFree X2) all include
- * the extension, so filtering out certs without it is safe.
+ * the extension with the correct bit, so filtering out certs without it is safe.
  *
  * If the filter would remove ALL certificates, returns the original content
  * unchanged (fail-open: better to have old certs than an empty bundle).
@@ -98,7 +115,7 @@ export function filterBundleForKeyUsage(bundleContent) {
   const kept = [];
   let match;
   while ((match = pemRe.exec(bundleContent)) !== null) {
-    if (certHasKeyUsageExtension(match[1])) kept.push(match[1]);
+    if (certHasKeyCertSign(match[1])) kept.push(match[1]);
   }
   if (kept.length === 0) return bundleContent; // fail-open: never produce an empty bundle
   return kept.join('\n') + '\n';
@@ -157,10 +174,10 @@ export async function buildCombinedCaCert(
           const existing = readFileSyncImpl(combinedPath, 'utf8');
           if (!existing) return rootCaPath; // no existing bundle to fix
           const filtered = filterBundleForKeyUsage(existing);
-          if (!filtered.includes('-----BEGIN CERTIFICATE-----') || filtered.trimEnd() === existing.trimEnd()) {
-            // Already clean or nothing to filter
-            return existing ? combinedPath : rootCaPath;
-          }
+          // Compare cert counts: if all certs were kept (or fail-open), nothing changed
+          const existingCount = (existing.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+          const filteredCount = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+          if (filteredCount >= existingCount) return combinedPath; // already clean
           writeFileSyncImpl(combinedPath, filtered, 'utf8');
           return combinedPath;
         } catch {
@@ -181,7 +198,17 @@ export async function buildCombinedCaCert(
 
     const rootContent = readFileSyncImpl(rootCaPath, 'utf8');
     const bodyLine = intermediate.split(/\r?\n/)[1]?.trim() ?? '';
-    if (!force && bodyLine && rootContent.includes(bodyLine)) return rootCaPath;
+    if (!force && bodyLine && rootContent.includes(bodyLine)) {
+      // Intermediate already in bundle — still filter and write if certs need pruning.
+      const filtered = filterBundleForKeyUsage(rootContent);
+      const rootCount = (rootContent.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+      const filteredCount = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+      if (filteredCount < rootCount) {
+        writeFileSyncImpl(combinedPath, filtered, 'utf8');
+        return combinedPath;
+      }
+      return rootCaPath;
+    }
 
     writeFileSyncImpl(
       combinedPath,

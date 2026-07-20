@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { join, posix } from 'node:path';
-import { buildCombinedCaCert, base64ToPem, certHasKeyUsageExtension, filterBundleForKeyUsage } from '../src/detect/combined-ca.mjs';
+import { buildCombinedCaCert, base64ToPem, certHasKeyCertSign, filterBundleForKeyUsage } from '../src/detect/combined-ca.mjs';
 
 const HOME = '/home/testuser';
 const COMBINED_PATH = join(HOME, '.myelin', 'ca-bundle.pem');
@@ -348,65 +348,91 @@ describe('buildCombinedCaCert — combined path invariant', () => {
   });
 });
 
-// Helper: a minimal DER-based PEM with the keyUsage OID (55 1d 0f) embedded.
-// Not a valid X.509 cert — just enough bytes to satisfy the OID scanner.
-const PEM_WITH_KEY_USAGE = (() => {
-  const der = Buffer.from([0x30, 0x10, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x01, 0x86]);
+// Helper PEM fixtures for testing certHasKeyCertSign and filterBundleForKeyUsage.
+// These encode minimal DER structures — not valid X.509 certs, just enough for the scanner.
+
+// DER: SEQUENCE { OID 2.5.29.15, BOOL critical=true, OCTET STRING { BIT STRING { 01 pad, 0x86=keyCertSign+cRLSign+digitalSig } } }
+// Structure: 30 0d 06 03 55 1d 0f 01 01 ff 04 04 03 02 01 86
+const PEM_WITH_KEY_CERT_SIGN = (() => {
+  const der = Buffer.from([0x30, 0x0d, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x01, 0x86]);
   const b64 = der.toString('base64');
   const lines = [];
   for (let i = 0; i < b64.length; i += 64) lines.push(b64.slice(i, i + 64));
   return '-----BEGIN CERTIFICATE-----\n' + lines.join('\n') + '\n-----END CERTIFICATE-----';
 })();
 
-const PEM_WITHOUT_KEY_USAGE = (() => {
-  const der = Buffer.from([0x30, 0x06, 0x06, 0x03, 0x55, 0x1d, 0x13]); // basicConstraints OID only
+// DER: keyUsage present (OID found) but keyCertSign bit NOT set (bits = 0xa0 = digitalSignature + keyEncipherment)
+// Structure: 30 0d 06 03 55 1d 0f 01 01 ff 04 04 03 02 01 a0
+const PEM_WITH_KEY_USAGE_NO_CERT_SIGN = (() => {
+  const der = Buffer.from([0x30, 0x0d, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x01, 0xa0]);
   const b64 = der.toString('base64');
   return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
 })();
 
-describe('certHasKeyUsageExtension', () => {
-  it('returns true when the keyUsage OID (55 1d 0f) is present in the DER', () => {
-    assert.equal(certHasKeyUsageExtension(PEM_WITH_KEY_USAGE), true);
+// DER: no keyUsage extension at all (only basicConstraints OID 55 1d 13)
+const PEM_WITHOUT_KEY_USAGE = (() => {
+  const der = Buffer.from([0x30, 0x06, 0x06, 0x03, 0x55, 0x1d, 0x13]);
+  const b64 = der.toString('base64');
+  return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
+})();
+
+// Keep backward-compatible alias
+const PEM_WITH_KEY_USAGE = PEM_WITH_KEY_CERT_SIGN;
+
+describe('certHasKeyCertSign', () => {
+  it('returns true when keyUsage extension has keyCertSign bit set (critical, 0x86)', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITH_KEY_CERT_SIGN), true);
   });
 
-  it('returns false when the keyUsage OID is absent', () => {
-    assert.equal(certHasKeyUsageExtension(PEM_WITHOUT_KEY_USAGE), false);
+  it('returns false when keyUsage extension is present but keyCertSign bit is NOT set (0xa0 = digitalSig + keyEncipher)', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITH_KEY_USAGE_NO_CERT_SIGN), false);
+  });
+
+  it('returns false when keyUsage OID is absent entirely', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITHOUT_KEY_USAGE), false);
   });
 
   it('returns false for empty string', () => {
-    assert.equal(certHasKeyUsageExtension(''), false);
+    assert.equal(certHasKeyCertSign(''), false);
   });
 
   it('returns false for a non-PEM string', () => {
-    assert.equal(certHasKeyUsageExtension('not a cert'), false);
+    assert.equal(certHasKeyCertSign('not a cert'), false);
+  });
+
+  it('handles non-critical keyUsage extension (no BOOLEAN 01 01 ff)', () => {
+    // Non-critical: 30 0b 06 03 55 1d 0f 04 04 03 02 01 86 (no critical BOOLEAN)
+    const der = Buffer.from([0x30, 0x0b, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x04, 0x04, 0x03, 0x02, 0x01, 0x86]);
+    const b64 = der.toString('base64');
+    const pem = '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
+    assert.equal(certHasKeyCertSign(pem), true);
   });
 });
 
 describe('filterBundleForKeyUsage', () => {
-  it('keeps certs that have the keyUsage extension', () => {
-    const bundle = PEM_WITH_KEY_USAGE + '\n' + PEM_WITHOUT_KEY_USAGE;
+  it('keeps certs with keyUsage.keyCertSign set', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITHOUT_KEY_USAGE;
     const filtered = filterBundleForKeyUsage(bundle);
-    assert.ok(filtered.includes('BEGIN CERTIFICATE'), 'should still contain certs');
-    // Verify the kept cert encodes the keyUsage OID
-    const b64 = filtered.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
-    const der = Buffer.from(b64, 'base64');
-    // 55 1d 0f must be present in the kept cert
-    let found = false;
-    for (let i = 0; i < der.length - 2; i++) {
-      if (der[i] === 0x55 && der[i+1] === 0x1d && der[i+2] === 0x0f) { found = true; break; }
-    }
-    assert.ok(found, 'retained cert should contain the keyUsage OID');
+    assert.ok(filtered.includes('BEGIN CERTIFICATE'));
+    assert.ok(filtered.length < bundle.length, 'bundle should be shorter after removing no-keyCertSign cert');
   });
 
-  it('removes certs that lack the keyUsage extension', () => {
-    const bundle = PEM_WITH_KEY_USAGE + '\n' + PEM_WITHOUT_KEY_USAGE;
+  it('removes certs where keyUsage is absent', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITHOUT_KEY_USAGE;
     const filtered = filterBundleForKeyUsage(bundle);
-    // The filtered content should be shorter (PEM_WITHOUT_KEY_USAGE removed)
-    assert.ok(filtered.length < bundle.length);
+    const count = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+    assert.equal(count, 1, 'only one cert should remain');
   });
 
-  it('returns original content unchanged when no certs have keyUsage (fail-open)', () => {
-    const bundle = PEM_WITHOUT_KEY_USAGE + '\n' + PEM_WITHOUT_KEY_USAGE;
+  it('also removes certs where keyUsage is present but keyCertSign bit is NOT set', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITH_KEY_USAGE_NO_CERT_SIGN;
+    const filtered = filterBundleForKeyUsage(bundle);
+    const count = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+    assert.equal(count, 1, 'cert without keyCertSign should be removed even if keyUsage OID present');
+  });
+
+  it('returns original content unchanged when no certs have keyCertSign (fail-open)', () => {
+    const bundle = PEM_WITHOUT_KEY_USAGE + '\n' + PEM_WITH_KEY_USAGE_NO_CERT_SIGN;
     const filtered = filterBundleForKeyUsage(bundle);
     assert.equal(filtered, bundle, 'fail-open: never produce an empty bundle');
   });
