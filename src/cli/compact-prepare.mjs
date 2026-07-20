@@ -21,7 +21,69 @@ import { execFileSync, execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { detectClipboardCandidates } from '../detect/clipboard.mjs';
+
+// ─── clipboard detection (inlined for standalone deployment) ──
+// Inlined from src/detect/clipboard.mjs so compact-prepare.mjs is fully
+// self-contained when deployed as a real file on Windows (where symlinks
+// are not used and relative ../detect/ imports would fail).
+
+/** @returns {{ cmd: string, args: string[] } | null} */
+function buildOsc52Candidate(env = process.env) {
+  const socketPath = env.OSC52_SOCKET;
+  if (!socketPath) return null;
+  if (socketPath.includes("'") || socketPath.includes('\\')) return null;
+  const script = [
+    'import socket,sys',
+    `s=socket.socket(socket.AF_UNIX)`,
+    `s.connect('${socketPath}')`,
+    `s.sendall(sys.stdin.buffer.read())`,
+    `s.close()`,
+  ].join(';');
+  return { cmd: 'python3', args: ['-c', script] };
+}
+
+/** @returns {{ cmd: string, args: string[] }[]} */
+function detectClipboardCandidates({
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  const isWsl = platform === 'linux' &&
+    Boolean(env.WSL_DISTRO_NAME || env.WSLENV || env.WSL_INTEROP);
+  const isWayland = platform === 'linux' && Boolean(env.WAYLAND_DISPLAY);
+  const osc52Candidate = buildOsc52Candidate(env);
+
+  if (platform === 'darwin') {
+    return [...(osc52Candidate ? [osc52Candidate] : []), { cmd: 'pbcopy', args: [] }];
+  }
+  if (platform === 'win32') {
+    return [
+      { cmd: 'clip', args: [] },
+      { cmd: 'powershell',
+        args: ['-NonInteractive', '-NoProfile', '-Command',
+               '$t=[Console]::In.ReadToEnd();Set-Clipboard -Value $t'] },
+    ];
+  }
+  if (isWsl) {
+    return [
+      ...(osc52Candidate ? [osc52Candidate] : []),
+      { cmd: 'clip.exe', args: [] },
+      { cmd: 'xclip', args: ['-selection', 'clipboard'] },
+      { cmd: 'wl-copy', args: [] },
+    ];
+  }
+  if (isWayland) {
+    return [
+      ...(osc52Candidate ? [osc52Candidate] : []),
+      { cmd: 'wl-copy', args: [] },
+      { cmd: 'xclip', args: ['-selection', 'clipboard'] },
+    ];
+  }
+  return [
+    ...(osc52Candidate ? [osc52Candidate] : []),
+    { cmd: 'xclip', args: ['-selection', 'clipboard'] },
+    { cmd: 'wl-copy', args: [] },
+  ];
+}
 
 const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
