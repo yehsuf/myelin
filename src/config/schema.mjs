@@ -201,6 +201,16 @@ export const DEFAULT_CONFIG = {
   budget_routing: {
     litellm: false,
     litellm_port: 4000,
+    // Wheel-safe default: paired with a wheel-only install (litellm_allow_build
+    // false), uv picks the highest litellm version that has a compatible wheel
+    // PER platform — no compiler ever runs. Linux gets the latest manylinux
+    // wheel; Windows/macOS fall back to the newest pure-Python wheel (1.91.4
+    // today, since litellm 1.92+ ships a compiled Linux-only wheel). No upper
+    // cap, so each platform auto-tracks the newest wheel it can install.
+    // To force a newer source-built litellm, set an exact litellm_spec AND
+    // litellm_allow_build: true (needs a C/C++ toolchain on Windows/macOS).
+    litellm_spec: 'litellm[proxy]>=1.90',
+    litellm_allow_build: false,
     api_base: '',
     cheap_model: 'claude-haiku-4-5',
     complex_model: 'claude-sonnet-4-6',

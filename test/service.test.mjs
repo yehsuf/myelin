@@ -37,9 +37,11 @@ import {
   generateWindowsWatchdogHealthcheckScript,
   generateWindowsWatchdogTaskDeleteScript,
   generateWindowsWatchdogTaskCreateScript,
+  generateWinswInstallScript,
   generateWinswConfigXml,
   buildManagedMitmStatusScript,
   installWatchdog as installWindowsWatchdog,
+  isElevated,
   mitmServiceStatus,
   parseManagedMitmStatus,
   parseWinswServiceStatus,
@@ -2254,12 +2256,74 @@ describe('Windows watchdog generators', () => {
     assert.ok(script.includes('/ru System /rl HIGHEST /f'));
   });
 
+  it('surfaces a schtasks failure instead of swallowing it', () => {
+    const script = generateWindowsWatchdogTaskCreateScript({
+      taskName: 'Myelin Headroom Watchdog',
+      scriptPath: 'C:\\watchdog.ps1',
+      intervalMinutes: 2,
+    });
+    // The generated script must check the native exit code and throw so a
+    // non-elevated (Access is denied) schtasks failure propagates to the
+    // installer instead of reporting a false "watchdog installed" success.
+    assert.match(script, /\$LASTEXITCODE -ne 0/);
+    assert.match(script, /throw /);
+    assert.match(script, /Administrator/i);
+  });
+
   it('rejects invalid Scheduled Task intervals', () => {
     assert.throws(() => generateWindowsWatchdogTaskCreateScript({
       taskName: 'Myelin Headroom Watchdog',
       scriptPath: 'C:\\watchdog.ps1',
       intervalMinutes: 0,
     }), /intervalMinutes/);
+  });
+});
+
+describe('winsw install script generator', () => {
+  const WI_OPTS = {
+    serviceExePath: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\myelin-compression.exe',
+    configPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\myelin-compression.xml',
+  };
+
+  it('keeps stop/uninstall best-effort but installs and starts the service', () => {
+    const script = generateWinswInstallScript(WI_OPTS);
+    assert.match(script, /try \{ & .* stop .* \} catch \{\}/);
+    assert.match(script, /try \{ & .* uninstall .* \} catch \{\}/);
+    assert.ok(script.includes(' install '));
+    assert.ok(script.includes(' start '));
+  });
+
+  it('surfaces a WinSW install failure instead of swallowing it', () => {
+    const script = generateWinswInstallScript(WI_OPTS);
+    // install + start must check the native exit code and throw so the
+    // caller's rollback (restore + re-register previous service) actually runs
+    // instead of a swallowed failure reporting a false success.
+    assert.match(script, /install .*\| Out-Null\r?\nif \(\$LASTEXITCODE -ne 0\) \{ throw "WinSW install failed/);
+    assert.match(script, /start .*\| Out-Null\r?\nif \(\$LASTEXITCODE -ne 0\) \{ throw "WinSW start failed/);
+    assert.match(script, /Administrator/i);
+  });
+});
+
+describe('isElevated', () => {
+  it('returns true when PowerShell reports an Administrator role', () => {
+    const result = isElevated({
+      execFileSyncImpl: () => Buffer.from('True\r\n'),
+    });
+    assert.equal(result, true);
+  });
+
+  it('returns false when PowerShell reports a non-Administrator role', () => {
+    const result = isElevated({
+      execFileSyncImpl: () => Buffer.from('False\r\n'),
+    });
+    assert.equal(result, false);
+  });
+
+  it('returns false (fail-safe) when the elevation probe throws', () => {
+    const result = isElevated({
+      execFileSyncImpl: () => { throw new Error('powershell missing'); },
+    });
+    assert.equal(result, false);
   });
 });
 

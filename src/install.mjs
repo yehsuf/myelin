@@ -129,8 +129,50 @@ export function ensureManagedVenv(venv, {
 export function installPipPackageInManagedVenv(venv, spec, {
   execFileSyncImpl = execFileSync,
   stdio = 'inherit',
+  maxBuffer,
+  onlyBinary = false,
 } = {}) {
-  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], { stdio });
+  const args = ['pip', 'install', '--python', String(venv)];
+  if (onlyBinary) args.push('--only-binary=:all:');
+  args.push(String(spec));
+  const options = { stdio };
+  if (maxBuffer != null) options.maxBuffer = maxBuffer;
+  execFileSyncImpl('uv', args, options);
+}
+
+/**
+ * Resolves the pip requirement spec used to install LiteLLM. Honours a
+ * `budget_routing.litellm_spec` override; otherwise returns `'litellm[proxy]>=1.90'`
+ * (no upper cap). Paired with `onlyBinary: true` (the default when
+ * `litellm_allow_build` is false), uv picks the highest compatible wheel per
+ * platform without ever triggering a source build.
+ */
+export function resolveLitellmSpec(cfg = {}) {
+  const spec = cfg?.budget_routing?.litellm_spec;
+  return (typeof spec === 'string' && spec.trim())
+    ? spec.trim()
+    : 'litellm[proxy]>=1.90';
+}
+
+/**
+ * True when captured install output indicates the failure was a missing native
+ * build toolchain (a C/C++ compiler + linker), not a packaging error. LiteLLM's
+ * newer releases ship an sdist whose Rust `python-bridge` extension is compiled
+ * via maturin, which on Windows needs the MSVC linker (`link.exe`). Without VS
+ * Build Tools installed the build dumps ~100 lines of cargo errors; detecting
+ * this lets the installer skip with one actionable line instead. Null-safe.
+ */
+export function isNativeBuildToolchainError(text = '') {
+  const s = String(text ?? '');
+  if (!s) return false;
+  return /link\.exe`? (?:was )?not found/i.test(s)
+    || /Microsoft Visual C\+\+/i.test(s)
+    || /Visual Studio 2017 or later/i.test(s)
+    || /Build Tools for Visual Studio/i.test(s)
+    || /the msvc targets depend on the msvc linker/i.test(s)
+    || /maturin(?:\.build_wheel)? failed/i.test(s)
+    || /could not compile .* build script/i.test(s)
+    || /\bRust not found\b/i.test(s);
 }
 
 /**
@@ -2886,7 +2928,12 @@ async function main() {
     step('LiteLLM budget router...');
     try {
       ensureManagedVenv(venv);
-      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92');
+      skip('installing litellm[proxy] (may compile a native extension — this can take a few minutes)');
+      installPipPackageInManagedVenv(venv, resolveLitellmSpec(existingCfg), {
+        stdio: 'pipe',
+        maxBuffer: 16 * 1024 * 1024,
+        onlyBinary: !(existingCfg.budget_routing?.litellm_allow_build === true),
+      });
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
@@ -2912,7 +2959,19 @@ async function main() {
       ok(`litellm config written → ${cfgPath}`);
       ok(`LiteLLM will listen on :${litellmPort}. To route Claude Code through it, use the _claude wrapper with headroom_port set to ${litellmPort} (never set ANTHROPIC_BASE_URL globally — see _claude wrapper in src/service/wrappers.mjs).`);
     } catch (e) {
-      warn(`litellm install failed: ${e.message.split('\n')[0]}`);
+      const detail = `${e?.stdout ?? ''}\n${e?.stderr ?? ''}\n${e?.message ?? ''}`;
+      if (isNativeBuildToolchainError(detail)) {
+        const toolchainHint = os === 'windows'
+          ? 'Install Visual Studio Build Tools with the "Desktop development with C++" workload, then re-run `myelin install`.'
+          : 'Ensure a C/C++ compiler and the Rust toolchain are installed (e.g. `xcode-select --install` + `rustup` on macOS, `build-essential` + `rustup` on Linux), then re-run `myelin install`.';
+        warn(
+          'LiteLLM needs a native build toolchain to compile its extension — skipping. ' +
+          toolchainHint + ' ' +
+          'LiteLLM budget routing is optional; the proxy chain works without it.'
+        );
+      } else {
+        warn(`litellm install failed: ${(e?.message ?? '').split('\n')[0]}`);
+      }
     }
   }
 
@@ -3095,12 +3154,22 @@ async function main() {
     // WinSW service for a registry-based install's watchdog to restart).
     try {
       const { installWatchdog } = await import('./service/index.mjs');
-      const installed = await installWatchdog(downstreamProxyInstallOpts.watchdogOpts);
-      if (installed) {
-        const cadence = os === 'windows'
-          ? `every ${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes} minute${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
-          : 'every 90s';
-        ok(`watchdog installed — auto-revives dropped services ${cadence}`);
+      const watchdogOpts = downstreamProxyInstallOpts.watchdogOpts;
+      let elevationBlocked = false;
+      if (os === 'windows' && watchdogOpts.enabled) {
+        const { isElevated } = await import('./service/windows.mjs');
+        elevationBlocked = !isElevated();
+      }
+      if (elevationBlocked) {
+        warn('watchdog needs an elevated shell — skipping. Re-run `myelin install` from an Administrator PowerShell to register the auto-revive Scheduled Task.');
+      } else {
+        const installed = await installWatchdog(watchdogOpts);
+        if (installed) {
+          const cadence = os === 'windows'
+            ? `every ${watchdogOpts.intervalMinutes} minute${watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
+            : 'every 90s';
+          ok(`watchdog installed — auto-revives dropped services ${cadence}`);
+        }
       }
     } catch (e) {
       warn(`watchdog install failed: ${e.message}`);
