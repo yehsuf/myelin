@@ -28,8 +28,13 @@ export function resolveMitmCompression(cfg = {}) {
 
   const compressEnabled = !disabled && !litellm;
 
+  // Copilot proxy requires MITM to be running (needs the loopback egress
+  // listener). Suppress it automatically when MITM is disabled so
+  // buildEngineInstancePlan never sees a copilot-enabled + MITM-off combo.
+  const mitmEnabled = cfg.proxy?.mitm?.enabled !== false;
+
   const copilotHeadroomPort =
-    compressEnabled && copilotHeadroomCfg.enabled
+    compressEnabled && copilotHeadroomCfg.enabled && mitmEnabled
       ? (copilotHeadroomCfg.port ?? 8788)
       : undefined;
 

@@ -55,8 +55,8 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG uses one shared canonical compression.port = 8787', () => {
     assert.equal(DEFAULT_CONFIG.compression.port, 8787);
   });
-  it('DEFAULT_CONFIG canonical compression.copilot_proxy is opt-in', () => {
-    assert.equal(DEFAULT_CONFIG.compression.copilot_proxy.enabled, false);
+  it('DEFAULT_CONFIG canonical compression.copilot_proxy is enabled by default', () => {
+    assert.equal(DEFAULT_CONFIG.compression.copilot_proxy.enabled, true);
     assert.equal(DEFAULT_CONFIG.compression.copilot_proxy.port, 8788);
   });
   it('DEFAULT_CONFIG canonical compression.original mirrors headroom defaults', () => {
@@ -86,8 +86,8 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has proxy.mitm.egress_port = 8889', () => {
     assert.equal(DEFAULT_CONFIG.proxy.mitm.egress_port, 8889);
   });
-  it('DEFAULT_CONFIG has proxy.copilot_headroom.enabled = false (opt-in)', () => {
-    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.enabled, false);
+  it('DEFAULT_CONFIG has proxy.copilot_headroom.enabled = true (on by default)', () => {
+    assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.enabled, true);
   });
   it('DEFAULT_CONFIG has proxy.copilot_headroom.port = 8788', () => {
     assert.equal(DEFAULT_CONFIG.proxy.copilot_headroom.port, 8788);
@@ -349,7 +349,7 @@ describe('config reader', () => {
     if (saved !== undefined) process.env.HEADROOM_PORT = saved;
     assert.equal(cfg.compression.backend, 'headroom-lite');
     assert.equal(cfg.compression.port, 8787);
-    assert.equal(cfg.compression.copilot_proxy.enabled, false);
+    assert.equal(cfg.compression.copilot_proxy.enabled, true);
   });
 
   it('forward-derives compression.backend = headroom-original from legacy engine', async () => {

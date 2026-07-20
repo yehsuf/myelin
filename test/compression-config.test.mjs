@@ -91,7 +91,7 @@ describe('migrateLegacyCompressionConfig', () => {
       backend: 'headroom-lite',
       port: 8790,
       copilot_proxy: {
-        enabled: false,
+        enabled: true,
         port: 8788,
       },
       original: {
@@ -125,7 +125,7 @@ describe('migrateLegacyCompressionConfig', () => {
       backend: 'headroom-lite',
       port: 8790,
       copilot_proxy: {
-        enabled: false,
+        enabled: true,
         port: 8788,
       },
       original: {
@@ -254,5 +254,43 @@ describe('resolveCompressionConfig', () => {
       () => resolveCompressionConfig({ compression: { backend: 'unknown' } }),
       /Invalid compression\.backend: unknown/,
     );
+  });
+});
+
+describe('migration preserves copilot_proxy default-enabled', () => {
+  it('migrateLegacyCompressionConfig: absent copilot_headroom.enabled defaults to true (not false)', () => {
+    const result = migrateLegacyCompressionConfig({
+      proxy: {
+        headroom: { enabled: false },
+        headroom_lite: { enabled: true, port: 8787 },
+        // copilot_headroom deliberately absent — should inherit default true
+      },
+    });
+    assert.equal(result.config.compression.copilot_proxy.enabled, true);
+  });
+
+  it('migrateLegacyCompressionConfig: explicit copilot_headroom.enabled=false is preserved', () => {
+    const result = migrateLegacyCompressionConfig({
+      proxy: {
+        headroom: { enabled: false },
+        headroom_lite: { enabled: true, port: 8787 },
+        copilot_headroom: { enabled: false, port: 8788 },
+      },
+    });
+    assert.equal(result.config.compression.copilot_proxy.enabled, false);
+  });
+
+  it('resolveCompressionConfig: absent copilot toggle defaults to true', () => {
+    const r = resolveCompressionConfig({
+      compression: { backend: 'headroom-lite', port: 8787 },
+    });
+    assert.equal(r.copilotProxy.enabled, true);
+  });
+
+  it('resolveCompressionConfig: explicit false is preserved', () => {
+    const r = resolveCompressionConfig({
+      compression: { backend: 'headroom-lite', port: 8787, copilot_proxy: { enabled: false } },
+    });
+    assert.equal(r.copilotProxy.enabled, false);
   });
 });

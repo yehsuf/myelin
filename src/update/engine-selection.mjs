@@ -68,7 +68,7 @@ export function resolveCompressionConfig(config = {}) {
   return {
     backend,
     copilotProxy: {
-      enabled: reconciledEnabled ?? (copilot.enabled === true),
+      enabled: reconciledEnabled ?? (copilot.enabled !== false),
       port: copilot.port ?? DEFAULT_COPILOT_PORT,
     },
   };

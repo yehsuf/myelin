@@ -151,7 +151,14 @@ export async function buildVerifyResults({
   const cfg = config ?? await loadConfigImpl();
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
-  const plannedEngineInstances = buildEngineInstancePlan(cfg).instances;
+
+  let plannedEngineInstances;
+  try {
+    plannedEngineInstances = buildEngineInstancePlan(cfg).instances;
+  } catch (err) {
+    return [{ name: 'Engine plan', ok: false, detail: `config error: ${err.message}` }];
+  }
+
   const engineInstances = plannedEngineInstances
     .filter((instance) => instance.role !== 'copilot' || includeCopilotHeadroomCheck);
   const results = [];
@@ -169,6 +176,19 @@ export async function buildVerifyResults({
       waitForHeadroomImpl,
       probeHeadroomLiteImpl,
     }));
+  }
+
+  // If copilot_proxy is explicitly disabled, add an honest row instead of
+  // silently omitting it (verify should never show all-green while Copilot
+  // traffic falls back to sidecar-only compression).
+  const copilotDisabled = !(cfg.proxy?.copilot_headroom?.enabled ?? true);
+  const copilotInPlan = plannedEngineInstances.some(i => i.role === 'copilot');
+  if (copilotDisabled && !copilotInPlan) {
+    results.push({
+      name: 'Copilot proxy',
+      ok: false,
+      detail: 'disabled — Copilot uses sidecar compress only (enable: myelin config set proxy.copilot_headroom.enabled true && myelin install)',
+    });
   }
 
   if (includeMitmCheck && cfg.proxy?.mitm?.enabled) {
