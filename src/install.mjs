@@ -16,7 +16,7 @@ import { isWsl } from './detect/wsl.mjs';
 import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv, resolveCaEnvBundle } from './detect/proxy.mjs';
-import { isPortFree, findFreePort } from './detect/port.mjs';
+import { isPortFree, findFreePort, getPortHolder, isHolderMyelinManaged } from './detect/port.mjs';
 import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
@@ -3155,6 +3155,27 @@ async function main() {
       : loadedCfg;
     const enginePlan = buildEngineInstancePlan(cfg);
     const primaryInstance = enginePlan.instances.find(({ role }) => role === 'primary');
+
+    // ── Foreign-port preflight (INSTALL-PORT-003) ────────────────────────────
+    // Before binding any managed engine instance port, check for a foreign
+    // (non-myelin) process already holding it. This surfaces the exact scenario
+    // from the incident: a hand-installed headroom on :8788 silently blocked
+    // myelin's copilot-headroom from binding — never auto-kill; just warn clearly.
+    for (const instance of (enginePlan.instances ?? [])) {
+      if (!instance.port) continue;
+      const free = await isPortFree(instance.port);
+      if (free) continue;
+      const holder = getPortHolder(instance.port, { platform: os === 'windows' ? 'win32' : process.platform });
+      if (isHolderMyelinManaged(holder, join(home, '.myelin'))) continue; // our own service, fine
+      const holderDesc = holder ? `PID ${holder.pid} (${holder.cmd || 'unknown'})` : 'unknown process';
+      warn(
+        `Port ${instance.port} (${instance.role} engine) is occupied by a foreign process: ${holderDesc}. ` +
+        `This will prevent myelin's ${instance.role} compression service from starting. ` +
+        `Stop the foreign process manually, or change the port in config, then re-run \`myelin install\`.`,
+      );
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     // Staged apply (--update-apply) binds the pinned managed compression binary
     // provisioned by the release transaction instead of a global install. When
     // compression is disabled no compression binary is resolved or staged.
