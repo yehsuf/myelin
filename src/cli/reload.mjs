@@ -71,18 +71,28 @@ function _reloadMacTerminals(sourceCmd, execSyncFn = execSync) {
   let reloaded = false;
   const cmd = sourceCmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
-  // Terminal.app — use the tab's own "busy" property (true while a foreground
-  // command is running). This is the reliable idle signal; counting
-  // `processes of t` is fragile (login shells often report 2+ processes,
-  // e.g. {"login", "-zsh"}, even while completely idle) and was causing
-  // reload to skip nearly every idle tab.
+  // The session ID of the terminal running `myelin install` — skip it so we
+  // never send a source command into an active AI agent session (Copilot/Claude).
+  const currentSessionId = process.env.TERM_SESSION_ID ?? '';
+  const escapedSessionId = currentSessionId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+  // Terminal.app — skip tabs that are busy OR contain node (AI agent heuristic).
+  // Counting `processes of t` was fragile for idle tabs (login shells report
+  // 2+ procs), but checking for "node" specifically is safe: only AI sessions
+  // run node as a foreground child of the shell.
   try {
     const script = `if application "Terminal" is running then
 tell application "Terminal"
   repeat with w in windows
     repeat with t in tabs of w
       try
-        if not busy of t then
+        set tabBusy to busy of t
+        set tabProcs to processes of t
+        set hasNode to false
+        repeat with p in tabProcs
+          if p contains "node" then set hasNode to true
+        end repeat
+        if not tabBusy and not hasNode then
           do script "${cmd}" in t
         end if
       end try
@@ -94,15 +104,16 @@ end if`;
     reloaded = true;
   } catch {}
 
-  // iTerm2 — only sessions where the foreground job is the shell itself.
+  // iTerm2 — skip sessions where the foreground job is not the shell itself,
+  // AND skip the session whose unique id matches TERM_SESSION_ID (the terminal
+  // running myelin install — could be an idle AI session waiting for input).
   // NOTE: `variable named "jobName" of s` (property-of-object form) throws
-  // "Access not allowed (-1723)" whenever `s` is a loop-bound reference from
-  // `repeat with s in sessions of t` — verified live against real iTerm2
-  // sessions. Must use `tell s ... end tell` instead; that form works
-  // reliably. The previous code used an even more broken variant
-  // (`variable value of s named ...`), which threw on every run and
-  // aborted the whole tell-block, so nothing in iTerm2 ever got reloaded.
+  // "Access not allowed (-1723)" from a loop-bound reference — must use
+  // `tell s ... end tell` form instead.
   try {
+    const skipClause = escapedSessionId
+      ? `if unique id of s is equal to "${escapedSessionId}" then\n            -- skip: this is the installer's own terminal session\n          else if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`
+      : `if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`;
     const script = `if application "iTerm2" is running then
 tell application "iTerm2"
   repeat with w in windows
@@ -112,9 +123,7 @@ tell application "iTerm2"
           tell s
             set jobName to variable named "jobName"
           end tell
-          if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then
-            tell s to write text "${cmd}"
-          end if
+          ${skipClause}
         end try
       end repeat
     end repeat

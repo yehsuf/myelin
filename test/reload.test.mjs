@@ -72,3 +72,40 @@ test('non-darwin reload writes the marker and does not invoke osascript', async 
   assert.equal(calls.filter(c => c.includes('osascript')).length, 0);
   assert.ok(writes.some(w => String(w.p).endsWith('.myelin-reload')));
 });
+
+test('Terminal.app: skips tabs with node in process list (AI session guard)', async () => {
+  const scripts = [];
+  await runReload({
+    silent: true,
+    os: 'darwin',
+    shell: '/bin/zsh',
+    home: '/tmp/reload-home',
+    execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+    writeFileSyncFn: () => {},
+  });
+  const termScript = scripts.find(s => s.includes('application "Terminal"')) ?? '';
+  assert.match(termScript, /hasNode/, 'Terminal.app script must check for node process');
+  assert.match(termScript, /not hasNode/, 'Terminal.app script must skip tabs with node running');
+});
+
+test('iTerm2: skips session matching TERM_SESSION_ID (installer terminal guard)', async () => {
+  const scripts = [];
+  const origEnv = process.env.TERM_SESSION_ID;
+  process.env.TERM_SESSION_ID = 'test-session-abc123';
+  try {
+    await runReload({
+      silent: true,
+      os: 'darwin',
+      shell: '/bin/zsh',
+      home: '/tmp/reload-home',
+      execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+      writeFileSyncFn: () => {},
+    });
+  } finally {
+    if (origEnv === undefined) delete process.env.TERM_SESSION_ID;
+    else process.env.TERM_SESSION_ID = origEnv;
+  }
+  const iterm2Script = scripts.find(s => s.includes('application "iTerm2"')) ?? '';
+  assert.match(iterm2Script, /test-session-abc123/, 'iTerm2 script must embed the current session ID');
+  assert.match(iterm2Script, /unique id of s is equal to/, 'iTerm2 script must compare session unique id');
+});
