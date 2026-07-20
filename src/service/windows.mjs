@@ -196,6 +196,36 @@ export function runPs(script, {
 }
 
 /**
+ * Reports whether the current process is running with an elevated
+ * (Administrator) Windows token. Used to preflight actions that require
+ * elevation — notably registering a `/ru System` Scheduled Task watchdog,
+ * which silently fails with "Access is denied" from a non-elevated shell.
+ *
+ * Fails safe: any probe error (missing PowerShell, unexpected output) returns
+ * `false` so callers treat "unknown" as "not elevated" and surface guidance
+ * rather than attempting an action that will fail opaquely.
+ */
+export function isElevated({
+  execFileSyncImpl = execFileSync,
+  powershellExe = powerShellExecutable(),
+} = {}) {
+  try {
+    const out = execFileSyncImpl(
+      powershellExe,
+      [
+        '-NoProfile',
+        '-Command',
+        '[bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return String(out).trim().toLowerCase() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Injection-safe PowerShell command execution.
  *
  * Runs `powershellExe -NoProfile -Command <command>` via an ARGUMENT ARRAY
@@ -955,6 +985,7 @@ export function generateWindowsWatchdogTaskCreateScript({ taskName, scriptPath, 
 $TaskName = ${psQuote(taskName)}
 $TaskAction = ${psQuote(taskAction)}
 schtasks.exe /create /tn $TaskName /sc minute /mo ${cadence} /tr $TaskAction /ru System /rl HIGHEST /f | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "schtasks /create failed (exit $LASTEXITCODE) for '$TaskName'. Registering a '/ru System' scheduled task requires an elevated (Administrator) shell." }
 `;
 }
 

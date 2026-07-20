@@ -3095,12 +3095,22 @@ async function main() {
     // WinSW service for a registry-based install's watchdog to restart).
     try {
       const { installWatchdog } = await import('./service/index.mjs');
-      const installed = await installWatchdog(downstreamProxyInstallOpts.watchdogOpts);
-      if (installed) {
-        const cadence = os === 'windows'
-          ? `every ${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes} minute${downstreamProxyInstallOpts.watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
-          : 'every 90s';
-        ok(`watchdog installed — auto-revives dropped services ${cadence}`);
+      const watchdogOpts = downstreamProxyInstallOpts.watchdogOpts;
+      let elevationBlocked = false;
+      if (os === 'windows' && watchdogOpts.enabled) {
+        const { isElevated } = await import('./service/windows.mjs');
+        elevationBlocked = !isElevated();
+      }
+      if (elevationBlocked) {
+        warn('watchdog needs an elevated shell — skipping. Re-run `myelin install` from an Administrator PowerShell to register the auto-revive Scheduled Task.');
+      } else {
+        const installed = await installWatchdog(watchdogOpts);
+        if (installed) {
+          const cadence = os === 'windows'
+            ? `every ${watchdogOpts.intervalMinutes} minute${watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
+            : 'every 90s';
+          ok(`watchdog installed — auto-revives dropped services ${cadence}`);
+        }
       }
     } catch (e) {
       warn(`watchdog install failed: ${e.message}`);
