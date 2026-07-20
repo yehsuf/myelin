@@ -583,7 +583,7 @@ function winswLogDir({ id, home, logPath, env = process.env } = {}) {
   return pathWin32.extname(normalized) ? pathWin32.dirname(normalized) : normalized;
 }
 
-function generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }) {
+export function generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }) {
   const cleanupRunKey = legacyRunKey
     ? `Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`
     : '';
@@ -592,7 +592,9 @@ try { & ${psQuote(serviceExePath)} stop ${psQuote(configPath)} --force --no-wait
 try { & ${psQuote(serviceExePath)} uninstall ${psQuote(configPath)} | Out-Null } catch {}
 Start-Sleep -Seconds 1
 & ${psQuote(serviceExePath)} install ${psQuote(configPath)} | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE). Registering a Windows service may require an elevated (Administrator) shell." }
 & ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start — check the WinSW logs, and ensure the shell is elevated." }
 ${cleanupRunKey}
 `;
 }

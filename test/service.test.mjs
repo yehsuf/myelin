@@ -37,6 +37,7 @@ import {
   generateWindowsWatchdogHealthcheckScript,
   generateWindowsWatchdogTaskDeleteScript,
   generateWindowsWatchdogTaskCreateScript,
+  generateWinswInstallScript,
   generateWinswConfigXml,
   buildManagedMitmStatusScript,
   installWatchdog as installWindowsWatchdog,
@@ -2275,6 +2276,31 @@ describe('Windows watchdog generators', () => {
       scriptPath: 'C:\\watchdog.ps1',
       intervalMinutes: 0,
     }), /intervalMinutes/);
+  });
+});
+
+describe('winsw install script generator', () => {
+  const WI_OPTS = {
+    serviceExePath: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\myelin-compression.exe',
+    configPath: 'C:\\Users\\alice\\.myelin\\services\\myelin-compression\\myelin-compression.xml',
+  };
+
+  it('keeps stop/uninstall best-effort but installs and starts the service', () => {
+    const script = generateWinswInstallScript(WI_OPTS);
+    assert.match(script, /try \{ & .* stop .* \} catch \{\}/);
+    assert.match(script, /try \{ & .* uninstall .* \} catch \{\}/);
+    assert.ok(script.includes(' install '));
+    assert.ok(script.includes(' start '));
+  });
+
+  it('surfaces a WinSW install failure instead of swallowing it', () => {
+    const script = generateWinswInstallScript(WI_OPTS);
+    // install + start must check the native exit code and throw so the
+    // caller's rollback (restore + re-register previous service) actually runs
+    // instead of a swallowed failure reporting a false success.
+    assert.match(script, /install .*\| Out-Null\r?\nif \(\$LASTEXITCODE -ne 0\) \{ throw "WinSW install failed/);
+    assert.match(script, /start .*\| Out-Null\r?\nif \(\$LASTEXITCODE -ne 0\) \{ throw "WinSW start failed/);
+    assert.match(script, /Administrator/i);
   });
 });
 
