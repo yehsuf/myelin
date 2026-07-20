@@ -130,10 +130,28 @@ export function installPipPackageInManagedVenv(venv, spec, {
   execFileSyncImpl = execFileSync,
   stdio = 'inherit',
   maxBuffer,
+  onlyBinary = false,
 } = {}) {
+  const args = ['pip', 'install', '--python', String(venv)];
+  if (onlyBinary) args.push('--only-binary=:all:');
+  args.push(String(spec));
   const options = { stdio };
   if (maxBuffer != null) options.maxBuffer = maxBuffer;
-  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], options);
+  execFileSyncImpl('uv', args, options);
+}
+
+/**
+ * Resolves the pip requirement spec used to install LiteLLM. Honours a
+ * `budget_routing.litellm_spec` override; otherwise returns a wheel-safe
+ * default (`<1.93`) that resolves to the pure-Python litellm 1.91.4 wheel on
+ * every platform so no C/C++ build toolchain is needed. Users who want newer
+ * releases bump the config key (and, on Windows/macOS, provide a toolchain).
+ */
+export function resolveLitellmSpec(cfg = {}) {
+  const spec = cfg?.budget_routing?.litellm_spec;
+  return (typeof spec === 'string' && spec.trim())
+    ? spec.trim()
+    : 'litellm[proxy]>=1.90';
 }
 
 /**
@@ -2911,7 +2929,11 @@ async function main() {
     try {
       ensureManagedVenv(venv);
       skip('installing litellm[proxy] (may compile a native extension — this can take a few minutes)');
-      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92', { stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 });
+      installPipPackageInManagedVenv(venv, resolveLitellmSpec(existingCfg), {
+        stdio: 'pipe',
+        maxBuffer: 16 * 1024 * 1024,
+        onlyBinary: !(existingCfg.budget_routing?.litellm_allow_build === true),
+      });
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;

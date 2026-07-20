@@ -15,6 +15,7 @@ import {
   ensureManagedVenv,
   installPipPackageInManagedVenv,
   isNativeBuildToolchainError,
+  resolveLitellmSpec,
   mitmAddonPath,
   provisionManagedCompressionComponent,
   removeManagedHeadroomRegistration,
@@ -26,6 +27,25 @@ import {
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
 
+
+describe('resolveLitellmSpec', () => {
+  it('defaults to a wheel-safe uncapped spec when unset', () => {
+    assert.equal(resolveLitellmSpec({}), 'litellm[proxy]>=1.90');
+    assert.equal(resolveLitellmSpec(), 'litellm[proxy]>=1.90');
+    assert.equal(resolveLitellmSpec({ budget_routing: {} }), 'litellm[proxy]>=1.90');
+  });
+
+  it('honours an explicit budget_routing.litellm_spec override', () => {
+    assert.equal(
+      resolveLitellmSpec({ budget_routing: { litellm_spec: 'litellm[proxy]>=1.93' } }),
+      'litellm[proxy]>=1.93',
+    );
+  });
+
+  it('ignores a blank override and falls back to the default', () => {
+    assert.equal(resolveLitellmSpec({ budget_routing: { litellm_spec: '   ' } }), 'litellm[proxy]>=1.90');
+  });
+});
 
 describe('isNativeBuildToolchainError', () => {
   it('detects a missing MSVC linker from a maturin/cargo build failure', () => {
@@ -138,6 +158,25 @@ describe('ensureManagedVenv / installPipPackageInManagedVenv (C: MYELIN_DIR venv
     });
     assert.equal(calls[0].opts.stdio, 'pipe');
     assert.equal(calls[0].opts.maxBuffer, 16 * 1024 * 1024);
+  });
+
+  it('installPipPackageInManagedVenv adds --only-binary before the spec when onlyBinary is set', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'litellm[proxy]>=1.90,<1.93', {
+      execFileSyncImpl: (file, args) => { calls.push({ args }); },
+      onlyBinary: true,
+    });
+    assert.deepEqual(calls[0].args, [
+      'pip', 'install', '--python', HOSTILE_VENV, '--only-binary=:all:', 'litellm[proxy]>=1.90,<1.93',
+    ]);
+  });
+
+  it('installPipPackageInManagedVenv omits --only-binary by default (source builds still allowed)', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'headroom-ai[all]', {
+      execFileSyncImpl: (file, args) => { calls.push({ args }); },
+    });
+    assert.ok(!calls[0].args.includes('--only-binary=:all:'));
   });
 
   it('installPipPackageInManagedVenv omits maxBuffer when not requested', () => {

@@ -120,6 +120,8 @@ describe('config schema', () => {
   it('DEFAULT_CONFIG has budget_routing defaults (opt-in)', () => {
     assert.equal(DEFAULT_CONFIG.budget_routing.litellm, false);
     assert.equal(DEFAULT_CONFIG.budget_routing.litellm_port, 4000);
+    assert.equal(DEFAULT_CONFIG.budget_routing.litellm_spec, 'litellm[proxy]>=1.90');
+    assert.equal(DEFAULT_CONFIG.budget_routing.litellm_allow_build, false);
     assert.equal(DEFAULT_CONFIG.budget_routing.api_base, '');
     assert.equal(DEFAULT_CONFIG.budget_routing.cheap_model, 'claude-haiku-4-5');
     assert.equal(DEFAULT_CONFIG.budget_routing.complex_model, 'claude-sonnet-4-6');
