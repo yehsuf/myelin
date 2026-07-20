@@ -78,7 +78,7 @@ export const DEFAULT_CONFIG = {
     //
     // See docs/copilot-headroom-architecture.md for the full design.
     copilot_headroom: {
-      enabled: false,
+      enabled: true,
       port: 8788,
       mode: 'cache',
     },
@@ -115,9 +115,10 @@ export const DEFAULT_CONFIG = {
     backend: 'headroom-lite',
     port: 8787,
     // copilot_proxy: dedicated Copilot-facing compression instance (mirrors the
-    // legacy proxy.copilot_headroom toggle). Off by default.
+    // legacy proxy.copilot_headroom toggle). Enabled by default — all installs
+    // get the full Copilot pipeline (cache, TOIN, stats) instead of sidecar only.
     copilot_proxy: {
-      enabled: false,
+      enabled: true,
       port: 8788,
     },
     // original: settings that only apply when backend is 'headroom-original'.
