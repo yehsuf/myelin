@@ -3708,6 +3708,31 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
     }
   }
 
+  // Create ~/.myelin/bin/copilot wrapper so `copilot` is always in PATH
+  // in new shells, even when NVM is lazy-loaded and its bin dir isn't in PATH yet.
+  // The wrapper reads NVM alias files at runtime (no NVM load overhead).
+  if (os !== 'windows') {
+    const copilotWrapperPath = join(managed.binDir, 'copilot');
+    const copilotWrapperContent = [
+      '#!/bin/sh',
+      '# myelin-managed: resolve copilot via NVM without loading NVM into the shell.',
+      '# Reads NVM alias files at runtime — works in new shells with lazy NVM.',
+      '_nvm="${NVM_DIR:-$HOME/.nvm}"',
+      '_v=$(cat "$_nvm/alias/default" 2>/dev/null)',
+      'case "$_v" in lts/*) _v=$(cat "$_nvm/alias/$_v" 2>/dev/null) ;; esac',
+      '[ -x "$_nvm/versions/node/$_v/bin/copilot" ] && exec "$_nvm/versions/node/$_v/bin/copilot" "$@"',
+      '# Search all installed NVM versions (newest first)',
+      'for _d in $(ls -r "$_nvm/versions/node/" 2>/dev/null); do',
+      '  [ -x "$_nvm/versions/node/$_d/bin/copilot" ] && exec "$_nvm/versions/node/$_d/bin/copilot" "$@"',
+      'done',
+      '# Last resort: full NVM load',
+      '[ -s "/opt/homebrew/opt/nvm/nvm.sh" ] && . "/opt/homebrew/opt/nvm/nvm.sh" 2>/dev/null',
+      'exec copilot "$@"',
+    ].join('\n') + '\n';
+    writeFileSync(copilotWrapperPath, copilotWrapperContent, { mode: 0o755 });
+    ok(`${copilotWrapperPath} (NVM-aware copilot shim)`);
+  }
+
   // Windows: additionally persist env vars to the registry (HKCU\Environment)
   // so new windows opened from Explorer (Start Menu, taskbar) pick them up
   // immediately, even before any $PROFILE-equivalent runs — verified live
