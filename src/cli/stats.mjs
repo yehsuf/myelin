@@ -85,9 +85,17 @@ function renderHeadroomLiteStatsRows(payload) {
     return unavailableStatsRows();
   }
 
+  // In the myelin architecture headroom-lite is a compress-only sidecar
+  // (mitmproxy POSTs to /v1/compress), so proxy_requests is always 0 and does
+  // not represent a "total". Only show the "N total" prefix when the service is
+  // actually acting as a full proxy; otherwise report the compression count.
+  const requestsSummary = requestCount === 0
+    ? `${formatCount(compressedRequestCount)} compressed`
+    : `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`;
+
   const rows = [
     ['Status', 'running'],
-    ['Requests', `${formatCount(requestCount)} total, ${formatCount(compressedRequestCount)} compressed`],
+    ['Requests', requestsSummary],
     ['Compression', formatPercent(compressionPct)],
     ['Tokens', `${formatCount(tokensSaved)} saved`],
   ];
@@ -139,10 +147,16 @@ function renderCopilotHeadroomStatsRows(payload) {
     requestCount === null ||
     compressedRequestCount === null ||
     tokensBefore === null ||
-    tokensSaved === null ||
-    tokensBefore === 0
+    tokensSaved === null
   ) {
     return unavailableStatsRows();
+  }
+
+  // Reachable and stats are readable, but nothing has been compressed yet.
+  // Distinguish this idle state from an unreachable service so a freshly
+  // started headroom is not reported as "unavailable".
+  if (tokensBefore === 0) {
+    return { available: true, rows: [['Status', 'running (no data yet)']] };
   }
 
   const compressionPct = (tokensSaved / tokensBefore) * 100;

@@ -1212,6 +1212,47 @@ async function promptYN(question) {
 
 function _closeRL() { if (_rl) { _rl.close(); _rl = null; } }
 
+/**
+ * Force-terminate the installer once `main()` settles.
+ *
+ * The installer is a one-shot CLI: every service it starts runs DETACHED under
+ * the platform init system (launchd / systemd / Windows registry-Run or WinSW),
+ * so nothing needs to remain attached to this process. In practice install
+ * touches many subsystems — readline over a pipe stdin, spawned probes,
+ * component installers, keep-alive HTTP health checks — any of which can leave a
+ * referenced libuv handle open. When that happens `main()` resolves and every
+ * line is printed (including the final "Shell profile reload"), but Node never
+ * drains the event loop and the command HANGS forever. That is the long-standing
+ * "install stuck at Shell profile reload" bug; relying on the loop draining is
+ * unsafe. We flush stdout+stderr first (they are async pipes under ssh, so a
+ * bare process.exit could truncate the last lines) and then hard-exit. A short
+ * safety timer guarantees termination even if a stream never drains.
+ *
+ * Exported (with injectable deps) for tests.
+ */
+export function finalizeAndExit(code, {
+  streams = [process.stdout, process.stderr],
+  exit = (c) => process.exit(c),
+  setTimeoutImpl = setTimeout,
+} = {}) {
+  _closeRL();
+  let done = false;
+  const finish = () => { if (!done) { done = true; exit(code); } };
+
+  // Hard deadline: never wait more than 1s for a stream to flush.
+  const guard = setTimeoutImpl(finish, 1000);
+  if (guard && typeof guard.unref === 'function') guard.unref();
+
+  let pending = 0;
+  for (const s of streams) {
+    if (!s || typeof s.write !== 'function') continue;
+    pending++;
+    // write('') invokes the callback once any buffered output is flushed.
+    s.write('', () => { if (--pending <= 0) finish(); });
+  }
+  if (pending === 0) finish();
+}
+
 const MANAGED_MAIN_REPO_URL = 'https://github.com/yehsuf/myelin';
 
 function resolveManagedMainRepoUrl({
@@ -3657,5 +3698,8 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  main().catch(e => { _closeRL(); console.error(e); process.exit(1); });
+  main().then(
+    () => finalizeAndExit(0),
+    (e) => { console.error(e); finalizeAndExit(1); },
+  );
 }
