@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -937,6 +937,50 @@ async function detectHeadroomFork() {
     if (existsSync(p)) return { path: p, source: 'local-dev' };
   }
   return null;
+}
+
+const MANAGED_BLOCK_RE = /\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/;
+const MAX_PROFILE_BACKUPS = 3;
+
+/**
+ * Write an updated shell profile with two safety guarantees:
+ * 1. All content outside the managed block is preserved (defensive check —
+ *    throws only for genuine content loss, never for backup failures).
+ * 2. A rotating backup is kept in ~/.myelin/backups/ (max MAX_PROFILE_BACKUPS).
+ *    Backup steps are best-effort: a backup I/O failure never blocks the write.
+ */
+function safeWriteProfile(profilePath, existing, updated, home) {
+  // Defensive check: non-managed content must be identical in both versions.
+  // This is the ONLY thing that throws — backup failures are swallowed below.
+  const strip = s => s.replace(MANAGED_BLOCK_RE, '');
+  if (existing && strip(existing) !== strip(updated)) {
+    throw new Error(
+      `myelin install: profile write would remove user content from ${profilePath}.\n` +
+      `Aborting to protect your shell config. Please report this as a bug.`
+    );
+  }
+
+  // Rotating backup — best-effort: never block the profile write on I/O errors.
+  if (existing) {
+    try {
+      const backupDir = join(home, '.myelin', 'backups');
+      mkdirSync(backupDir, { recursive: true });
+      const profileBase = profilePath.replace(/.*[/\\]/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+      const prefix = `${profileBase}.`;
+      const existingBackups = readdirSync(backupDir)
+        .filter(f => f.startsWith(prefix) && f.endsWith('.bak'))
+        .map(f => join(backupDir, f))
+        .sort(); // lexicographic = chronological (timestamp in name)
+      // Delete oldest so we stay within the limit after adding the new one.
+      while (existingBackups.length >= MAX_PROFILE_BACKUPS) {
+        try { unlinkSync(existingBackups.shift()); } catch { /* best-effort */ }
+      }
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      writeFileSync(join(backupDir, `${prefix}${ts}.bak`), existing, 'utf8');
+    } catch { /* best-effort — backup failure must never block the profile write */ }
+  }
+
+  writeFileSync(profilePath, updated, 'utf8');
 }
 
 function shellProfilePath(os, shell) {
@@ -3604,18 +3648,27 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
       const headroomExport = selectedProxyPort != null ? `export HEADROOM_PORT=${selectedProxyPort}` : '';
       block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
-    const updated = existing.includes('myelin managed')
-      ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
+    const updated = MANAGED_BLOCK_RE.test(existing)
+      ? existing.replace(MANAGED_BLOCK_RE, block)
       : existing + block;
     if (updated !== existing) {
-      writeFileSync(profilePath, updated, 'utf8');
-      ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, _copilot + _claude wrappers)`);
-      if (os === 'windows') {
-        const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
-        if (installWindowsAutoloadModule(appData, profilePath)) {
-          ok('PowerShell module autoload registered (myelin/_copilot/_claude load in new windows)');
-        } else {
-          warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
+      let profileWriteOk = false;
+      try {
+        safeWriteProfile(profilePath, existing, updated, home);
+        profileWriteOk = true;
+      } catch (e) {
+        warn(String(e.message));
+        // Don't return — linkGlobalBin and registry setup must still run.
+      }
+      if (profileWriteOk) {
+        ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, _copilot + _claude wrappers)`);
+        if (os === 'windows') {
+          const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
+          if (installWindowsAutoloadModule(appData, profilePath)) {
+            ok('PowerShell module autoload registered (myelin/_copilot/_claude load in new windows)');
+          } else {
+            warn('Could not register PowerShell autoload module — run manually: Import-Module MyelinAutoload');
+          }
         }
       }
     } else {
