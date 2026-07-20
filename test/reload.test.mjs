@@ -88,10 +88,11 @@ test('Terminal.app: skips tabs with node in process list (AI session guard)', as
   assert.match(termScript, /not hasNode/, 'Terminal.app script must skip tabs with node running');
 });
 
-test('iTerm2: skips session matching TERM_SESSION_ID (installer terminal guard)', async () => {
+test('iTerm2: skips session matching TERM_SESSION_ID — strips wNtNpN: prefix to match unique id', async () => {
   const scripts = [];
   const origEnv = process.env.TERM_SESSION_ID;
-  process.env.TERM_SESSION_ID = 'test-session-abc123';
+  // Real format: "w0t0p0:<guid>" — unique id of s in AppleScript is just the guid
+  process.env.TERM_SESSION_ID = 'w0t0p0:AABBCCDD-1122-3344-5566-778899AABBCC';
   try {
     await runReload({
       silent: true,
@@ -106,6 +107,22 @@ test('iTerm2: skips session matching TERM_SESSION_ID (installer terminal guard)'
     else process.env.TERM_SESSION_ID = origEnv;
   }
   const iterm2Script = scripts.find(s => s.includes('application "iTerm2"')) ?? '';
-  assert.match(iterm2Script, /test-session-abc123/, 'iTerm2 script must embed the current session ID');
+  // Must embed only the GUID (no "w0t0p0:" prefix) so it can match unique id of s
+  assert.match(iterm2Script, /AABBCCDD-1122-3344-5566-778899AABBCC/, 'iTerm2 script must embed the GUID portion');
+  assert.doesNotMatch(iterm2Script, /w0t0p0:/, 'iTerm2 script must NOT embed the wNtNpN: prefix');
   assert.match(iterm2Script, /unique id of s is equal to/, 'iTerm2 script must compare session unique id');
+});
+
+test('iTerm2: skips sessions with node as foreground job (AI agent heuristic)', async () => {
+  const scripts = [];
+  await runReload({
+    silent: true,
+    os: 'darwin',
+    shell: '/bin/zsh',
+    home: '/tmp/reload-home',
+    execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+    writeFileSyncFn: () => {},
+  });
+  const iterm2Script = scripts.find(s => s.includes('application "iTerm2"')) ?? '';
+  assert.match(iterm2Script, /jobName contains "node"/, 'iTerm2 script must skip sessions with node foreground job');
 });

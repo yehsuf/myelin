@@ -73,8 +73,12 @@ function _reloadMacTerminals(sourceCmd, execSyncFn = execSync) {
 
   // The session ID of the terminal running `myelin install` — skip it so we
   // never send a source command into an active AI agent session (Copilot/Claude).
-  const currentSessionId = process.env.TERM_SESSION_ID ?? '';
-  const escapedSessionId = currentSessionId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // TERM_SESSION_ID format: "w0t0p0:XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+  // AppleScript `unique id of s` returns only the GUID (no "wNtNpN:" prefix).
+  // Strip the prefix so the equality check can actually match.
+  const rawSessionId = process.env.TERM_SESSION_ID ?? '';
+  const currentSessionGuid = rawSessionId.includes(':') ? rawSessionId.split(':').pop() : rawSessionId;
+  const escapedSessionGuid = currentSessionGuid.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 
   // Terminal.app — skip tabs that are busy OR contain node (AI agent heuristic).
   // Counting `processes of t` was fragile for idle tabs (login shells report
@@ -111,9 +115,9 @@ end if`;
   // "Access not allowed (-1723)" from a loop-bound reference — must use
   // `tell s ... end tell` form instead.
   try {
-    const skipClause = escapedSessionId
-      ? `if unique id of s is equal to "${escapedSessionId}" then\n            -- skip: this is the installer's own terminal session\n          else if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`
-      : `if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`;
+    const skipClause = escapedSessionGuid
+      ? `if unique id of s is equal to "${escapedSessionGuid}" then\n            -- skip: this is the installer's own terminal session\n          else if jobName contains "node" then\n            -- skip: node child indicates an active AI agent session\n            true\n          else if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`
+      : `if jobName contains "node" then\n            -- skip: node child indicates an active AI agent session\n            true\n          else if jobName contains "zsh" or jobName contains "bash" or jobName contains "fish" then\n            tell s to write text "${cmd}"\n          end if`;
     const script = `if application "iTerm2" is running then
 tell application "iTerm2"
   repeat with w in windows
