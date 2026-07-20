@@ -121,7 +121,7 @@ export function migrateLegacyCompressionConfig(rawConfig = {}) {
     backend,
     port,
     copilot_proxy: {
-      enabled: copilotProxy.enabled === true,
+      enabled: copilotProxy.enabled !== false,
       port: asPort(copilotProxy.port, 8788),
     },
     original: legacyOriginalSettings(original),
@@ -145,7 +145,7 @@ export function resolveCompressionConfig(config = {}) {
     backend,
     port: asPort(compression.port),
     copilotProxy: {
-      enabled: compression.copilot_proxy?.enabled === true,
+      enabled: compression.copilot_proxy?.enabled !== false,
       port: asPort(compression.copilot_proxy?.port, 8788),
     },
     original: {

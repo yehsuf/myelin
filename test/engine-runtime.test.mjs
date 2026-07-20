@@ -543,18 +543,19 @@ describe('buildEngineInstancePlan — active-listener-only collision detection',
     );
   });
 
-  it('throws with explicit error when Copilot is enabled but MITM is disabled', () => {
-    // Copilot headroom requires the MITM loopback egress route; no MITM means no route
-    assert.throws(
-      () => buildEngineInstancePlan({
-        proxy: {
-          engine: 'headroom',
-          headroom: { port: 8787 },
-          copilot_headroom: { enabled: true, port: 8788 },
-          mitm: { enabled: false, port: 8888, egress_port: 8889 },
-        },
-      }),
-      /mitm|egress|loopback|route/i,
-    );
+  it('silently disables Copilot when MITM is off (no throw — MITM gate handles it)', () => {
+    // With copilot_headroom.enabled:true default, MITM-disabled installs must not throw.
+    // resolveMitmCompression gates copilot on mitmEnabled, so buildEngineInstancePlan
+    // sees copilotEnabled=false and returns a single primary instance.
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom',
+        headroom: { port: 8787 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { enabled: false, port: 8888, egress_port: 8889 },
+      },
+    });
+    assert.equal(plan.instances.length, 1);
+    assert.equal(plan.instances[0].role, 'primary');
   });
 });

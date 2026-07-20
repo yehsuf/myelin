@@ -151,7 +151,14 @@ export async function buildVerifyResults({
   const cfg = config ?? await loadConfigImpl();
   const mitmPort = cfg.proxy?.mitm?.port ?? 8888;
   const winManager = cfg.proxy?.windows_service?.manager ?? 'registry';
-  const plannedEngineInstances = buildEngineInstancePlan(cfg).instances;
+
+  let plannedEngineInstances;
+  try {
+    plannedEngineInstances = buildEngineInstancePlan(cfg).instances;
+  } catch (err) {
+    return [{ name: 'Engine plan', ok: false, detail: `config error: ${err.message}` }];
+  }
+
   const engineInstances = plannedEngineInstances
     .filter((instance) => instance.role !== 'copilot' || includeCopilotHeadroomCheck);
   const results = [];

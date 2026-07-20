@@ -410,6 +410,32 @@ describe('buildVerifyResults engine selection', () => {
     assert.equal(copilotRow.ok, false);
     assert.match(copilotRow.detail, /disabled/);
   });
+
+  it('returns engine plan error row instead of throwing on port collision', async () => {
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { enabled: true, port: 8788 }, // same as copilot default → collision
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: true, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      engineInstanceStatusImpl: async () => ({ running: true }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
+      mitmServiceStatusImpl: async () => ({ running: true }),
+      detectToolImpl: async () => null,
+      detectRtkImpl: async () => null,
+      includeToolChecks: false,
+      includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
+    });
+    const planRow = results.find(r => r.name === 'Engine plan');
+    assert.ok(planRow, 'should have engine plan error row');
+    assert.equal(planRow.ok, false);
+    assert.match(planRow.detail, /collision/i);
+  });
 });
 
 describe('checkManagedRuntime', () => {

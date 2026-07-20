@@ -91,3 +91,24 @@ test('copilot_headroom redirect active when enabled and compression on', () => {
   });
   assert.equal(r.copilotHeadroomPort, 8799);
 });
+
+test('copilot_headroom redirect suppressed when MITM is disabled', () => {
+  const r = resolveMitmCompression({
+    proxy: {
+      headroom: { enabled: true, backend: 'kompress-base' },
+      copilot_headroom: { enabled: true, port: 8788 },
+      mitm: { enabled: false },
+    },
+  });
+  assert.equal(r.copilotHeadroomPort, undefined);
+});
+
+test('copilot_headroom enabled when MITM is enabled (default)', () => {
+  const r = resolveMitmCompression({
+    proxy: {
+      headroom_lite: { enabled: true, port: 8787 },
+      copilot_headroom: { enabled: true, port: 8788 },
+    },
+  });
+  assert.equal(r.copilotHeadroomPort, 8788);
+});
