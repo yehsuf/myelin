@@ -178,7 +178,7 @@ describe('buildCompressionRuntimes', () => {
 
   it('disables the optional Copilot runtime when the shared backend is enabled but copilot proxy is off', () => {
     const plans = buildCompressionRuntimes(
-      { compression: { backend: 'headroom-lite', port: 8787 } },
+      { compression: { backend: 'headroom-lite', port: 8787, copilot_proxy: { enabled: false } } },
       { headroomLiteBin: '/lite', headroomOriginalBin: '/original' },
     );
 
@@ -289,7 +289,7 @@ describe('buildCompressionRuntimes', () => {
 
   it('does not conflict-check egress when Copilot proxy is disabled', () => {
     const plans = buildCompressionRuntimes(
-      { compression: { backend: 'headroom-lite', port: 8889 } },
+      { compression: { backend: 'headroom-lite', port: 8889, copilot_proxy: { enabled: false } } },
       {
         headroomLiteBin: '/tools/headroom-lite',
         headroomOriginalBin: '/tools/headroom',
