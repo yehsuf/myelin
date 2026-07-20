@@ -594,7 +594,7 @@ Start-Sleep -Seconds 1
 & ${psQuote(serviceExePath)} install ${psQuote(configPath)} | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE). Registering a Windows service may require an elevated (Administrator) shell." }
 & ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start — check the WinSW logs, and ensure the shell is elevated." }
+if ($LASTEXITCODE -ne 0) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start. Check the WinSW logs and ensure the shell is elevated." }
 ${cleanupRunKey}
 `;
 }
