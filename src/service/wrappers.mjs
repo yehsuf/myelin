@@ -146,8 +146,6 @@ ${restoreLines}
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
 # Falls back to plain copilot with a warning if mitmproxy is offline.
 function _copilot() {
-  # Ensure NVM-managed copilot binary is in PATH (lazy-load may not have run yet)
-  command -v copilot >/dev/null 2>&1 || { type _nvm_load >/dev/null 2>&1 && _nvm_load; }
   # osc52d: start clipboard daemon so compact-prepare can reach the real tty
   # via OSC 52 even from within the captured AI subprocess context.
   local _osc52_pid="" _osc52_sock="/tmp/osc52d-$(id -u).sock"
