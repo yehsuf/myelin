@@ -72,3 +72,57 @@ test('non-darwin reload writes the marker and does not invoke osascript', async 
   assert.equal(calls.filter(c => c.includes('osascript')).length, 0);
   assert.ok(writes.some(w => String(w.p).endsWith('.myelin-reload')));
 });
+
+test('Terminal.app: skips tabs with node in process list (AI session guard)', async () => {
+  const scripts = [];
+  await runReload({
+    silent: true,
+    os: 'darwin',
+    shell: '/bin/zsh',
+    home: '/tmp/reload-home',
+    execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+    writeFileSyncFn: () => {},
+  });
+  const termScript = scripts.find(s => s.includes('application "Terminal"')) ?? '';
+  assert.match(termScript, /hasNode/, 'Terminal.app script must check for node process');
+  assert.match(termScript, /not hasNode/, 'Terminal.app script must skip tabs with node running');
+});
+
+test('iTerm2: skips session matching TERM_SESSION_ID — strips wNtNpN: prefix to match unique id', async () => {
+  const scripts = [];
+  const origEnv = process.env.TERM_SESSION_ID;
+  // Real format: "w0t0p0:<guid>" — unique id of s in AppleScript is just the guid
+  process.env.TERM_SESSION_ID = 'w0t0p0:AABBCCDD-1122-3344-5566-778899AABBCC';
+  try {
+    await runReload({
+      silent: true,
+      os: 'darwin',
+      shell: '/bin/zsh',
+      home: '/tmp/reload-home',
+      execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+      writeFileSyncFn: () => {},
+    });
+  } finally {
+    if (origEnv === undefined) delete process.env.TERM_SESSION_ID;
+    else process.env.TERM_SESSION_ID = origEnv;
+  }
+  const iterm2Script = scripts.find(s => s.includes('application "iTerm2"')) ?? '';
+  // Must embed only the GUID (no "w0t0p0:" prefix) so it can match unique id of s
+  assert.match(iterm2Script, /AABBCCDD-1122-3344-5566-778899AABBCC/, 'iTerm2 script must embed the GUID portion');
+  assert.doesNotMatch(iterm2Script, /w0t0p0:/, 'iTerm2 script must NOT embed the wNtNpN: prefix');
+  assert.match(iterm2Script, /unique id of s is equal to/, 'iTerm2 script must compare session unique id');
+});
+
+test('iTerm2: skips sessions with node as foreground job (AI agent heuristic)', async () => {
+  const scripts = [];
+  await runReload({
+    silent: true,
+    os: 'darwin',
+    shell: '/bin/zsh',
+    home: '/tmp/reload-home',
+    execSyncFn: (cmd) => { scripts.push(cmd); return ''; },
+    writeFileSyncFn: () => {},
+  });
+  const iterm2Script = scripts.find(s => s.includes('application "iTerm2"')) ?? '';
+  assert.match(iterm2Script, /jobName contains "node"/, 'iTerm2 script must skip sessions with node foreground job');
+});
