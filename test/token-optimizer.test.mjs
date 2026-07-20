@@ -128,14 +128,25 @@ describe('tokenOptimizerCopilotInstallSteps', () => {
     assert.deepEqual(plan.manualInstructions, []);
   });
 
-  it('updates an existing win32 checkout instead of cloning again', () => {
-    const cloneDir = 'C:\\Users\\alice\\.myelin\\token-optimizer';
+  it('omits the copilot-doctor command when skipDoctor is true', () => {
+    const plan = tokenOptimizerCopilotInstallSteps({ os: 'darwin', cloneDir, skipDoctor: true });
+    assert.ok(!plan.commands.some(c => c.includes('copilot-doctor')), 'copilot-doctor must be absent');
+    assert.equal(plan.commands.length, 1, 'only install command should remain');
+    assert.ok(plan.commands[0].includes('install'), 'install command must be present');
+  });
+
+  it('includes the copilot-doctor command by default (skipDoctor=false)', () => {
+    const plan = tokenOptimizerCopilotInstallSteps({ os: 'darwin', cloneDir, skipDoctor: false });
+    assert.ok(plan.commands.some(c => c.includes('copilot-doctor')), 'copilot-doctor must be present');
+  });
+
+  it('omits copilot-doctor on Windows when skipDoctor=true', () => {
     const plan = tokenOptimizerCopilotInstallSteps({
-      os: 'win32',
-      cloneDir,
-      existsSync: path => path === `${cloneDir}/.git`,
+      os: 'win32', cloneDir: 'C:\\Users\\t\\.myelin\\token-optimizer',
+      existsSync: () => false, skipDoctor: true,
     });
-    assert.deepEqual(plan.checkout, { file: 'git', args: ['-C', cloneDir, 'pull', '--ff-only'] });
+    assert.ok(!plan.commands.some(c => c.includes('copilot-doctor')), 'copilot-doctor must be absent on Windows too');
+    assert.equal(plan.commands.length, 1);
   });
 });
 

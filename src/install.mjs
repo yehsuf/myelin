@@ -3013,6 +3013,11 @@ async function main() {
       execFile: (file, args, options = {}) => execFileSync(file, args, { stdio: 'inherit', ...options }),
       log: (message = '') => console.log(`  ${message}`),
       warn,
+      // Skip the copilot-doctor health check in non-interactive mode (--yes or
+      // no TTY). It runs a full CLI session scan that can take 60-120s on slow
+      // machines and blocks the entire install. Users can run it manually with:
+      //   TOKEN_OPTIMIZER_RUNTIME=copilot python3 ~/.myelin/token-optimizer/skills/token-optimizer/scripts/measure.py copilot-doctor
+      skipDoctor: flags['yes'] || !process.stdin.isTTY,
     });
     // The external installer writes an unguarded python-bridge preToolUse hook;
     // make it fail-open so a bridge/python failure can't fail-CLOSE bash tool
