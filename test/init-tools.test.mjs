@@ -30,6 +30,7 @@ describe('noProxyEnv managed PATH precedence', () => {
     const initSource = readFileSync(fileURLToPath(new URL('../src/cli/init.mjs', import.meta.url)), 'utf8');
 
     assert.ok(initSource.includes("join(componentsRoot, name, 'current', scriptsDir)"), 'should compute managed bin dir per component');
-    assert.ok(initSource.includes("env.PATH = binDir + sep + (env.PATH"), 'should prepend managed bin dir to PATH');
+    assert.ok(initSource.includes('.split(sep).includes(binDir)'), 'should use exact-entry PATH dedup guard');
+    assert.ok(initSource.includes('env.PATH ? binDir + sep + env.PATH : binDir'), 'should not append trailing separator when PATH is empty');
   });
 });

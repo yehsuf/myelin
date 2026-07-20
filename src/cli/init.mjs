@@ -111,8 +111,8 @@ function noProxyEnv() {
   const componentsRoot = join(managed.root, 'components');
   for (const name of ['semble', 'agentcairn']) {
     const binDir = join(componentsRoot, name, 'current', scriptsDir);
-    if (existsSync(binDir) && !(env.PATH ?? '').includes(binDir)) {
-      env.PATH = binDir + sep + (env.PATH ?? '');
+    if (existsSync(binDir) && !(env.PATH ?? '').split(sep).includes(binDir)) {
+      env.PATH = env.PATH ? binDir + sep + env.PATH : binDir;
     }
   }
   return env;
