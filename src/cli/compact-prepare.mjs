@@ -648,6 +648,7 @@ export function renderHint(sections) {
  * @param {string} text
  */
 function copyToClipboard(text) {
+  if (process.env.MYELIN_NO_CLIPBOARD) return null;
   const candidates = detectClipboardCandidates();
   for (const { cmd, args } of candidates) {
     try {
