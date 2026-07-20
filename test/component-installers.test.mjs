@@ -175,16 +175,16 @@ describe('component install plans', () => {
       [
         'git', 'clone', '--no-checkout', '--',
         'https://github.com/alexgreensh/token-optimizer.git',
-        '/components/tokenOptimizer/c8f8609',
+        '/components/tokenOptimizer/4d75e64',
       ],
       [
-        'git', '-C', '/components/tokenOptimizer/c8f8609',
+        'git', '-C', '/components/tokenOptimizer/4d75e64',
         'fetch', '--depth', '1', 'origin',
-        'c8f860993fd813575fc7ba6a8e73fcee16ca0493',
+        '4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b',
       ],
       [
-        'git', '-C', '/components/tokenOptimizer/c8f8609',
-        'checkout', '--detach', 'c8f860993fd813575fc7ba6a8e73fcee16ca0493',
+        'git', '-C', '/components/tokenOptimizer/4d75e64',
+        'checkout', '--detach', '4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b',
       ],
     ]);
   });
@@ -581,15 +581,15 @@ describe('staging and managed detection', () => {
     });
 
     assert.deepEqual(trace[0], ['mkdirSync', '/components/tokenOptimizer', { recursive: true }]);
-    assert.deepEqual(trace[1], ['lstatSync', '/components/tokenOptimizer/c8f8609']);
+    assert.deepEqual(trace[1], ['lstatSync', '/components/tokenOptimizer/4d75e64']);
     assert.deepEqual(trace[2], [
       'exec',
       'git',
-      ['clone', '--no-checkout', '--', 'https://github.com/alexgreensh/token-optimizer.git', '/components/tokenOptimizer/c8f8609'],
+      ['clone', '--no-checkout', '--', 'https://github.com/alexgreensh/token-optimizer.git', '/components/tokenOptimizer/4d75e64'],
       { stdio: 'inherit' },
     ]);
     assert.equal(
-      fs.calls.some(([method, path]) => method === 'mkdirSync' && path === '/components/tokenOptimizer/c8f8609'),
+      fs.calls.some(([method, path]) => method === 'mkdirSync' && path === '/components/tokenOptimizer/4d75e64'),
       false,
     );
   });
@@ -620,15 +620,15 @@ describe('staging and managed detection', () => {
     });
 
     assert.deepEqual(trace[0], ['mkdirSync', 'C:\\components\\tokenOptimizer', { recursive: true }]);
-    assert.deepEqual(trace[1], ['lstatSync', 'C:\\components\\tokenOptimizer\\c8f8609']);
+    assert.deepEqual(trace[1], ['lstatSync', 'C:\\components\\tokenOptimizer\\4d75e64']);
     assert.deepEqual(trace[2], [
       'exec',
       'git',
-      ['clone', '--no-checkout', '--', 'https://github.com/alexgreensh/token-optimizer.git', 'C:\\components\\tokenOptimizer\\c8f8609'],
+      ['clone', '--no-checkout', '--', 'https://github.com/alexgreensh/token-optimizer.git', 'C:\\components\\tokenOptimizer\\4d75e64'],
       { stdio: 'inherit' },
     ]);
     assert.equal(
-      fs.calls.some(([method, path]) => method === 'mkdirSync' && path === 'C:\\components\\tokenOptimizer\\c8f8609'),
+      fs.calls.some(([method, path]) => method === 'mkdirSync' && path === 'C:\\components\\tokenOptimizer\\4d75e64'),
       false,
     );
   });
@@ -722,8 +722,8 @@ describe('staging and managed detection', () => {
   it('fails closed before any staged command when the immutable version destination already exists', () => {
     const trace = [];
     const fs = makeFakeFs({
-      '/components/tokenOptimizer/c8f8609': makeFakeStatus('directory'),
-      '/components/tokenOptimizer/c8f8609/.myelin-stage-complete': makeFakeStatus('file'),
+      '/components/tokenOptimizer/4d75e64': makeFakeStatus('directory'),
+      '/components/tokenOptimizer/4d75e64/.myelin-stage-complete': makeFakeStatus('file'),
     });
     const originalMkdirSync = fs.mkdirSync;
     fs.mkdirSync = (...args) => {
@@ -751,8 +751,8 @@ describe('staging and managed detection', () => {
     );
     assert.deepEqual(trace, [
       ['mkdirSync', '/components/tokenOptimizer', { recursive: true }],
-      ['lstatSync', '/components/tokenOptimizer/c8f8609'],
-      ['lstatSync', '/components/tokenOptimizer/c8f8609/.myelin-stage-complete'],
+      ['lstatSync', '/components/tokenOptimizer/4d75e64'],
+      ['lstatSync', '/components/tokenOptimizer/4d75e64/.myelin-stage-complete'],
     ]);
   });
 
