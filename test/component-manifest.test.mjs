@@ -105,8 +105,8 @@ describe('component manifest', () => {
       tokenOptimizer: {
         kind: 'git-checkout',
         repository: 'https://github.com/alexgreensh/token-optimizer.git',
-        version: 'c8f8609',
-        ref: 'c8f860993fd813575fc7ba6a8e73fcee16ca0493',
+        version: '4d75e64',
+        ref: '4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b',
         optional: true,
       },
     });
@@ -182,7 +182,7 @@ describe('component manifest', () => {
 
   it('rejects nonsha refs for git checkouts', () => {
     const manifest = cloneComponents();
-    manifest.tokenOptimizer.ref = 'c8f8609';
+    manifest.tokenOptimizer.ref = '4d75e64';
 
     assert.throws(
       () => validateComponentManifest(manifest),
