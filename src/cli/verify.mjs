@@ -171,6 +171,19 @@ export async function buildVerifyResults({
     }));
   }
 
+  // If copilot_proxy is explicitly disabled, add an honest row instead of
+  // silently omitting it (verify should never show all-green while Copilot
+  // traffic falls back to sidecar-only compression).
+  const copilotDisabled = !(cfg.proxy?.copilot_headroom?.enabled ?? true);
+  const copilotInPlan = plannedEngineInstances.some(i => i.role === 'copilot');
+  if (copilotDisabled && !copilotInPlan) {
+    results.push({
+      name: 'Copilot proxy',
+      ok: false,
+      detail: 'disabled — Copilot uses sidecar compress only (enable: myelin config set proxy.copilot_headroom.enabled true && myelin install)',
+    });
+  }
+
   if (includeMitmCheck && cfg.proxy?.mitm?.enabled) {
     const mitmSvc = await mitmServiceStatusImpl({ manager: winManager });
     const mitmdump = await whichImpl('mitmdump');

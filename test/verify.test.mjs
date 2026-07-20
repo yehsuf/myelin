@@ -42,6 +42,7 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(results.map(({ name }) => name), [
       'Headroom service',
       'Headroom health',
+      'Copilot proxy',
     ]);
   });
 
@@ -78,6 +79,7 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(results.map(({ name }) => name), [
       'Headroom Lite service',
       'Headroom Lite health',
+      'Copilot proxy',
     ]);
   });
 
@@ -381,6 +383,32 @@ describe('buildVerifyResults engine selection', () => {
     assert.deepEqual(statuses, ['headroom_lite-primary']);
     assert.deepEqual(probes, [8790]);
     assert.equal(results.some(({ name }) => /Copilot/i.test(name)), false);
+  });
+
+  it('shows explicit disabled row when copilot_proxy is off', async () => {
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { enabled: true, port: 8787 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      engineInstanceStatusImpl: async () => ({ running: true }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
+      mitmServiceStatusImpl: async () => ({ running: true }),
+      detectToolImpl: async () => null,
+      detectRtkImpl: async () => null,
+      includeToolChecks: false,
+      includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
+    });
+    const copilotRow = results.find(r => r.name === 'Copilot proxy');
+    assert.ok(copilotRow, 'should have a Copilot proxy row even when disabled');
+    assert.equal(copilotRow.ok, false);
+    assert.match(copilotRow.detail, /disabled/);
   });
 });
 
