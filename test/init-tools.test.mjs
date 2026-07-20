@@ -20,7 +20,17 @@ describe('init CA bundle path', () => {
   it('derives the CA bundle path from shared managed paths (honors MYELIN_DIR)', () => {
     const initSource = readFileSync(fileURLToPath(new URL('../src/cli/init.mjs', import.meta.url)), 'utf8');
 
-    assert.ok(initSource.includes('managedPaths({ home: homedir() }).caBundlePath'));
-    assert.ok(!initSource.includes("join(homedir(), '.myelin', 'ca-bundle.pem')"));
+    assert.ok(initSource.includes('managed.caBundlePath'), 'should use managed.caBundlePath');
+    assert.ok(!initSource.includes("join(homedir(), '.myelin', 'ca-bundle.pem')"), 'should not hardcode path');
+  });
+});
+
+describe('noProxyEnv managed PATH precedence', () => {
+  it('prepends managed component bin dirs so Python 3.12 venvs win over system uv-tool installs', () => {
+    const initSource = readFileSync(fileURLToPath(new URL('../src/cli/init.mjs', import.meta.url)), 'utf8');
+
+    assert.ok(initSource.includes("join(componentsRoot, name, 'current', scriptsDir)"), 'should compute managed bin dir per component');
+    assert.ok(initSource.includes('.split(sep).includes(binDir)'), 'should use exact-entry PATH dedup guard');
+    assert.ok(initSource.includes('env.PATH ? binDir + sep + env.PATH : binDir'), 'should not append trailing separator when PATH is empty');
   });
 });

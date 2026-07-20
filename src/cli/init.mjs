@@ -86,15 +86,33 @@ ${tools.map(t => `  ${t}: true`).join('\n')}
  *  outbound HTTPS — a shell that never sourced ~/.zshrc (e.g. a spawned
  *  non-interactive process) won't have these vars set at all, and a stale
  *  leftover ~/.tokenstack path is just as broken as having none. Tool
- *  indexing runs bypass the proxy and always use a valid cert path. */
+ *  indexing runs bypass the proxy and always use a valid cert path.
+ *
+ *  Also prepends managed component bin dirs to PATH so myelin-managed Python
+ *  3.12 venvs take precedence over any system-installed uv-tool versions
+ *  (e.g. a legacy `uv tool install semble` may have placed a Python 3.14 shim
+ *  in ~/.local/bin which fails on stricter SSL CA cert validation added in
+ *  Python 3.13+). */
 function noProxyEnv() {
   const env = { ...process.env };
   delete env.HTTPS_PROXY; delete env.https_proxy;
   delete env.HTTP_PROXY;  delete env.http_proxy;
-  const validCaBundle = managedPaths({ home: homedir() }).caBundlePath;
+  const managed = managedPaths({ home: homedir() });
+  const validCaBundle = managed.caBundlePath;
   if (existsSync(validCaBundle)) {
     for (const v of ['SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS', 'CURL_CA_BUNDLE', 'GIT_SSL_CAINFO', 'HEADROOM_CA_BUNDLE']) {
       env[v] = validCaBundle; // always set — never rely on the parent shell having it right
+    }
+  }
+  // Prepend managed component venv bin dirs so the managed Python 3.12 binaries
+  // win over any system-level tool installs (Python 3.13+ has stricter SSL checks).
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const scriptsDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+  const componentsRoot = join(managed.root, 'components');
+  for (const name of ['semble', 'agentcairn']) {
+    const binDir = join(componentsRoot, name, 'current', scriptsDir);
+    if (existsSync(binDir) && !(env.PATH ?? '').split(sep).includes(binDir)) {
+      env.PATH = env.PATH ? binDir + sep + env.PATH : binDir;
     }
   }
   return env;
