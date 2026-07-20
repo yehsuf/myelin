@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { join, posix } from 'node:path';
-import { buildCombinedCaCert, base64ToPem } from '../src/detect/combined-ca.mjs';
+import { buildCombinedCaCert, base64ToPem, certHasKeyCertSign, filterBundleForKeyUsage } from '../src/detect/combined-ca.mjs';
 
 const HOME = '/home/testuser';
 const COMBINED_PATH = join(HOME, '.myelin', 'ca-bundle.pem');
@@ -345,5 +345,146 @@ describe('buildCombinedCaCert — combined path invariant', () => {
     });
     await buildCombinedCaCert(ROOT_CA_PATH, HOME, lin.mocks);
     assert.equal(lin.calls.writeFileSync[0].p, COMBINED_PATH);
+  });
+});
+
+// Helper PEM fixtures for testing certHasKeyCertSign and filterBundleForKeyUsage.
+// These encode minimal DER structures — not valid X.509 certs, just enough for the scanner.
+
+// DER: SEQUENCE { OID 2.5.29.15, BOOL critical=true, OCTET STRING { BIT STRING { 01 pad, 0x86=keyCertSign+cRLSign+digitalSig } } }
+// Structure: 30 0d 06 03 55 1d 0f 01 01 ff 04 04 03 02 01 86
+const PEM_WITH_KEY_CERT_SIGN = (() => {
+  const der = Buffer.from([0x30, 0x0d, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x01, 0x86]);
+  const b64 = der.toString('base64');
+  const lines = [];
+  for (let i = 0; i < b64.length; i += 64) lines.push(b64.slice(i, i + 64));
+  return '-----BEGIN CERTIFICATE-----\n' + lines.join('\n') + '\n-----END CERTIFICATE-----';
+})();
+
+// DER: keyUsage present (OID found) but keyCertSign bit NOT set (bits = 0xa0 = digitalSignature + keyEncipherment)
+// Structure: 30 0d 06 03 55 1d 0f 01 01 ff 04 04 03 02 01 a0
+const PEM_WITH_KEY_USAGE_NO_CERT_SIGN = (() => {
+  const der = Buffer.from([0x30, 0x0d, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x01, 0x01, 0xff, 0x04, 0x04, 0x03, 0x02, 0x01, 0xa0]);
+  const b64 = der.toString('base64');
+  return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
+})();
+
+// DER: no keyUsage extension at all (only basicConstraints OID 55 1d 13)
+const PEM_WITHOUT_KEY_USAGE = (() => {
+  const der = Buffer.from([0x30, 0x06, 0x06, 0x03, 0x55, 0x1d, 0x13]);
+  const b64 = der.toString('base64');
+  return '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
+})();
+
+// Keep backward-compatible alias
+const PEM_WITH_KEY_USAGE = PEM_WITH_KEY_CERT_SIGN;
+
+describe('certHasKeyCertSign', () => {
+  it('returns true when keyUsage extension has keyCertSign bit set (critical, 0x86)', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITH_KEY_CERT_SIGN), true);
+  });
+
+  it('returns false when keyUsage extension is present but keyCertSign bit is NOT set (0xa0 = digitalSig + keyEncipher)', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITH_KEY_USAGE_NO_CERT_SIGN), false);
+  });
+
+  it('returns false when keyUsage OID is absent entirely', () => {
+    assert.equal(certHasKeyCertSign(PEM_WITHOUT_KEY_USAGE), false);
+  });
+
+  it('returns false for empty string', () => {
+    assert.equal(certHasKeyCertSign(''), false);
+  });
+
+  it('returns false for a non-PEM string', () => {
+    assert.equal(certHasKeyCertSign('not a cert'), false);
+  });
+
+  it('handles non-critical keyUsage extension (no BOOLEAN 01 01 ff)', () => {
+    // Non-critical: 30 0b 06 03 55 1d 0f 04 04 03 02 01 86 (no critical BOOLEAN)
+    const der = Buffer.from([0x30, 0x0b, 0x06, 0x03, 0x55, 0x1d, 0x0f, 0x04, 0x04, 0x03, 0x02, 0x01, 0x86]);
+    const b64 = der.toString('base64');
+    const pem = '-----BEGIN CERTIFICATE-----\n' + b64 + '\n-----END CERTIFICATE-----';
+    assert.equal(certHasKeyCertSign(pem), true);
+  });
+});
+
+describe('filterBundleForKeyUsage', () => {
+  it('keeps certs with keyUsage.keyCertSign set', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITHOUT_KEY_USAGE;
+    const filtered = filterBundleForKeyUsage(bundle);
+    assert.ok(filtered.includes('BEGIN CERTIFICATE'));
+    assert.ok(filtered.length < bundle.length, 'bundle should be shorter after removing no-keyCertSign cert');
+  });
+
+  it('removes certs where keyUsage is absent', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITHOUT_KEY_USAGE;
+    const filtered = filterBundleForKeyUsage(bundle);
+    const count = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+    assert.equal(count, 1, 'only one cert should remain');
+  });
+
+  it('also removes certs where keyUsage is present but keyCertSign bit is NOT set', () => {
+    const bundle = PEM_WITH_KEY_CERT_SIGN + '\n' + PEM_WITH_KEY_USAGE_NO_CERT_SIGN;
+    const filtered = filterBundleForKeyUsage(bundle);
+    const count = (filtered.match(/-----BEGIN CERTIFICATE-----/g) ?? []).length;
+    assert.equal(count, 1, 'cert without keyCertSign should be removed even if keyUsage OID present');
+  });
+
+  it('returns original content unchanged when no certs have keyCertSign (fail-open)', () => {
+    const bundle = PEM_WITHOUT_KEY_USAGE + '\n' + PEM_WITH_KEY_USAGE_NO_CERT_SIGN;
+    const filtered = filterBundleForKeyUsage(bundle);
+    assert.equal(filtered, bundle, 'fail-open: never produce an empty bundle');
+  });
+
+  it('returns original content for empty input (fail-open)', () => {
+    assert.equal(filterBundleForKeyUsage(''), '');
+  });
+});
+
+describe('buildCombinedCaCert — keyUsage filter on Windows empty PS output', () => {
+  it('when PS returns empty AND no existing ca-bundle → returns rootCaPath, no write', async () => {
+    const { calls, mocks } = makeMocks({
+      detectOSImpl: () => 'windows',
+      execSyncImpl: () => Buffer.from(''),
+      // readFileSyncImpl default returns '' → existing bundle is empty
+    });
+    const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+    assert.equal(result, ROOT_CA_PATH);
+    assert.equal(calls.writeFileSync.length, 0);
+  });
+
+  it('when PS returns empty AND existing bundle has certs lacking keyUsage → rewrites filtered, returns combinedPath', async () => {
+    const { calls, mocks } = makeMocks({
+      detectOSImpl: () => 'windows',
+      execSyncImpl: () => Buffer.from(''),
+      readFileSyncImpl: (p) => {
+        // Simulate: combinedPath has a mix of good and bad certs
+        if (p === COMBINED_PATH) return PEM_WITH_KEY_USAGE + '\n' + PEM_WITHOUT_KEY_USAGE;
+        return ''; // rootCaPath
+      },
+    });
+    const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+    assert.equal(result, COMBINED_PATH);
+    assert.equal(calls.writeFileSync.length, 1, 'should have rewritten the filtered bundle');
+    const written = calls.writeFileSync[0].content;
+    assert.ok(written.includes('BEGIN CERTIFICATE'), 'written bundle must have certs');
+    // The cert without keyUsage must be absent
+    const withoutB64 = PEM_WITHOUT_KEY_USAGE.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+    assert.ok(!written.includes(withoutB64.slice(0, 10)), 'cert lacking keyUsage should be removed');
+  });
+
+  it('when PS returns empty AND existing bundle is already clean → returns combinedPath, no write', async () => {
+    const { calls, mocks } = makeMocks({
+      detectOSImpl: () => 'windows',
+      execSyncImpl: () => Buffer.from(''),
+      readFileSyncImpl: (p) => {
+        if (p === COMBINED_PATH) return PEM_WITH_KEY_USAGE; // already fully clean
+        return '';
+      },
+    });
+    const result = await buildCombinedCaCert(ROOT_CA_PATH, HOME, mocks);
+    assert.equal(result, COMBINED_PATH);
+    assert.equal(calls.writeFileSync.length, 0, 'already clean → no write');
   });
 });
