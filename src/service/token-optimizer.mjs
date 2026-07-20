@@ -116,6 +116,7 @@ export function tokenOptimizerCopilotInstallSteps({
   env = process.env,
   cloneDir = defaultCloneDir({ os, env }),
   existsSync: existsSyncImpl = nodeExistsSync,
+  skipDoctor = false,
 } = {}) {
   // `checkout` is an argv plan (git file+args) run via execFileSync — the managed
   // cloneDir never touches a shell. `commands` are fixed literals (no managed
@@ -123,7 +124,10 @@ export function tokenOptimizerCopilotInstallSteps({
   const checkout = checkoutPlan({ cloneDir, existsSync: existsSyncImpl });
   const commands = [
     tokenOptimizerCopilotInstallCommand(os),
-    tokenOptimizerCopilotDoctorCommand(os),
+    // copilot-doctor runs a full CLI health check that can take 60-120s on slow
+    // machines (reads all session data, probes capabilities, etc.). In non-interactive
+    // installs it is skipped — users can run it manually after install if needed.
+    ...(!skipDoctor ? [tokenOptimizerCopilotDoctorCommand(os)] : []),
   ];
   return { automatable: true, cloneDir, checkout, commands, manualInstructions: [] };
 }
@@ -137,6 +141,7 @@ export function installTokenOptimizerForCopilot({
   existsSync: existsSyncImpl = nodeExistsSync,
   log = console.log,
   warn = console.warn,
+  skipDoctor = false,
 } = {}) {
   warn(tokenOptimizerLicenseNotice());
 
@@ -155,7 +160,7 @@ export function installTokenOptimizerForCopilot({
     }
   }
 
-  const plan = tokenOptimizerCopilotInstallSteps({ os, env, cloneDir, existsSync: existsSyncImpl });
+  const plan = tokenOptimizerCopilotInstallSteps({ os, env, cloneDir, existsSync: existsSyncImpl, skipDoctor });
   if (!plan.automatable) {
     plan.manualInstructions.forEach(line => log(line));
     return { attempted: false, succeeded: false, manual: true, cloneDir };
@@ -173,6 +178,14 @@ export function installTokenOptimizerForCopilot({
       exec(command, { stdio: 'inherit', cwd: cloneDir });
     }
     log('✓ token-optimizer Copilot install complete');
+    if (skipDoctor) {
+      // Use the same OS-aware doctor command as the automated path, just with an
+      // explicit cd prefix so users can run it from any directory.
+      const cdPrefix = isWindowsOs(os)
+        ? `cd "${cloneDir}" && `
+        : `cd '${cloneDir}' && `;
+      log(`  To verify readiness, run: ${cdPrefix}${tokenOptimizerCopilotDoctorCommand(os)}`);
+    }
     return { attempted: true, succeeded: true, manual: false, cloneDir };
   } catch (error) {
     warn(`token-optimizer install failed — ${error.message.split('\n')[0]}`);
