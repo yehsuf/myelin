@@ -428,7 +428,7 @@ describe('clipboard mode', () => {
     const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
     writeFileSync(hintFile, 'SESSION SUMMARY: test\nNEXT: do stuff');
     const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
-      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid, MYELIN_NO_CLIPBOARD: '1' },
       cwd: gitRoot, encoding: 'utf8',
     });
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
@@ -442,7 +442,7 @@ describe('clipboard mode', () => {
     const body = 'SUMMARY: x\nNEXT: y';
     writeFileSync(hintFile, body);
     const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
-      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid, MYELIN_NO_CLIPBOARD: '1' },
       cwd: gitRoot, encoding: 'utf8',
     });
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
@@ -486,7 +486,7 @@ describe('clipboard mode', () => {
     const hintFile = path.join(sessionDir, 'files', 'compact-hint.txt');
     writeFileSync(hintFile, 'B'.repeat(4000));
     const r = spawnSync(process.execPath, [SCRIPT, 'clipboard', hintFile], {
-      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid },
+      env: { ...process.env, HOME: home, COPILOT_AGENT_SESSION_ID: sid, MYELIN_NO_CLIPBOARD: '1' },
       cwd: gitRoot, encoding: 'utf8',
     });
     assert.equal(r.status, 0, `stderr: ${r.stderr}`);
