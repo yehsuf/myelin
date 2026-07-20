@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -937,6 +937,49 @@ async function detectHeadroomFork() {
     if (existsSync(p)) return { path: p, source: 'local-dev' };
   }
   return null;
+}
+
+const MANAGED_BLOCK_RE = /\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/;
+const MAX_PROFILE_BACKUPS = 3;
+
+/**
+ * Write an updated shell profile with two safety guarantees:
+ * 1. All content outside the managed block is preserved (defensive check).
+ * 2. A rotating backup is kept in ~/.myelin/backups/ (max MAX_PROFILE_BACKUPS).
+ *    Old backups beyond the limit are deleted automatically.
+ * Throws if the updated content would silently drop user content.
+ */
+function safeWriteProfile(profilePath, existing, updated, home) {
+  // Defensive check: non-managed content must be identical in both versions.
+  const strip = s => s.replace(MANAGED_BLOCK_RE, '');
+  const existingOutside = strip(existing);
+  const updatedOutside  = strip(updated);
+  if (existingOutside !== updatedOutside) {
+    throw new Error(
+      `myelin install: profile write would remove user content from ${profilePath}.\n` +
+      `Aborting to protect your shell config. Please report this as a bug.`
+    );
+  }
+
+  // Rotating backup — keep last MAX_PROFILE_BACKUPS, delete older ones.
+  if (existing) {
+    const backupDir = join(home, '.myelin', 'backups');
+    mkdirSync(backupDir, { recursive: true });
+    const profileBase = profilePath.replace(/.*[/\\]/, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const prefix = `${profileBase}.`;
+    const existing_backups = readdirSync(backupDir)
+      .filter(f => f.startsWith(prefix) && f.endsWith('.bak'))
+      .map(f => join(backupDir, f))
+      .sort(); // lexicographic = chronological (timestamp in name)
+    // Delete oldest so we stay within the limit after adding the new one.
+    while (existing_backups.length >= MAX_PROFILE_BACKUPS) {
+      try { unlinkSync(existing_backups.shift()); } catch { /* best-effort */ }
+    }
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    writeFileSync(join(backupDir, `${prefix}${ts}.bak`), existing, 'utf8');
+  }
+
+  writeFileSync(profilePath, updated, 'utf8');
 }
 
 function shellProfilePath(os, shell) {
@@ -3584,10 +3627,15 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
       block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = existing.includes('myelin managed')
-      ? existing.replace(/\n?# >>> myelin managed >>>[\s\S]*?# <<< myelin managed <<<\n?/, block)
+      ? existing.replace(MANAGED_BLOCK_RE, block)
       : existing + block;
     if (updated !== existing) {
-      writeFileSync(profilePath, updated, 'utf8');
+      try {
+        safeWriteProfile(profilePath, existing, updated, home);
+      } catch (e) {
+        warn(String(e.message));
+        return;
+      }
       ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, _copilot + _claude wrappers)`);
       if (os === 'windows') {
         const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
