@@ -14,6 +14,7 @@ import {
   ensureManagedHeadroomService,
   ensureManagedVenv,
   installPipPackageInManagedVenv,
+  isNativeBuildToolchainError,
   mitmAddonPath,
   provisionManagedCompressionComponent,
   removeManagedHeadroomRegistration,
@@ -25,6 +26,30 @@ import {
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
 
+
+describe('isNativeBuildToolchainError', () => {
+  it('detects a missing MSVC linker from a maturin/cargo build failure', () => {
+    const output = [
+      'error: linker `link.exe` not found',
+      '  = note: program not found',
+      'note: the msvc targets depend on the msvc linker but `link.exe` was not found',
+      'note: please ensure that Visual Studio 2017 or later, or Build Tools for Visual Studio were installed with the Visual C++ option',
+      'maturin failed',
+      'Failed to build `litellm==1.93.0`',
+    ].join('\n');
+    assert.equal(isNativeBuildToolchainError(output), true);
+  });
+
+  it('returns false for an unrelated install failure', () => {
+    assert.equal(isNativeBuildToolchainError('error: No matching distribution found for litellm'), false);
+  });
+
+  it('is null/undefined-safe', () => {
+    assert.equal(isNativeBuildToolchainError(undefined), false);
+    assert.equal(isNativeBuildToolchainError(null), false);
+    assert.equal(isNativeBuildToolchainError(''), false);
+  });
+});
 
 describe('shouldInstallPythonHeadroomPackage', () => {
   it('skips headroom-ai installation entirely when headroom-lite is the selected engine', () => {
@@ -102,6 +127,26 @@ describe('ensureManagedVenv / installPipPackageInManagedVenv (C: MYELIN_DIR venv
       execFileSyncImpl: (file, args) => { calls.push({ file, args }); },
     });
     assert.deepEqual(calls[0].args, ['pip', 'install', '--python', HOSTILE_VENV, 'litellm[proxy]>=1.92']);
+  });
+
+  it('installPipPackageInManagedVenv forwards stdio + maxBuffer so captured build output can be classified', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'litellm[proxy]>=1.92', {
+      execFileSyncImpl: (file, args, opts) => { calls.push({ opts }); },
+      stdio: 'pipe',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    assert.equal(calls[0].opts.stdio, 'pipe');
+    assert.equal(calls[0].opts.maxBuffer, 16 * 1024 * 1024);
+  });
+
+  it('installPipPackageInManagedVenv omits maxBuffer when not requested', () => {
+    const calls = [];
+    installPipPackageInManagedVenv(HOSTILE_VENV, 'headroom-ai[all]', {
+      execFileSyncImpl: (file, args, opts) => { calls.push({ opts }); },
+    });
+    assert.equal(calls[0].opts.stdio, 'inherit');
+    assert.ok(!('maxBuffer' in calls[0].opts));
   });
 });
 

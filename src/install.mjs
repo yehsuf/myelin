@@ -129,8 +129,32 @@ export function ensureManagedVenv(venv, {
 export function installPipPackageInManagedVenv(venv, spec, {
   execFileSyncImpl = execFileSync,
   stdio = 'inherit',
+  maxBuffer,
 } = {}) {
-  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], { stdio });
+  const options = { stdio };
+  if (maxBuffer != null) options.maxBuffer = maxBuffer;
+  execFileSyncImpl('uv', ['pip', 'install', '--python', String(venv), String(spec)], options);
+}
+
+/**
+ * True when captured install output indicates the failure was a missing native
+ * build toolchain (a C/C++ compiler + linker), not a packaging error. LiteLLM's
+ * newer releases ship an sdist whose Rust `python-bridge` extension is compiled
+ * via maturin, which on Windows needs the MSVC linker (`link.exe`). Without VS
+ * Build Tools installed the build dumps ~100 lines of cargo errors; detecting
+ * this lets the installer skip with one actionable line instead. Null-safe.
+ */
+export function isNativeBuildToolchainError(text = '') {
+  const s = String(text ?? '');
+  if (!s) return false;
+  return /link\.exe`? (?:was )?not found/i.test(s)
+    || /Microsoft Visual C\+\+/i.test(s)
+    || /Visual Studio 2017 or later/i.test(s)
+    || /Build Tools for Visual Studio/i.test(s)
+    || /the msvc targets depend on the msvc linker/i.test(s)
+    || /maturin(?:\.build_wheel)? failed/i.test(s)
+    || /could not compile .* build script/i.test(s)
+    || /\bRust not found\b/i.test(s);
 }
 
 /**
@@ -2886,7 +2910,8 @@ async function main() {
     step('LiteLLM budget router...');
     try {
       ensureManagedVenv(venv);
-      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92');
+      skip('installing litellm[proxy] (may compile a native extension — this can take a few minutes)');
+      installPipPackageInManagedVenv(venv, 'litellm[proxy]>=1.92', { stdio: 'pipe', maxBuffer: 16 * 1024 * 1024 });
       const { generateLiteLLMConfig, liteLLMConfigPath } = await import('./service/litellm-service.mjs');
       const cfgPath = liteLLMConfigPath(home);
       const litellmPort = existingCfg.budget_routing?.litellm_port ?? 4000;
@@ -2912,7 +2937,16 @@ async function main() {
       ok(`litellm config written → ${cfgPath}`);
       ok(`LiteLLM will listen on :${litellmPort}. To route Claude Code through it, use the _claude wrapper with headroom_port set to ${litellmPort} (never set ANTHROPIC_BASE_URL globally — see _claude wrapper in src/service/wrappers.mjs).`);
     } catch (e) {
-      warn(`litellm install failed: ${e.message.split('\n')[0]}`);
+      const detail = `${e?.stdout ?? ''}\n${e?.stderr ?? ''}\n${e?.message ?? ''}`;
+      if (isNativeBuildToolchainError(detail)) {
+        warn(
+          'LiteLLM needs a C/C++ build toolchain (MSVC link.exe) to compile its native extension — skipping. ' +
+          'Install Visual Studio Build Tools with the "Desktop development with C++" workload, then re-run `myelin install`. ' +
+          'LiteLLM budget routing is optional; the proxy chain works without it.'
+        );
+      } else {
+        warn(`litellm install failed: ${(e?.message ?? '').split('\n')[0]}`);
+      }
     }
   }
 
