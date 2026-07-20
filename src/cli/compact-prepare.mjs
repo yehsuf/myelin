@@ -18,7 +18,7 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -87,7 +87,8 @@ function detectClipboardCandidates({
 
 const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
-const MAX_HINT = 4000; // Copilot CLI customInstructions hard cap
+const CLAUDE_PROJECTS_ROOT = path.join(HOME, '.claude', 'projects');
+const MAX_HINT = 4000; // /compact customInstructions hard cap
 
 // ─── multi-session claims reader ──────────────────────────────
 /**
@@ -320,6 +321,121 @@ function resolveSessionId() {
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.mtime - a.mtime);
   return candidates[0].name;
+}
+
+/**
+ * Encode a filesystem path the way Claude Code does for its projects/ directory:
+ * replace every non-alphanumeric character with a dash.
+ * e.g. /Users/ysufrin/my_project → -Users-ysufrin-my-project
+ *
+ * NOTE: replacing only '/' is insufficient — Claude Code replaces ALL
+ * non-alphanumeric chars (dots, underscores, spaces, etc.) to avoid special
+ * characters in directory names.
+ */
+function claudeEncodeProjectPath(absPath) {
+  return absPath.replace(/[^a-zA-Z0-9]/g, '-');
+}
+
+/**
+ * Try to resolve a Claude Code session for the given cwd.
+ * Returns { sid, gitBranch, cwd, projectDir } or null.
+ *
+ * Claude Code stores sessions as JSONL files under:
+ *   ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
+ * Each file's first 'user' entry carries { cwd, gitBranch, sessionId }.
+ * We pick the most recently modified JSONL file whose cwd matches.
+ */
+export function resolveClaudeSession(cwd = process.cwd()) {
+  if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
+
+  // Try exact match first, then parent paths (Claude stores project dir as cwd)
+  const searchDirs = [];
+  let p = cwd;
+  while (true) {
+    searchDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
+    const parent = path.dirname(p);
+    if (parent === p) break;
+    p = parent;
+  }
+
+  const candidates = [];
+  for (const projectDir of searchDirs) {
+    if (!existsSync(projectDir)) continue;
+    let files;
+    try { files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl')); }
+    catch { continue; }
+
+    for (const f of files) {
+      const filePath = path.join(projectDir, f);
+      let st;
+      try { st = statSync(filePath); } catch { continue; }
+      const sid = f.slice(0, -'.jsonl'.length);
+      // Read first user entry to get cwd/gitBranch
+      let sessionCwd = null;
+      let gitBranch = null;
+      try {
+        const content = readFileSync(filePath, 'utf8');
+        for (const line of content.split('\n')) {
+          if (!line.trim()) continue;
+          const entry = JSON.parse(line);
+          if (entry.type === 'user' && entry.cwd) {
+            sessionCwd = entry.cwd;
+            gitBranch = entry.gitBranch || null;
+            break;
+          }
+        }
+      } catch { /* malformed — skip */ }
+      // Match if session cwd starts with our cwd (covers nested dirs)
+      if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
+        candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
+      }
+    }
+    if (candidates.length > 0) break; // found in the most specific dir
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0];
+}
+
+/**
+ * Collect session data for a Claude Code session.
+ * Unlike Copilot sessions there is no workspace.yaml, session.db, or checkpoints.
+ * We derive git root from cwd, read plan.md from cwd, and skip todos/checkpoints.
+ */
+function collectDataClaude(claudeSession) {
+  const { sid, gitBranch, cwd: sessionCwd } = claudeSession;
+  const cwd = sessionCwd || process.cwd();
+  const gitRoot = cwd;
+
+  const defaultsRaw = tryRead(path.join(HOME, '.claude', 'compact.defaults.yaml'))
+    ?? tryRead(path.join(HOME, '.copilot', 'compact.defaults.yaml'));
+  const defaults = parseGlobalDefaults(defaultsRaw || '');
+
+  const primary = repoInfo(gitRoot);
+  const plan = loadPlanNext(cwd);
+  const constitutionLoaded = existsSync(path.join(gitRoot, '.github', 'copilot-instructions.md'));
+
+  return {
+    sid,
+    sessionDir: null,
+    agent: 'claude',
+    cwd,
+    gitRoot,
+    workspace: { name: path.basename(cwd) },
+    repoLabel: null,
+    primaryRepo: primary,
+    extraRepos: [],
+    todos: [],
+    plan,
+    planNext: plan.next,
+    compactNext: '',
+    compactNotes: '',
+    sessionRules: [],
+    globalRules: defaults.rules,
+    checkpoints: [],
+    constitutionLoaded,
+  };
 }
 
 // ─── todos ────────────────────────────────────────────────────
@@ -583,6 +699,7 @@ function collectData(sid, sessionDir) {
   return {
     sid,
     sessionDir,
+    agent: 'copilot',
     cwd,
     gitRoot,
     workspace: ws,
@@ -606,8 +723,9 @@ function dashboard(data, hintChars) {
   const bar = '='.repeat(64);
   const name = data.workspace.name || path.basename(data.cwd);
   const sid8 = (data.sid || '').slice(0, 8);
+  const agentLabel = data.agent === 'claude' ? ' [Claude Code]' : '';
   console.log(bar);
-  console.log(`  compact-prepare — session ${name} (${sid8})`);
+  console.log(`  compact-prepare — session ${name} (${sid8})${agentLabel}`);
   console.log(bar);
   if (data.primaryRepo) {
     console.log(`  Repo:     ${data.repoLabel || path.basename(data.primaryRepo.path)} @ ${data.primaryRepo.branch}  head=${data.primaryRepo.sha7}`);
@@ -661,18 +779,34 @@ function modePrepare(data) {
   console.log('<<<END_SESSION_STATE_BRIEF>>>');
   console.log('');
   console.log('-'.repeat(64));
+  // Derive hint file path based on detected agent type.
+  // For Claude Code, use ~/.myelin/claude-hints/<sid>/ — a myelin-managed neutral
+  // location that compact-prepare creates on the spot (Claude has no session-state dir).
+  // For Copilot CLI, the session-state/files/ dir already exists.
+  const isClaude = data.agent === 'claude';
+  const hintFileActual = data.sid
+    ? (isClaude
+        ? path.join(HOME, '.myelin', 'claude-hints', data.sid, 'compact-hint.txt')
+        : path.join(SESSION_ROOT, data.sid, 'files', 'compact-hint.txt'))
+    : path.join(HOME, '.myelin', 'claude-hints', 'unknown', 'compact-hint.txt');
+  // Pre-create directory so the agent's file-write step doesn't fail.
+  try { mkdirSync(path.dirname(hintFileActual), { recursive: true }); } catch { /* ignore */ }
   console.log('  Agent instructions:');
   console.log('  1. Read the SESSION STATE BRIEF above (facts).');
   console.log('  2. Compose the actual /compact hint using your session memory.');
   console.log(`  3. HARD LIMIT: hint body must be ≤${MAX_HINT} chars.`);
-  console.log('     Copilot CLI enforces this — exceeding it aborts /compact');
-  console.log('     with: "customInstructions exceeds maximum length of 4000"');
-  console.log(`  4. Write the hint to: ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt`);
+  console.log('     /compact enforces this — exceeding it may abort with a length error.');
+  console.log(`  4. Write the hint to: ${hintFileActual}`);
   console.log('     Then run:');
   console.log('       node ~/.copilot/skills/myelin-compact/compact-prepare.mjs clipboard \\');
-  console.log('         ~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/compact-hint.txt');
+  console.log(`         ${hintFileActual}`);
   console.log('     This enforces the cap, copies /compact <hint> to clipboard,');
   console.log('     and prints the full ready-to-run command.');
+  if (isClaude) {
+    console.log('');
+    console.log('  ℹ  Running under Claude Code: todos/checkpoints unavailable.');
+    console.log('     Git state and plan.md are included; the rest is from memory.');
+  }
   console.log('='.repeat(64));
 }
 
@@ -764,26 +898,29 @@ function modeResume(data) {
   }
 
   // ── Before-you-start enforcement reminder ─────────────────
-  const claims = readActiveClaims(data.sid);
-  const otherActive = claims.filter(c => !c.mine && !c.expired);
-  if (otherActive.length) {
-    console.log('─'.repeat(64));
-    console.log('  ⛔ ACTIVE CLAIMS FROM OTHER SESSIONS:');
-    for (const c of otherActive) {
-      console.log(`     ${c.taskId.padEnd(24)} ← ${c.agentName} (${c.ageMins != null ? c.ageMins + "m ago" : "stale"})`);
+  // Claims registry only applies to Copilot sessions; skip for Claude Code.
+  if (data.agent !== 'claude') {
+    const claims = readActiveClaims(data.sid);
+    const otherActive = claims.filter(c => !c.mine && !c.expired);
+    if (otherActive.length) {
+      console.log('─'.repeat(64));
+      console.log('  ⛔ ACTIVE CLAIMS FROM OTHER SESSIONS:');
+      for (const c of otherActive) {
+        console.log(`     ${c.taskId.padEnd(24)} ← ${c.agentName} (${c.ageMins != null ? c.ageMins + "m ago" : "stale"})`);
+      }
+      console.log('  Do NOT start these tasks. Check your project\'s claim tool to verify.');
     }
-    console.log('  Do NOT start these tasks. Check your project\'s claim tool to verify.');
-  }
-  // Warn if this session has no registered agent identity in any known runtime.
-  const agentsDir = resolveAgentsDir();
-  const unregistered = agentsDir
-    ? !existsSync(path.join(agentsDir, `${data.sid}.json`))
-    : false; // no claim system detected — skip the warning
-  if (unregistered) {
-    console.log('─'.repeat(64));
-    console.log('  ⚠  This session has no registered agent identity.');
-    console.log('     Register with your project\'s claim tool before starting any task.');
-  }
+    // Warn if this session has no registered agent identity in any known runtime.
+    const agentsDir = resolveAgentsDir();
+    const unregistered = agentsDir
+      ? !existsSync(path.join(agentsDir, `${data.sid}.json`))
+      : false; // no claim system detected — skip the warning
+    if (unregistered) {
+      console.log('─'.repeat(64));
+      console.log('  ⚠  This session has no registered agent identity.');
+      console.log('     Register with your project\'s claim tool before starting any task.');
+    }
+  } // end if (data.agent !== 'claude')
   console.log('─'.repeat(64));
 }
 
@@ -800,22 +937,33 @@ function main() {
     return;
   }
 
+  // ── Try Copilot CLI session first ────────────────────────────
   const sid = resolveSessionId();
-  if (!sid) {
-    console.error('compact-prepare: cannot resolve session — COPILOT_AGENT_SESSION_ID not set and no session matches cwd');
-    process.exit(2);
-  }
-  const sessionDir = path.join(SESSION_ROOT, sid);
-  if (!existsSync(sessionDir)) {
-    console.error(`compact-prepare: session directory missing: ${sessionDir}`);
-    process.exit(3);
+  if (sid) {
+    const sessionDir = path.join(SESSION_ROOT, sid);
+    if (!existsSync(sessionDir)) {
+      console.error(`compact-prepare: session directory missing: ${sessionDir}`);
+      process.exit(3);
+    }
+    const data = collectData(sid, sessionDir);
+    if (mode === 'prepare') modePrepare(data);
+    else if (mode === 'emit') modeEmit(data);
+    else if (mode === 'resume') modeResume(data);
+    return;
   }
 
-  const data = collectData(sid, sessionDir);
+  // ── Try Claude Code session ───────────────────────────────────
+  const claudeSession = resolveClaudeSession(process.cwd());
+  if (claudeSession) {
+    const data = collectDataClaude(claudeSession);
+    if (mode === 'prepare') modePrepare(data);
+    else if (mode === 'emit') modeEmit(data);
+    else if (mode === 'resume') modeResume(data);
+    return;
+  }
 
-  if (mode === 'prepare') modePrepare(data);
-  else if (mode === 'emit') modeEmit(data);
-  else if (mode === 'resume') modeResume(data);
+  console.error('compact-prepare: cannot resolve session — no Copilot CLI or Claude Code session found for this directory');
+  process.exit(2);
 }
 
 // Only run main if invoked directly (not imported for tests).
@@ -828,4 +976,4 @@ const _argvReal = process.argv[1] ? (() => { try { return realpathSync(process.a
 const isDirect = _argvReal === _scriptReal;
 if (isDirect) main();
 
-export { resolveSessionId, collectData, loadTodos, loadPlanNext, loadCheckpoints, repoInfo, MAX_HINT };
+export { resolveSessionId, collectData, collectDataClaude, loadTodos, loadPlanNext, loadCheckpoints, repoInfo, MAX_HINT };

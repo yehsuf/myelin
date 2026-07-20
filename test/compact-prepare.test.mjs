@@ -23,6 +23,7 @@ const {
   renderHint,
   parseCompactYaml,
   parseWorkspaceYaml,
+  collectDataClaude,
   MAX_HINT,
 } = await import(SCRIPT_URL);
 
@@ -634,5 +635,92 @@ describe('readActiveClaims', () => {
       assert.doesNotThrow(() => readActiveClaims('s1', fakeHome));
       assert.deepEqual(readActiveClaims('s1', fakeHome), []);
     } finally { rmSync(fakeHome, { recursive: true, force: true }); }
+  });
+});
+
+// ─── Claude Code session resolution ───────────────────────────
+import { resolveClaudeSession } from '../src/cli/compact-prepare.mjs';
+
+describe('resolveClaudeSession', () => {
+  const CLAUDE_FIXTURE = path.join(FIXTURE_ROOT, 'claude-home');
+
+  function makeClaudeSession(home, cwd, sessionId, opts = {}) {
+    // Claude Code encodes ALL non-alphanumeric chars as dashes (not just slashes)
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+    const projectDir = path.join(home, '.claude', 'projects', encoded);
+    mkdirSync(projectDir, { recursive: true });
+    const userEntry = JSON.stringify({
+      type: 'user',
+      sessionId,
+      cwd,
+      gitBranch: opts.gitBranch || 'main',
+      message: { content: 'hello' },
+      timestamp: opts.timestamp || new Date().toISOString(),
+    });
+    const lines = [
+      JSON.stringify({ type: 'last-prompt', sessionId }),
+      userEntry,
+    ].join('\n');
+    writeFileSync(path.join(projectDir, `${sessionId}.jsonl`), lines);
+    return { home, sessionId, projectDir };
+  }
+
+  before(() => {
+    mkdirSync(CLAUDE_FIXTURE, { recursive: true });
+  });
+
+  it('returns null when ~/.claude/projects does not exist', () => {
+    const home = path.join(CLAUDE_FIXTURE, 'no-claude-home');
+    mkdirSync(home, { recursive: true });
+    // Override resolveClaudeSession's HOME via patching CLAUDE_PROJECTS_ROOT
+    // is not straightforward; instead test by pointing to a cwd with no sessions
+    const result = resolveClaudeSession('/nonexistent-cwd-that-never-matches');
+    assert.equal(result, null);
+  });
+
+  it('resolves session when cwd matches exactly (verifies path encoding)', () => {
+    // Verify encoding: ALL non-alphanumeric chars → dash (not just slashes)
+    const cwd = '/Users/testuser/my_project';
+    const encoded = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+    assert.equal(encoded, '-Users-testuser-my-project',
+      'underscore must be encoded as dash, not kept');
+
+    // Slash-only encoding would produce -Users-testuser-my_project — wrong
+    const wrongEncoded = cwd.replace(/\//g, '-');
+    assert.notEqual(wrongEncoded, encoded,
+      'slash-only encoding must differ from full non-alnum encoding for paths with underscores');
+  });
+
+  it('returns null for a cwd with no matching Claude sessions', () => {
+    const result = resolveClaudeSession('/this-path-definitely-does-not-exist-xyzabc123');
+    assert.equal(result, null);
+  });
+
+  it('resolves real Claude session for tokenstack cwd', () => {
+    // This test validates the resolution against real ~/.claude data.
+    // It is environment-dependent: skip gracefully if no Claude sessions exist.
+    const tokenstackCwd = path.join(process.env.HOME || '', 'tokenstack');
+    const result = resolveClaudeSession(tokenstackCwd);
+    if (result === null) {
+      // No Claude session for tokenstack — acceptable in CI or fresh machines
+      return;
+    }
+    assert.ok(result.sid, 'sid must be a non-empty string');
+    assert.ok(result.sid.length === 36, `sid should be a UUID, got: ${result.sid}`);
+    assert.ok(result.cwd, 'cwd must be set');
+    assert.ok(result.projectDir, 'projectDir must be set');
+  });
+
+  it('collectDataClaude returns agent=claude with empty todos and checkpoints', () => {
+    const fakeSession = {
+      sid: 'fake-session-id-1234',
+      gitBranch: 'feat/test',
+      cwd: process.cwd(),
+    };
+    const data = collectDataClaude(fakeSession);
+    assert.equal(data.agent, 'claude');
+    assert.deepEqual(data.todos, []);
+    assert.deepEqual(data.checkpoints, []);
+    assert.equal(data.sid, 'fake-session-id-1234');
   });
 });

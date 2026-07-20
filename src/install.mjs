@@ -1821,7 +1821,7 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
 
 ### Mode: prepare
 
-1. Export current todos to a file so the script can read them:
+1. If running in a **Copilot CLI session** (\`COPILOT_AGENT_SESSION_ID\` is set), export current todos to a file so the script can read them:
    \`\`\`sql
    SELECT id, title, COALESCE(description,'') AS description, status, updated_at
    FROM todos
@@ -1829,6 +1829,7 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
    ORDER BY CASE status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC
    \`\`\`
    Write the JSON result to \`~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/todos.json\`.
+   (Skip this step in Claude Code sessions — todos are read from memory instead.)
 
 2. Run:
    \`\`\`bash

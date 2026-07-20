@@ -377,8 +377,11 @@ import re as _re
 
 # Domain suffix patterns → default format hint (overridden by path detection)
 _DOMAIN_PATTERNS: list[tuple] = [
-    (_re.compile(r'(^|\.)githubcopilot\.com$'),   'auto'),   # all copilot subdomains
-    (_re.compile(r'^api\.anthropic\.com$'),         'anthropic'),
+    (_re.compile(r'(^|\.)githubcopilot\.com$'),   'auto'),      # all copilot subdomains
+    (_re.compile(r'^api\.anthropic\.com$'),         'anthropic'), # direct Anthropic API
+    # Akamai Foundry Claude proxy — used when ANTHROPIC_FOUNDRY_BASE_URL is set.
+    # Claude Code routes through this host on Akamai corporate networks.
+    (_re.compile(r'^claude-llm\.dash\.akamai\.com$'), 'anthropic'),
     (_re.compile(r'^api\.openai\.com$'),            'openai'),
     (_re.compile(r'openai\.azure\.com$'),           'openai'),
 ]
@@ -411,6 +414,21 @@ _extra_raw = os.environ.get('MYELIN_EXTRA_PROVIDERS', '')
 if _extra_raw:
     try:
         _STATIC_OVERRIDES = json.loads(_extra_raw)
+    except Exception:
+        pass
+
+# Auto-register ANTHROPIC_FOUNDRY_BASE_URL hostname as an anthropic provider.
+# This covers any Foundry proxy deployment (e.g. corporate gateways) without
+# requiring the user to set MYELIN_EXTRA_PROVIDERS manually.
+_foundry_url = os.environ.get('ANTHROPIC_FOUNDRY_BASE_URL', '').strip()
+if _foundry_url:
+    try:
+        from urllib.parse import urlparse as _urlparse
+        _foundry_host = _urlparse(_foundry_url).hostname or ''
+        if _foundry_host and _foundry_host not in _STATIC_OVERRIDES:
+            _DOMAIN_PATTERNS.append(
+                (_re.compile(r'^' + _re.escape(_foundry_host) + r'$'), 'anthropic')
+            )
     except Exception:
         pass
 
