@@ -142,10 +142,10 @@ export function installPipPackageInManagedVenv(venv, spec, {
 
 /**
  * Resolves the pip requirement spec used to install LiteLLM. Honours a
- * `budget_routing.litellm_spec` override; otherwise returns a wheel-safe
- * default (`<1.93`) that resolves to the pure-Python litellm 1.91.4 wheel on
- * every platform so no C/C++ build toolchain is needed. Users who want newer
- * releases bump the config key (and, on Windows/macOS, provide a toolchain).
+ * `budget_routing.litellm_spec` override; otherwise returns `'litellm[proxy]>=1.90'`
+ * (no upper cap). Paired with `onlyBinary: true` (the default when
+ * `litellm_allow_build` is false), uv picks the highest compatible wheel per
+ * platform without ever triggering a source build.
  */
 export function resolveLitellmSpec(cfg = {}) {
   const spec = cfg?.budget_routing?.litellm_spec;
@@ -2961,9 +2961,12 @@ async function main() {
     } catch (e) {
       const detail = `${e?.stdout ?? ''}\n${e?.stderr ?? ''}\n${e?.message ?? ''}`;
       if (isNativeBuildToolchainError(detail)) {
+        const toolchainHint = os === 'windows'
+          ? 'Install Visual Studio Build Tools with the "Desktop development with C++" workload, then re-run `myelin install`.'
+          : 'Ensure a C/C++ compiler and the Rust toolchain are installed (e.g. `xcode-select --install` + `rustup` on macOS, `build-essential` + `rustup` on Linux), then re-run `myelin install`.';
         warn(
-          'LiteLLM needs a C/C++ build toolchain (MSVC link.exe) to compile its native extension — skipping. ' +
-          'Install Visual Studio Build Tools with the "Desktop development with C++" workload, then re-run `myelin install`. ' +
+          'LiteLLM needs a native build toolchain to compile its extension — skipping. ' +
+          toolchainHint + ' ' +
           'LiteLLM budget routing is optional; the proxy chain works without it.'
         );
       } else {
