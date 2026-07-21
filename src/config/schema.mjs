@@ -216,6 +216,12 @@ export const DEFAULT_CONFIG = {
     complex_model: 'claude-sonnet-4-6',
     cheap_threshold: 0.3,
   },
+  // Per-integration opt-out. Set to false to skip the corresponding wiring.
+  // claude_code: false  → skip ~/.claude/settings.json, CLAUDE.md, and hooks
+  //                       (use when Claude Code is not installed on this machine).
+  integrations: {
+    claude_code: true,
+  },
 };
 
 function isPlainObject(value) {
