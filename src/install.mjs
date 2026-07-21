@@ -2566,7 +2566,9 @@ async function main() {
   const shell    = detectShell();
   const home     = homedir();
   const managed = managedPaths({ home, env: process.env });
-  const claudeCC = !flags['copilot-only'];
+  // flags['copilot-only'] is the explicit CLI override; integrations.claude_code: false
+  // is the persistent config opt-out (e.g. on machines without Claude Code installed).
+  const claudeCC = !flags['copilot-only'] && existingCfg.integrations?.claude_code !== false;
   const copilot  = !flags['claude-only'];
   // During an atomic staged apply (`--update-apply`) the managed components are
   // already pinned and provisioned by the staged release. Global (unpinned)
