@@ -3304,7 +3304,7 @@ async function main() {
         if (installed) {
           const cadence = os === 'windows'
             ? `every ${watchdogOpts.intervalMinutes} minute${watchdogOpts.intervalMinutes === 1 ? '' : 's'}`
-            : 'every 90s';
+            : 'every 30s';
           ok(`watchdog installed — auto-revives dropped services ${cadence}`);
         }
       }

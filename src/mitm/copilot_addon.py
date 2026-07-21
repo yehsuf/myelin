@@ -655,7 +655,6 @@ def _headroom_urlopen_with_retry(req, retries: int = HEADROOM_CONNECT_RETRIES):
     Non-connectivity errors (timeout, HTTP 4xx/5xx) are never retried — only
     ConnectionRefusedError / [Errno 111] Connect call failed.
     """
-    import time
     last_exc = None
     for attempt in range(max(1, retries + 1)):
         try:
