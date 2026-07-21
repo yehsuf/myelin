@@ -416,23 +416,50 @@ export async function runStats({ wide = false } = {}, {
         print(logFn) { logFn('  ⚠  not running — run: myelin restart'); },
       });
     } else {
-      // Merge payloads from all instances into a single combined payload
-      const merged = payloads.reduce((acc, p) => mergeHeadroomLiteStats(acc, p));
+      // Merge payloads from all instances into a single combined payload.
+      // Only merge when all available payloads are headroom-lite (have the flat
+      // schema). If any payload is headroom-original (nested summary.* shape),
+      // fall back to rendering each instance separately — the two schemas are
+      // incompatible and merging would produce false zeros.
+      const availablePayloads = payloads.filter(Boolean);
+      const allHeadroomLite = availablePayloads.every(
+        (p) => isRecord(p) && p.service === 'headroom-lite',
+      );
       const portList = descriptors.map((d) => `:${d.port}`).join(' + ');
-      sections.push({
-        label: 'headroom',
-        title: `headroom  (${portList})  — combined`,
-        print(logFn) {
-          const rendered = renderHeadroomLiteStatsRows(merged);
-          if (!rendered.available) {
-            logFn('  ⚠  stats unavailable');
-            return;
-          }
-          for (const [label, value] of rendered.rows) {
-            row(logFn, `${label}:`, value);
-          }
-        },
-      });
+
+      if (allHeadroomLite) {
+        const merged = payloads.reduce((acc, p) => mergeHeadroomLiteStats(acc, p));
+        sections.push({
+          label: 'headroom',
+          title: `headroom  (${portList})  — combined`,
+          print(logFn) {
+            const rendered = renderHeadroomLiteStatsRows(merged);
+            if (!rendered.available) {
+              logFn('  ⚠  stats unavailable');
+              return;
+            }
+            for (const [label, value] of rendered.rows) {
+              row(logFn, `${label}:`, value);
+            }
+          },
+        });
+      } else {
+        // headroom-original or mixed — render each instance separately
+        for (let i = 0; i < descriptors.length; i++) {
+          const descriptor = descriptors[i];
+          const payload = payloads[i];
+          sections.push({
+            label: descriptor.label,
+            title: descriptor.title,
+            print(logFn) {
+              if (!payload) { logFn('  ⚠  not running — run: myelin restart'); return; }
+              const rendered = descriptor.formatter(payload);
+              if (!rendered.available) { logFn('  ⚠  stats unavailable'); return; }
+              for (const [label, value] of rendered.rows) row(logFn, `${label}:`, value);
+            },
+          });
+        }
+      }
     }
   }
 
