@@ -10,7 +10,7 @@ import { posixSingleQuote } from '../shared/shell-quote.mjs';
 const LABEL      = 'com.myelin.compression';
 const MITM_LABEL = 'com.myelin.mitmproxy';
 const WATCHDOG_LABEL = 'com.myelin.watchdog';
-const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-headroom';
+const COPILOT_HEADROOM_LABEL = 'com.myelin.copilot-compression';
 
 function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'primary') {
@@ -23,7 +23,7 @@ function engineInstanceIdentity(instance = {}) {
   if (instance.role === 'copilot') {
     return {
       label: COPILOT_HEADROOM_LABEL,
-      serviceId: 'myelin-copilot-headroom',
+      serviceId: 'myelin-copilot-compression',
       name: 'Myelin Copilot Headroom',
     };
   }
@@ -533,7 +533,7 @@ export function generateLaunchdWatchdogScript({ home, env = process.env, headroo
   const checks = [
     ...(mitmPort != null ? [`check_and_revive ${mitmPort} mitmproxy '*.mitmproxy.plist'`] : []),
     ...(headroomPort != null ? [`check_and_revive ${headroomPort} headroom '*.headroom.plist'`] : []),
-    ...(copilotHeadroomPort ? [`check_and_revive ${copilotHeadroomPort} copilot-headroom '*.copilot-headroom.plist'`] : []),
+    ...(copilotHeadroomPort ? [`check_and_revive ${copilotHeadroomPort} copilot-compression '*.copilot-compression.plist'`] : []),
     ...(mitmPort != null && egressPort ? [`check_and_revive ${egressPort} mitmproxy-egress '*.mitmproxy.plist'`] : []),
   ];
 

@@ -674,7 +674,7 @@ describe('engine instance service generators', () => {
       const instance = engineInstance(engine, role);
       const expectedBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : HEADROOM_LITE_FIXTURE.entrypoint;
       const expectedWindowsBinary = engine === 'headroom' ? ENGINE_BINS.headroomBin : ENGINE_BINS.headroomLiteBin;
-      const expectedLabel = role === 'primary' ? 'com.myelin.compression' : 'com.myelin.copilot-headroom';
+      const expectedLabel = role === 'primary' ? 'com.myelin.compression' : 'com.myelin.copilot-compression';
       const expectedServiceId = role === 'primary' ? 'myelin-compression' : 'myelin-copilot-compression';
       const expectedWindowsServiceId = instance.id;
       const expectedWindowsRunKey = `Myelin${instance.id.split(/[-_]/u)
@@ -1246,7 +1246,7 @@ describe('generateLaunchdWatchdogScript', () => {
 
     assert.ok(script.includes("check_and_revive 8888 mitmproxy '*.mitmproxy.plist'"));
     assert.ok(!script.includes("check_and_revive 8787 headroom '*.headroom.plist'"));
-    assert.ok(script.includes("check_and_revive 8788 copilot-headroom '*.copilot-headroom.plist'"));
+    assert.ok(script.includes("check_and_revive 8788 copilot-compression '*.copilot-compression.plist'"));
   });
 
   it('preserves the main Headroom stanza when an explicit headroom port is provided', () => {
@@ -1307,7 +1307,7 @@ describe('launchd plist generator', () => {
 
 describe('generateGenericPlist (mitmproxy / copilot-headroom launchd)', () => {
   const GENERIC_OPTS = {
-    label: 'com.myelin.copilot-headroom',
+    label: 'com.myelin.copilot-compression',
     command: '/home/user/.venv/bin/headroom',
     args: ['proxy', '--port', '8788'],
     envVars: { ANTHROPIC_TARGET_API_URL: 'http://127.0.0.1:8889' },
@@ -1324,7 +1324,7 @@ describe('generateGenericPlist (mitmproxy / copilot-headroom launchd)', () => {
   });
   it('contains the label and args', () => {
     const xml = generateGenericPlist(GENERIC_OPTS);
-    assert.ok(xml.includes('com.myelin.copilot-headroom'));
+    assert.ok(xml.includes('com.myelin.copilot-compression'));
     assert.ok(xml.includes('--port'));
     assert.ok(xml.includes('8788'));
   });
