@@ -62,7 +62,11 @@ function proxyAliasFor(backend, compression, userProxy = {}) {
   }
   if (backend === 'headroom-lite') {
     return {
-      engine: 'headroom_lite',
+      // Use ifUnset so an explicit proxy.engine from the user is never overridden
+      // by the compression.backend reconciliation path (prevents circular overrides
+      // when config set proxy.engine headroom is called on a config that has a
+      // stale compression.backend: headroom-lite from a previous write).
+      ...ifUnset(userProxy, 'engine', 'headroom_lite'),
       compression: { enabled: true },
       headroom: { enabled: false },
       headroom_lite: { enabled: true, ...ifUnset(userLite, 'port', compression.port) },
@@ -70,7 +74,7 @@ function proxyAliasFor(backend, compression, userProxy = {}) {
     };
   }
   return {
-    engine: 'headroom',
+    ...ifUnset(userProxy, 'engine', 'headroom'),
     compression: { enabled: true },
     headroom: {
       enabled: true,
