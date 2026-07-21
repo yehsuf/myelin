@@ -17,7 +17,7 @@ import { detectAll, detectCopilotHud, detectRtk } from './detect/tools.mjs';
 import { which } from './detect/which.mjs';
 import { detectCorporateProxy, detectCaBundles, buildCorporateSslEnv, resolveCaEnvBundle } from './detect/proxy.mjs';
 import { isPortFree, findFreePort, getPortHolder, isHolderMyelinManaged } from './detect/port.mjs';
-import { loadConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
+import { loadConfig, readUserConfig, DEFAULT_CONFIG_PATH } from './config/reader.mjs';
 import { resolveMitmCompression } from './config/compression-env.mjs';
 import { writeConfig } from './config/writer.mjs';
 import { DEFAULT_CONFIG, mergeDeep } from './config/schema.mjs';
@@ -2568,7 +2568,10 @@ async function main() {
   const managed = managedPaths({ home, env: process.env });
   // flags['copilot-only'] is the explicit CLI override; integrations.claude_code: false
   // is the persistent config opt-out (e.g. on machines without Claude Code installed).
-  const claudeCC = !flags['copilot-only'] && existingCfg.integrations?.claude_code !== false;
+  // Read raw user config now (before the full loadConfig at step 5) so claudeCC is
+  // available for all gating decisions throughout the install flow.
+  const _earlyUserCfg = readUserConfig(flags.config ?? DEFAULT_CONFIG_PATH);
+  const claudeCC = !flags['copilot-only'] && _earlyUserCfg.integrations?.claude_code !== false;
   const copilot  = !flags['claude-only'];
   // During an atomic staged apply (`--update-apply`) the managed components are
   // already pinned and provisioned by the staged release. Global (unpinned)
