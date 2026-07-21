@@ -66,6 +66,69 @@ function unavailableStatsRows() {
   return { available: false, rows: [['Status', 'unavailable']] };
 }
 
+/**
+ * Merge two headroom-lite /stats payloads into a single combined view.
+ * Numeric session and lifetime counters are summed; compress_pct is
+ * recalculated from the combined tokens_before / tokens_after totals.
+ * Either payload may be null (unavailable instance is treated as zeros).
+ */
+function mergeHeadroomLiteStats(primary, copilot) {
+  const addNum = (a, b) => (toFiniteNumber(a) ?? 0) + (toFiniteNumber(b) ?? 0);
+  const mergeCompressionBlock = (a, b) => ({
+    requests: addNum(a?.requests, b?.requests),
+    tokens_before: addNum(a?.tokens_before, b?.tokens_before),
+    tokens_after: addNum(a?.tokens_after, b?.tokens_after),
+    tokens_saved: addNum(a?.tokens_saved, b?.tokens_saved),
+    latency_ms: addNum(a?.latency_ms, b?.latency_ms),
+    providers: mergeCountMap(a?.providers, b?.providers),
+    models: mergeCountMap(a?.models, b?.models),
+  });
+  const mergeProxyBlock = (a, b) => ({
+    requests: addNum(a?.requests, b?.requests),
+    latency_ms: addNum(a?.latency_ms, b?.latency_ms),
+    providers: mergeCountMap(a?.providers, b?.providers),
+  });
+  const mergeCountMap = (a, b) => {
+    if (!isRecord(a) && !isRecord(b)) return {};
+    const result = { ...(isRecord(a) ? a : {}) };
+    for (const [k, v] of Object.entries(isRecord(b) ? b : {})) {
+      result[k] = addNum(result[k], v);
+    }
+    return result;
+  };
+
+  const lc = mergeCompressionBlock(
+    primary?.lifetime?.compression, copilot?.lifetime?.compression,
+  );
+  const sc = mergeCompressionBlock(
+    primary?.session?.compression, copilot?.session?.compression,
+  );
+  const lp = mergeProxyBlock(primary?.lifetime?.proxy, copilot?.lifetime?.proxy);
+  const sp = mergeProxyBlock(primary?.session?.proxy, copilot?.session?.proxy);
+
+  const tokensBefore = addNum(primary?.compress_tokens_before, copilot?.compress_tokens_before);
+  const tokensAfter = addNum(primary?.compress_tokens_after, copilot?.compress_tokens_after);
+  const tokensSaved = addNum(primary?.compress_tokens_saved, copilot?.compress_tokens_saved);
+  const compressPct = tokensBefore > 0
+    ? (((tokensBefore - tokensAfter) / tokensBefore) * 100).toFixed(1)
+    : '0.0';
+
+  // Use the first available service identifier
+  const svc = (primary ?? copilot);
+  return {
+    service: 'headroom-lite',
+    uptime_seconds: svc?.uptime_seconds ?? 0,
+    proxy_requests: addNum(primary?.proxy_requests, copilot?.proxy_requests),
+    compress_requests: addNum(primary?.compress_requests, copilot?.compress_requests),
+    compress_tokens_before: tokensBefore,
+    compress_tokens_after: tokensAfter,
+    compress_tokens_saved: tokensSaved,
+    compress_pct: compressPct,
+    lifetime: { compression: lc, proxy: lp },
+    session: { compression: sc, proxy: sp },
+  };
+}
+
 function renderHeadroomLiteStatsRows(payload) {
   if (!isRecord(payload) || payload.service !== 'headroom-lite') {
     return unavailableStatsRows();
@@ -321,17 +384,57 @@ export async function runStats({ wide = false } = {}, {
   const cfg = await loadConfigFn();
   const sections = [];
 
-  const localSections = wide
-    ? buildWideLocalStatsPrintSections(await collectWideLocalStatsSections({
+  if (wide) {
+    // --wide: show each instance separately (unchanged behaviour)
+    const localSections = buildWideLocalStatsPrintSections(await collectWideLocalStatsSections({
       config: cfg,
       wide,
       fetchStats: readStats,
-    }))
-    : buildLocalStatusSections(cfg, probeHealth);
-  const primarySection = localSections[0];
-  const copilotHeadroomSection = localSections.find((section) => section.label === 'copilot-headroom');
+    }));
+    for (const s of localSections) sections.push(s);
+  } else {
+    // Default: fetch stats from all configured engine instances, merge into
+    // a single combined view so savings from both Claude Code (:8787) and
+    // Copilot (:8788) instances are visible without needing --wide.
+    const descriptors = getConfiguredLocalStatsDescriptors(cfg);
+    const payloads = await Promise.all(
+      descriptors.map(async (d) => {
+        try { return await readStats(d.url); }
+        catch { return null; }
+      }),
+    );
+    const hasAnyRunning = descriptors.some((d, i) => payloads[i] !== null);
 
-  if (primarySection) sections.push(primarySection);
+    if (descriptors.length === 0) {
+      // No engine configured — fall back to the old running/not-running check
+      const legacyLocalSections = buildLocalStatusSections(cfg, probeHealth);
+      for (const s of legacyLocalSections) sections.push(s);
+    } else if (!hasAnyRunning) {
+      sections.push({
+        label: 'headroom',
+        title: descriptors[0]?.title ?? 'headroom',
+        print(logFn) { logFn('  ⚠  not running — run: myelin restart'); },
+      });
+    } else {
+      // Merge payloads from all instances into a single combined payload
+      const merged = payloads.reduce((acc, p) => mergeHeadroomLiteStats(acc, p));
+      const portList = descriptors.map((d) => `:${d.port}`).join(' + ');
+      sections.push({
+        label: 'headroom',
+        title: `headroom  (${portList})  — combined`,
+        print(logFn) {
+          const rendered = renderHeadroomLiteStatsRows(merged);
+          if (!rendered.available) {
+            logFn('  ⚠  stats unavailable');
+            return;
+          }
+          for (const [label, value] of rendered.rows) {
+            row(logFn, `${label}:`, value);
+          }
+        },
+      });
+    }
+  }
 
   // ── mitmproxy (if enabled in config) ───────────────────────────────────────
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;
@@ -379,8 +482,6 @@ export async function runStats({ wide = false } = {}, {
       },
     });
   }
-
-  if (copilotHeadroomSection) sections.push(copilotHeadroomSection);
 
   // ── Render ─────────────────────────────────────────────────────────────────
   log('\nMyelin Compression Statistics');

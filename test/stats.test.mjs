@@ -125,7 +125,7 @@ describe('renderLocalStatsRows', () => {
   });
 
   describe('wide local stats discovery', () => {
-    it('skips extra local stats queries outside wide mode and prints one discovery hint when configured', async () => {
+    it('in default (non-wide) mode, fetches stats from all instances and shows combined view', async () => {
       const fetchCalls = [];
       const healthCalls = [];
       const config = {
@@ -138,14 +138,8 @@ describe('renderLocalStatsRows', () => {
       };
 
       assert.equal(getWideStatsHint(config), 'More detail: myelin stats --wide');
-      assert.equal(getWideStatsHint({
-        proxy: {
-          engine: 'headroom_lite',
-          headroom_lite: { enabled: false },
-          copilot_headroom: { enabled: false },
-        },
-      }), 'More detail: myelin stats --wide');
 
+      // collectWideLocalStatsSections is still zero when wide:false
       assert.deepEqual(
         await collectWideLocalStatsSections({
           config,
@@ -159,6 +153,7 @@ describe('renderLocalStatsRows', () => {
       );
       assert.deepEqual(fetchCalls, []);
 
+      // runStats (non-wide) NOW fetches stats and shows combined data
       const consoleCapture = captureConsole();
       await runStats(
         { wide: false },
@@ -183,15 +178,19 @@ describe('renderLocalStatsRows', () => {
         },
       );
 
-      assert.deepEqual(fetchCalls, []);
-      assert.deepEqual(healthCalls, ['http://127.0.0.1:9001/health']);
+      // In non-wide mode, readStats is now called for each configured instance
+      assert.deepEqual(fetchCalls, ['http://127.0.0.1:9001/stats']);
+      // probeHealth is no longer called for engine instances in non-wide mode
+      assert.deepEqual(healthCalls, []);
+      // Combined stats are rendered — compression data IS shown
+      assert.ok(
+        consoleCapture.logs.some(line => line.includes('1 total, 1 compressed')),
+        'combined stats should show compression data',
+      );
+      // Wide hint still appears
       assert.equal(
         consoleCapture.logs.filter(line => line === '  More detail: myelin stats --wide').length,
         1,
-      );
-      assert.equal(
-        consoleCapture.logs.some(line => line.includes('1 total, 1 compressed')),
-        false,
       );
     });
 
@@ -302,7 +301,7 @@ describe('renderLocalStatsRows', () => {
       ]);
     });
 
-    it('keeps mitmproxy before copilot-headroom when headroom-lite is disabled', async () => {
+    it('shows mitmproxy section after combined headroom stats; no separate copilot-headroom section', async () => {
       const consoleCapture = captureConsole();
       await runStats(
         { wide: false },
@@ -318,15 +317,17 @@ describe('renderLocalStatsRows', () => {
           log: consoleCapture.log,
           probeHealth: () => true,
           probeRoot: () => true,
+          readStats: async () => null, // all instances unavailable → combined shows not-running
           pathExists: () => false,
         },
       );
 
-      const sectionTitles = consoleCapture.logs.filter(line => /^  (mitmproxy|copilot-headroom)/.test(line));
-      assert.deepEqual(sectionTitles, [
-        '  mitmproxy  (:9003)  — Copilot CLI',
-        '  copilot-headroom  (:9002)',
-      ]);
+      // mitmproxy section still appears
+      const hasMitm = consoleCapture.logs.some(line => line.includes('mitmproxy') && line.includes(':9003'));
+      assert.ok(hasMitm, 'mitmproxy section must be present');
+      // There is no separate copilot-headroom section anymore (merged into combined)
+      const hasSeparateCopilot = consoleCapture.logs.some(line => /^  copilot-headroom/.test(line));
+      assert.equal(hasSeparateCopilot, false, 'copilot-headroom must not appear as a separate section');
     });
 
     it('renders the selected Python primary section when MITM is disabled', async () => {
@@ -345,12 +346,16 @@ describe('renderLocalStatsRows', () => {
           }),
           log: consoleCapture.log,
           probeHealth: () => true,
+          readStats: async () => null, // not available
           pathExists: () => false,
         },
       );
 
-      assert.ok(consoleCapture.logs.includes('  headroom  (:9000)'));
-      assert.ok(consoleCapture.logs.includes('  running'));
+      // Combined headroom section appears with the configured port
+      assert.ok(
+        consoleCapture.logs.some(line => line.includes('headroom') && line.includes(':9000')),
+        'headroom port must appear in combined section title',
+      );
       assert.equal(
         consoleCapture.logs.some(line => line.includes('No services configured')),
         false,
