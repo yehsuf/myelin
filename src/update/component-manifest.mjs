@@ -244,8 +244,8 @@ const RELEASED_COMPONENTS = {
   tokenOptimizer: {
     kind: 'git-checkout',
     repository: 'https://github.com/alexgreensh/token-optimizer.git',
-    version: '4d75e64',
-    ref: '4d75e64d32fe5cd2b5a24d954242f9fab12e8b4b',
+    version: '4bdcc04',
+    ref: '4bdcc043bc67abd760a08bd33bee6546df68df50',
     optional: true,
   },
 };
