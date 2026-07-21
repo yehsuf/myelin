@@ -32,7 +32,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 2. Run:
    ```bash
-   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
+   command node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
    ```
 
 3. Print the full script output verbatim. The `<<<SESSION_STATE_BRIEF>>>` block
@@ -80,7 +80,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 1. Run:
    ```bash
-   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
+   command node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
    ```
 
 2. Print the output verbatim.
