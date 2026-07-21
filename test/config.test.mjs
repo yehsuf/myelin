@@ -424,6 +424,32 @@ describe('config writer', () => {
     assert.equal(cfg.proxy.headroom.port, 9191);
   });
 
+  it('setConfigValue does not bake derived fields into the written config (engine switch regression)', async () => {
+    // Regression test: switching proxy.engine from headroom_lite to headroom must persist.
+    // Bug: the old implementation used loadConfig(), which derives compression.backend from
+    // the current engine. Writing back the merged config "baked in" compression.backend:headroom-lite.
+    // On the next config set, proxyAliasFor(headroom-lite) would override proxy.engine back to
+    // headroom_lite — a circular dependency that made engine switching silently fail.
+    const p = join(TEST_DIR, 'engine-switch-test.yaml');
+    // Simulate a Windows-style config that already has a baked-in compression.backend
+    writeFileSync(p, [
+      'proxy:',
+      '  engine: headroom_lite',
+      '  headroom_lite:',
+      '    enabled: true',
+      '    port: 8787',
+      'compression:',
+      '  backend: headroom-lite',
+    ].join('\n') + '\n');
+
+    await setConfigValue('proxy.engine', 'headroom', p);
+
+    // After the fix: loadConfig must resolve to headroom despite compression.backend:headroom-lite
+    // because proxyAliasFor now respects an explicit proxy.engine user setting via ifUnset
+    const cfg = await loadConfig(p);
+    assert.equal(cfg.proxy.engine, 'headroom', `proxy.engine must be 'headroom' after config set`);
+  });
+
   it('getConfigValue reads a dot-path key', async () => {
     const p = join(TEST_DIR, 'get-test.yaml');
     writeFileSync(p, 'proxy:\n  headroom:\n    port: 3333\n');
