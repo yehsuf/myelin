@@ -84,6 +84,14 @@ HEADROOM_COMPRESS_TIMEOUT_SECONDS = float(os.environ.get('MYELIN_HEADROOM_COMPRE
 # Retries on ECONNREFUSED — headroom may briefly be unavailable during restarts.
 # Each attempt sleeps 1s before retrying. Set to 0 to disable.
 HEADROOM_CONNECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_CONNECT_RETRIES', '3'))
+# Retries before redirecting to the copilot engine (port 8788). When headroom
+# is restarting, mitmproxy would return ECONNREFUSED immediately without this.
+# Each attempt waits 1s (async sleep — does not block the event loop). After
+# all retries are exhausted the redirect is skipped (fail-open: request goes
+# directly to the real Copilot API, uncompressed but without error).
+# Default 10 = up to 10s wait, giving the 30s watchdog time to revive headroom.
+# Set to 0 to disable the pre-flight check and always redirect immediately.
+HEADROOM_REDIRECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_REDIRECT_RETRIES', '10'))
 
 COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
 TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
@@ -287,6 +295,42 @@ def _host_header(host: str, scheme: str, port: int) -> str:
     default_port = 443 if scheme == 'https' else 80
     authority = f'[{host}]' if ':' in host else host
     return authority if port == default_port else f'{authority}:{port}'
+
+
+async def _wait_for_engine_ready(host: str, port: int,
+                                  retries: int = HEADROOM_REDIRECT_RETRIES) -> bool:
+    """Return True if host:port is accepting TCP connections.
+
+    Retries up to ``retries`` times, sleeping 1 second between attempts (async
+    sleep — does not block the mitmproxy event loop). Returns False when the
+    engine is still unreachable after all retries, signalling the caller to
+    skip the redirect and forward the request directly (fail-open).
+    """
+    if retries <= 0:
+        return True  # disabled — always redirect without check
+    for attempt in range(retries + 1):
+        try:
+            _reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=1.0
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return True
+        except (ConnectionRefusedError, OSError):
+            if attempt < retries:
+                logger.warning(
+                    f'[myelin] copilot engine {host}:{port} unreachable '
+                    f'(attempt {attempt+1}/{retries+1}), retrying in 1s…'
+                )
+                await asyncio.sleep(1.0)
+    logger.warning(
+        f'[myelin] copilot engine {host}:{port} still unreachable after '
+        f'{retries+1} attempts — forwarding directly (no compression)'
+    )
+    return False
 
 
 def _copilot_engine_destination() -> Optional[tuple[str, int]]:
@@ -1184,6 +1228,10 @@ class MyelinAddon:
                 flow.metadata['myelin_redirected'] = True
                 _set_original_destination_headers(flow, host, path)
                 engine_host, engine_port = copilot_engine
+                if not await _wait_for_engine_ready(engine_host, engine_port):
+                    # Engine unavailable after retries — skip redirect, forward directly
+                    flow.metadata.pop('myelin_redirected', None)
+                    return
                 flow.request.scheme = 'http'
                 flow.request.host = engine_host
                 flow.request.port = engine_port
@@ -1299,6 +1347,10 @@ class MyelinAddon:
             flow.metadata['myelin_redirected'] = True
             _set_original_destination_headers(flow, host, path)
             engine_host, engine_port = copilot_engine
+            if not await _wait_for_engine_ready(engine_host, engine_port):
+                # Engine unavailable after retries — skip redirect, forward directly
+                flow.metadata.pop('myelin_redirected', None)
+                return
             flow.request.scheme = 'http'
             flow.request.host = engine_host
             flow.request.port = engine_port
