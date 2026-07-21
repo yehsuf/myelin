@@ -74,8 +74,10 @@ export function getPortHolder(port, {
 
     // POSIX (macOS + Linux): lsof -nP -iTCP:<port> -sTCP:LISTEN -F pc
     // lsof -F pc emits blocks of p<pid>/c<cmd> lines — one block per process.
-    // We collect ALL holders and return the first foreign one (or the last myelin
-    // one if all are ours). For the common single-listener case this is identical.
+    // The 'c' field is the SHORT command name (e.g. 'node', 'python3'), never
+    // the full executable path. For generic interpreters we supplement with
+    // `ps -p <pid> -o command=` to get the full argv[0] + args so that managed
+    // node/python scripts running from ~/.myelin/... are correctly identified.
     const out = String(execFileSyncImpl(
       'lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-F', 'pc'],
       { stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 },
@@ -94,9 +96,24 @@ export function getPortHolder(port, {
     }
     if (curPid !== null) holders.push({ pid: curPid, cmd: curCmd });
     if (holders.length === 0) return null;
+    // Supplement short command names (node, python, python3, uv) with the full
+    // command line from `ps` so myelin-managed scripts in ~/.myelin/ are detected.
+    const GENERIC_INTERPRETERS = new Set(['node', 'python', 'python3', 'uv']);
+    const enriched = holders.map((h) => {
+      if (!GENERIC_INTERPRETERS.has(h.cmd.toLowerCase())) return h;
+      try {
+        const fullCmd = String(execFileSyncImpl(
+          'ps', ['-p', String(h.pid), '-o', 'command='],
+          { stdio: ['ignore', 'pipe', 'ignore'], timeout: 1500 },
+        )).trim();
+        return fullCmd ? { ...h, cmd: fullCmd } : h;
+      } catch {
+        return h; // ps unavailable or process gone — keep short name
+      }
+    });
     // Return first entry — in virtually all real cases there's only one LISTEN holder.
     // If multiple, caller checks isHolderMyelinManaged; returning first is conservative.
-    const valid = holders.find(h => Number.isInteger(h.pid) && h.pid > 0);
+    const valid = enriched.find(h => Number.isInteger(h.pid) && h.pid > 0);
     return valid ?? null;
   } catch {
     return null; // tool not available or timed out — fail-open

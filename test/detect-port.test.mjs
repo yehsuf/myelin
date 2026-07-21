@@ -88,6 +88,49 @@ describe('getPortHolder', () => {
     });
     assert.equal(result, null);
   });
+
+  it('enriches generic interpreter (node) with full cmdline via ps on POSIX', () => {
+    // lsof returns short name 'node'; ps supplements with full argv incl. myelin path
+    const lsofOutput = 'p83995\ncnode\n';
+    const fullCmdLine = '/usr/local/bin/node /Users/ysufrin/.myelin/releases/main-abc/src/headroom-lite/index.mjs --port 8787';
+    const calls = [];
+    const result = getPortHolder(8787, {
+      platform: 'darwin',
+      execFileSyncImpl: (bin, args) => {
+        calls.push(bin);
+        if (bin === 'lsof') return Buffer.from(lsofOutput);
+        if (bin === 'ps') return Buffer.from(fullCmdLine);
+        return Buffer.from('');
+      },
+    });
+    assert.equal(calls.includes('ps'), true, 'ps was called for generic interpreter');
+    assert.deepEqual(result, { pid: 83995, cmd: fullCmdLine });
+  });
+
+  it('does not call ps for non-generic interpreters (headroom, mitmdump)', () => {
+    const lsofOutput = 'p12345\ncheadroom\n';
+    const calls = [];
+    getPortHolder(8787, {
+      platform: 'linux',
+      execFileSyncImpl: (bin) => {
+        calls.push(bin);
+        return Buffer.from(lsofOutput);
+      },
+    });
+    assert.ok(!calls.includes('ps'), 'ps must not be called for non-generic cmd');
+  });
+
+  it('falls back to short name when ps fails for generic interpreter', () => {
+    const lsofOutput = 'p99\ncnode\n';
+    const result = getPortHolder(8787, {
+      platform: 'linux',
+      execFileSyncImpl: (bin) => {
+        if (bin === 'lsof') return Buffer.from(lsofOutput);
+        throw new Error('ps not available');
+      },
+    });
+    assert.deepEqual(result, { pid: 99, cmd: 'node' }); // falls back to short name
+  });
 });
 
 describe('isHolderMyelinManaged', () => {
