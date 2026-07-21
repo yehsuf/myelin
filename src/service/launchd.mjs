@@ -619,7 +619,7 @@ export function installWatchdog({ home, env = process.env, headroomPort, mitmPor
         <string>${xmlEscape(scriptPath)}</string>
     </array>
     <key>StartInterval</key>
-    <integer>90</integer>
+    <integer>30</integer>
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>

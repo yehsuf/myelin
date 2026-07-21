@@ -81,6 +81,9 @@ HEADROOM_BASE   = f'http://127.0.0.1:{HEADROOM_PORT}'
 # own client-side HTTP timeout tolerance isn't confirmed from this codebase;
 # raise further only after checking it doesn't stack badly with that.
 HEADROOM_COMPRESS_TIMEOUT_SECONDS = float(os.environ.get('MYELIN_HEADROOM_COMPRESS_TIMEOUT', '20'))
+# Retries on ECONNREFUSED — headroom may briefly be unavailable during restarts.
+# Each attempt sleeps 1s before retrying. Set to 0 to disable.
+HEADROOM_CONNECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_CONNECT_RETRIES', '3'))
 
 COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
 TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
@@ -644,6 +647,30 @@ def scrub_headers_for_log(headers) -> dict:
 # Tool results are the biggest token sink (bash output, file reads, etc.).
 # ---------------------------------------------------------------------------
 
+def _headroom_urlopen_with_retry(req, retries: int = HEADROOM_CONNECT_RETRIES):
+    """Open a urllib Request to headroom, retrying on ECONNREFUSED.
+
+    Headroom may briefly be unavailable during a watchdog-triggered restart.
+    We retry ``retries`` times (1 s sleep between attempts) before giving up.
+    Non-connectivity errors (timeout, HTTP 4xx/5xx) are never retried — only
+    ConnectionRefusedError / [Errno 111] Connect call failed.
+    """
+    import time
+    last_exc = None
+    for attempt in range(max(1, retries + 1)):
+        try:
+            return urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS)
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            is_refused = isinstance(reason, ConnectionRefusedError) or (
+                hasattr(reason, 'errno') and reason.errno in (111, 61)  # Linux/macOS ECONNREFUSED
+            )
+            if not is_refused or attempt >= retries:
+                raise
+            last_exc = exc
+            time.sleep(1.0)
+    raise last_exc  # unreachable but satisfies type checkers
+
 def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
     """
     POST to Headroom /v1/compress. PURE + thread-safe: no mitmproxy types, no
@@ -666,7 +693,7 @@ def _compress_messages(messages: list, fmt: str, model: str = '') -> tuple:
         method='POST',
     )
     try:
-        with urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS) as resp:
+        with _headroom_urlopen_with_retry(req) as resp:
             result = json.loads(resp.read())
         compressed = result.get('messages')
         if isinstance(compressed, list) and compressed:
@@ -712,7 +739,7 @@ def _compress_responses(input_items: list, fmt: str, model: str = '') -> tuple:
         method='POST',
     )
     try:
-        with urllib.request.urlopen(req, timeout=HEADROOM_COMPRESS_TIMEOUT_SECONDS) as resp:
+        with _headroom_urlopen_with_retry(req) as resp:
             result = json.loads(resp.read())
         compressed = result.get('input')
         if isinstance(compressed, list) and compressed:

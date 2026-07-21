@@ -206,7 +206,7 @@ export async function buildVerifyResults({
   if (includeWatchdogChecks && platform === 'darwin') {
     try {
       execSyncImpl('launchctl list com.myelin.watchdog', { stdio: 'ignore' });
-      results.push({ name: 'Watchdog', ok: true, detail: 'active — checks every 90s' });
+      results.push({ name: 'Watchdog', ok: true, detail: 'active — checks every 30s' });
     } catch {
       results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
     }
