@@ -89,9 +89,10 @@ HEADROOM_CONNECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_CONNECT_RETRIES',
 # Each attempt waits 1s (async sleep — does not block the event loop). After
 # all retries are exhausted the redirect is skipped (fail-open: request goes
 # directly to the real Copilot API, uncompressed but without error).
-# Default 10 = up to 10s wait, giving the 30s watchdog time to revive headroom.
+# Default 300 = up to 5 minutes wait — gives the watchdog plenty of time to
+# revive headroom after a crash without the Copilot session failing hard.
 # Set to 0 to disable the pre-flight check and always redirect immediately.
-HEADROOM_REDIRECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_REDIRECT_RETRIES', '10'))
+HEADROOM_REDIRECT_RETRIES = int(os.environ.get('MYELIN_HEADROOM_REDIRECT_RETRIES', '300'))
 
 COMPRESS     = os.environ.get('MYELIN_COMPRESS',    '1') == '1'
 TOOL_FILTER  = os.environ.get('MYELIN_TOOL_FILTER', '1') == '1'
