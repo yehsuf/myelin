@@ -2957,3 +2957,44 @@ describe('spawnDetachedService', () => {
     assert.ok(!scripts[0].includes('http:\\\\127.0.0.1:8889'));
   });
 });
+
+describe('installEngineInstance — WinSW elevation fallback (WIN-WINSW-ELEVATION-001)', () => {
+  const baseInstance = {
+    engine: 'headroom',
+    role: 'primary',
+    id: 'headroom-primary',
+    port: 8787,
+    stateDir: 'C:\\Users\\alice\\.myelin\\state\\headroom-primary',
+    logPath: 'C:\\Users\\alice\\.myelin\\headroom-primary.log',
+    healthUrl: 'http://127.0.0.1:8787/health',
+    env: {},
+  };
+
+  it('falls back to registry Run key when winsw requested but shell is non-elevated', async () => {
+    const registryCalls = [];
+    const result = await windowsService.installEngineInstance(baseInstance, {
+      manager: 'winsw',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      runPsFn: (script, opts) => registryCalls.push({ script, opts }),
+      _isElevated: () => false,
+    });
+    assert.equal(result.manager, 'registry', 'should fall back to registry manager');
+    assert.equal(result.winswSkipped, true, 'should flag that WinSW was skipped');
+    assert.equal(registryCalls.length, 1, 'should have written registry Run key');
+  });
+
+  it('uses registry Run key when manager is registry regardless of elevation', async () => {
+    const registryCalls = [];
+    const result = await windowsService.installEngineInstance(baseInstance, {
+      manager: 'registry',
+      home: 'C:\\Users\\alice',
+      headroomBin: 'C:\\Users\\alice\\.myelin\\venv\\Scripts\\headroom.exe',
+      runPsFn: (script, opts) => registryCalls.push({ script, opts }),
+      _isElevated: () => false,
+    });
+    assert.equal(result.manager, 'registry');
+    assert.ok(!result.winswSkipped, 'registry mode should not set winswSkipped');
+    assert.equal(registryCalls.length, 1);
+  });
+});

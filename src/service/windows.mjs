@@ -1597,6 +1597,7 @@ export async function installEngineInstance(instance, {
   forceRestart = false,
   _isPortResponding = isPortResponding,
   _isWinswConfigUnchanged = isWinswConfigUnchanged,
+  _isElevated = isElevated,
   ...options
 } = {}) {
   const identity = engineInstanceIdentity(instance);
@@ -1609,6 +1610,13 @@ export async function installEngineInstance(instance, {
   if (manager !== 'winsw') {
     runPsFn(generateEngineInstanceRunScript({ instance, envVars: mergedEnv, ...options }), { home, env });
     return { ok: true, manager: 'registry', id: identity.id };
+  }
+  // WinSW service registration requires Administrator elevation.
+  // When running non-elevated (e.g. via SSH during `myelin update`), fall back
+  // to the registry Run key so the update does not roll back current.json.
+  if (!_isElevated()) {
+    runPsFn(generateEngineInstanceRunScript({ instance, envVars: mergedEnv, ...options }), { home, env });
+    return { ok: true, manager: 'registry', id: identity.id, winswSkipped: true };
   }
   return installWinswService({
     id: identity.id,

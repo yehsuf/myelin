@@ -871,11 +871,16 @@ export async function applyServiceEngineInstallPlan({
     });
   }
 
+  let winswFellBack = false;
   for (const instance of resolvedPlan.instances) {
-    await installEngineInstanceImpl(instance, {
+    const result = await installEngineInstanceImpl(instance, {
       ...platformOptions,
       envVars: engineInstanceServiceEnv(instance, envVars),
     });
+    if (result?.winswSkipped) winswFellBack = true;
+  }
+  if (winswFellBack) {
+    warnFn('WinSW service registration skipped (non-elevated shell) — services started via registry Run key. Run `myelin install` from an Administrator PowerShell to switch to WinSW.');
   }
 
   const servicePlan = buildServiceEnginePlan(cfg);
