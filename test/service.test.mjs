@@ -590,6 +590,38 @@ describe('windows WinSW zero-downtime skip', () => {
     assert.equal(result.skipped, undefined);
     assert.equal(installWinswCalled, true);
   });
+
+  it('installWinswService treats WinSW start failure as success when port already responds (registry-Run-key coexistence)', async () => {
+    // Simulates the case where myelin update runs elevated via SSH, WinSW registers
+    // the service (install succeeds), but start fails (exit -1) because the process
+    // is already serving on the port (started by the registry Run key at boot).
+    // The update should complete rather than rolling back current.json.
+    let installWinswCalled = false;
+    const result = await windowsService.installWinswService(skipInstallArgs({
+      port: 8787,
+      _isWinswConfigUnchanged: () => false,
+      _isPortResponding: async () => true,
+      installWinswImpl: async () => { installWinswCalled = true; return { path: 'x', filesystemPath: 'x' }; },
+      runPsFn: () => { throw new Error('WinSW start failed (exit -1). The service was registered but did not start.'); },
+    }));
+    assert.equal(installWinswCalled, true, 'WinSW install should still be called');
+    assert.equal(result.startSkipped, true, 'should return startSkipped when port is responding despite start failure');
+    assert.ok(!result.skipped, 'should not be flagged as a no-op skip');
+  });
+
+  it('installWinswService rethrows WinSW start failure when port is not responding', async () => {
+    await assert.rejects(
+      windowsService.installWinswService(skipInstallArgs({
+        port: 8787,
+        _isWinswConfigUnchanged: () => false,
+        _isPortResponding: async () => false,
+        installWinswImpl: async () => ({ path: 'x', filesystemPath: 'x' }),
+        runPsFn: () => { throw new Error('WinSW start failed (exit -1). The service was registered but did not start.'); },
+      })),
+      /WinSW start failed/,
+      'should rethrow when port is not responding',
+    );
+  });
 });
 
 function engineInstance(engine, role) {

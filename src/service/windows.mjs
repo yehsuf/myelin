@@ -1229,9 +1229,21 @@ export async function installWinswService({
   //    step fails after the old service was already uninstalled (step 2), the
   //    host would otherwise be left serviceless — so on failure restore the
   //    backed-up exe/xml and re-register (install + start) the previous service.
+  //    Exception: if the port is already responding (service running via another
+  //    mechanism such as the registry Run key), we treat a WinSW start failure
+  //    as a soft success — the new binary and config are already in place and
+  //    the service is up. This prevents update-orchestrator rollback when the
+  //    SSH session is elevated but the process is already serving on the port.
   try {
     runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
   } catch (err) {
+    if (port != null && await _isPortResponding(port)) {
+      // Service is already up on the expected port — start failure is benign.
+      // Clean up backup files (new binary/config are in place) and return ok.
+      if (backedUpExe) { try { unlinkSyncImpl(backupExePath); } catch {} }
+      if (backedUpConfig) { try { unlinkSyncImpl(backupConfigPath); } catch {} }
+      return { id, serviceExePath, configPath, logDir, startSkipped: true };
+    }
     if (backedUpExe) {
       try { renameSyncImpl(backupExePath, serviceFilesystemExePath); } catch {}
     }
