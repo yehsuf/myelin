@@ -12,6 +12,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { managedPaths } from '../shared/myelin-paths.mjs';
+import { resolveManagedMitmBinary } from '../update/managed-service-binary.mjs';
 
 async function probeHeadroomLite(port, execSyncFn = execSync) {
   try {
@@ -139,6 +140,7 @@ export async function buildVerifyResults({
   detectRtkImpl = detectRtk,
   detectSembleImpl,
   whichImpl = which,
+  resolveManagedMitmBinaryImpl = resolveManagedMitmBinary,
   probeHeadroomLiteImpl = (port) => probeHeadroomLite(port),
   includeToolChecks = true,
   includeMitmCheck = true,
@@ -193,7 +195,15 @@ export async function buildVerifyResults({
 
   if (includeMitmCheck && cfg.proxy?.mitm?.enabled) {
     const mitmSvc = await mitmServiceStatusImpl({ manager: winManager });
-    const mitmdump = await whichImpl('mitmdump');
+    // Prefer the managed pinned mitmdump path over the system/pip `which` path.
+    // resolveManagedMitmBinaryImpl throws when no managed binary is pinned/present.
+    let mitmdump = null;
+    try {
+      const componentsRoot = join(managedPaths({ home: homedir() }).root, 'components');
+      const managed = resolveManagedMitmBinaryImpl({ componentsRoot, platform });
+      if (managed?.binPath) mitmdump = managed.binPath;
+    } catch { /* no managed binary — fall through to which */ }
+    if (!mitmdump) mitmdump = await whichImpl('mitmdump');
     results.push({
       name: `Mitmproxy service (:${mitmPort})`,
       ok: mitmSvc.running,
