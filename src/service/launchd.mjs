@@ -272,7 +272,7 @@ export function mitmPlistPath(home = homedir()) {
  *  service never inherits stray client-side provider env vars from launchd's
  *  own environment (launchd's EnvironmentVariables dict is additive, not a
  *  filter). */
-export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory }) {
+export function generateGenericPlist({ label, command, args = [], envVars = {}, logPath, workingDirectory, throttleInterval = 10 }) {
   const envEntries = Object.entries(envVars)
     .map(([k, v]) => `        <key>${xmlEscape(k)}</key>\n        <string>${xmlEscape(v)}</string>`)
     .join('\n');
@@ -302,7 +302,7 @@ ${envEntries}
     <key>KeepAlive</key>
     <true/>
     <key>ThrottleInterval</key>
-    <integer>10</integer>
+    <integer>${throttleInterval}</integer>
     <key>StandardOutPath</key>
     <string>${xmlEscape(logPath ?? '/tmp/myelin.log')}</string>
     <key>StandardErrorPath</key>
@@ -438,6 +438,7 @@ export function installMitmService({ mitmdumpBin, port, addonPath, envVars = {},
     label: MITM_LABEL,
     command: mitmdumpBin,
     args,
+    throttleInterval: 1,  // restart within 1s on crash — Copilot CLI's retry window is 6s
     envVars: withForwardedMyelinDir({
       MYELIN_HEADROOM_PORT: String(envVars.HEADROOM_PORT ?? 8787),
       ...(egressPort ? { MYELIN_EGRESS_PORT: String(egressPort) } : {}),
