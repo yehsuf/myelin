@@ -161,11 +161,12 @@ function _copilot() {
     env ${unsetFlags} \\
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
+      MallocStackLogging=0 \\
       $_osc52_env \\
       copilot "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
-    env ${unsetFlags} $_osc52_env copilot "$@"
+    env ${unsetFlags} MallocStackLogging=0 $_osc52_env copilot "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
@@ -215,7 +216,7 @@ ${restoreLines}
 # Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT (via env -u ...) so a stray
 # global value can never point Claude at a nonexistent proxy port.
 function _claude() {
-  env ${unsetFlags} claude "$@"
+  env ${unsetFlags} MallocStackLogging=0 claude "$@"
 }`;
   }
   if (os === 'windows') {
@@ -265,11 +266,12 @@ function _claude() {
     env ${unsetFlags} \\
       ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
       ENABLE_PROMPT_CACHING_1H=1 \\
+      MallocStackLogging=0 \\
       $_osc52_env \\
       claude "$@"
   else
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
-    env ${unsetFlags} $_osc52_env claude "$@"
+    env ${unsetFlags} MallocStackLogging=0 $_osc52_env claude "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
