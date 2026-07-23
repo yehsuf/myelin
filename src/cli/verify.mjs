@@ -12,7 +12,6 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { managedPaths } from '../shared/myelin-paths.mjs';
-import { resolveManagedMitmBinary } from '../update/managed-service-binary.mjs';
 
 async function probeHeadroomLite(port, execSyncFn = execSync) {
   try {
@@ -55,7 +54,7 @@ async function probeEngineInstance(instance, {
     results.push({
       name: `${label} health`,
       ok: healthy,
-      detail: healthy ? `running — mode: ${response.mode}` : 'not running — run: myelin restart',
+      detail: healthy ? `running — ${response.version ? `v${response.version}, ` : ''}mode: ${response.mode}` : 'not running — run: myelin restart',
     });
   } else {
     const healthy = await waitForHeadroomImpl(instance.port, 3000);
@@ -140,7 +139,6 @@ export async function buildVerifyResults({
   detectRtkImpl = detectRtk,
   detectSembleImpl,
   whichImpl = which,
-  resolveManagedMitmBinaryImpl = resolveManagedMitmBinary,
   probeHeadroomLiteImpl = (port) => probeHeadroomLite(port),
   includeToolChecks = true,
   includeMitmCheck = true,
@@ -195,19 +193,7 @@ export async function buildVerifyResults({
 
   if (includeMitmCheck && cfg.proxy?.mitm?.enabled) {
     const mitmSvc = await mitmServiceStatusImpl({ manager: winManager });
-    // Prefer the managed pinned mitmdump path over the system/pip `which` path.
-    // On Windows the pip-installed path (AppData\Python\...) would show instead
-    // of the myelin-managed binary — misleading since myelin controls a pinned version.
-    // resolveManagedMitmBinaryImpl throws when no managed binary is pinned/present.
-    let mitmdump = null;
-    try {
-      const home = homedir();
-      // Use managedPaths to respect MYELIN_DIR relocations, not just ~/.myelin.
-      const componentsRoot = join(managedPaths({ home }).root, 'components');
-      const managed = resolveManagedMitmBinaryImpl({ componentsRoot, platform });
-      if (managed?.binPath) mitmdump = managed.binPath;
-    } catch { /* no managed binary — fall through to which */ }
-    if (!mitmdump) mitmdump = await whichImpl('mitmdump');
+    const mitmdump = await whichImpl('mitmdump');
     results.push({
       name: `Mitmproxy service (:${mitmPort})`,
       ok: mitmSvc.running,

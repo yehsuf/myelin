@@ -437,60 +437,56 @@ describe('buildVerifyResults engine selection', () => {
     assert.match(planRow.detail, /collision/i);
   });
 
-  it('shows managed mitmdump path instead of which-resolved path when managed binary exists (WIN-MITM-PATH-001)', async () => {
-    const managedPath = '/Users/alice/.myelin/components/mitmproxy/6.0.5/bin/mitmdump';
+  it('includes headroom-lite version in health detail when health response provides it (VERIFY-VER-001)', async () => {
     const results = await buildVerifyResults({
       config: {
         proxy: {
           engine: 'headroom_lite',
           headroom_lite: { enabled: true, port: 8787 },
-          mitm: { enabled: true, port: 8888 },
+          mitm: { enabled: false, port: 8888 },
           copilot_headroom: { enabled: false, port: 8788 },
           windows_service: { manager: 'registry' },
         },
       },
       engineInstanceStatusImpl: async () => ({ running: true }),
-      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
-      mitmServiceStatusImpl: async () => ({ running: true }),
-      whichImpl: async () => '/opt/homebrew/bin/mitmdump',
-      resolveManagedMitmBinaryImpl: () => ({ binPath: managedPath }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic', version: '0.32.0-0' }),
       detectToolImpl: async () => null,
       detectRtkImpl: async () => null,
       includeToolChecks: false,
+      includeMitmCheck: false,
       includeWatchdogChecks: false,
       includeManagedRuntimeCheck: false,
     });
-    const mitm = results.find(({ name }) => name === 'Mitmproxy service (:8888)');
-    assert.ok(mitm?.ok, 'mitmproxy row should be ok');
-    assert.ok(mitm.detail.includes(managedPath), `should show managed path, got: ${mitm.detail}`);
-    assert.ok(!mitm.detail.includes('homebrew'), 'should NOT show which-resolved Homebrew path');
+    const healthRow = results.find(r => r.name === 'Headroom Lite health');
+    assert.ok(healthRow?.ok);
+    assert.ok(healthRow.detail.includes('v0.32.0-0'), `should include version, got: ${healthRow.detail}`);
+    assert.ok(healthRow.detail.includes('deterministic'), `should include mode, got: ${healthRow.detail}`);
   });
 
-  it('falls back to which-resolved path when no managed mitmdump binary exists', async () => {
+  it('health detail omits version prefix when health response has no version', async () => {
     const results = await buildVerifyResults({
       config: {
         proxy: {
           engine: 'headroom_lite',
           headroom_lite: { enabled: true, port: 8787 },
-          mitm: { enabled: true, port: 8888 },
+          mitm: { enabled: false, port: 8888 },
           copilot_headroom: { enabled: false, port: 8788 },
           windows_service: { manager: 'registry' },
         },
       },
       engineInstanceStatusImpl: async () => ({ running: true }),
-      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
-      mitmServiceStatusImpl: async () => ({ running: true }),
-      whichImpl: async () => '/opt/homebrew/bin/mitmdump',
-      resolveManagedMitmBinaryImpl: () => { throw new Error('no managed binary'); },
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'cache' }),
       detectToolImpl: async () => null,
       detectRtkImpl: async () => null,
       includeToolChecks: false,
+      includeMitmCheck: false,
       includeWatchdogChecks: false,
       includeManagedRuntimeCheck: false,
     });
-    const mitm = results.find(({ name }) => name === 'Mitmproxy service (:8888)');
-    assert.ok(mitm?.ok);
-    assert.ok(mitm.detail.includes('/opt/homebrew/bin/mitmdump'), `should show which path, got: ${mitm.detail}`);
+    const healthRow = results.find(r => r.name === 'Headroom Lite health');
+    assert.ok(healthRow?.ok);
+    assert.ok(!healthRow.detail.includes('v'), `should not have version prefix, got: ${healthRow.detail}`);
+    assert.ok(healthRow.detail.includes('cache'), `should include mode, got: ${healthRow.detail}`);
   });
 });
 
