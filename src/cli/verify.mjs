@@ -14,6 +14,8 @@ import { homedir } from 'node:os';
 import { managedPaths } from '../shared/myelin-paths.mjs';
 import { resolveManagedMitmBinary } from '../update/managed-service-binary.mjs';
 
+import { createConnection } from 'node:net';
+
 async function probeHeadroomLite(port, execSyncFn = execSync) {
   try {
     return JSON.parse(execSyncFn(`curl -sf --max-time 3 http://127.0.0.1:${port}/health`, { timeout: 4000 }).toString());
@@ -26,6 +28,52 @@ export function printVerifyEnvironmentNote({ detectOSImpl = detectOS, log = cons
   if (detectOSImpl(true).wsl) {
     log('ℹ Detected: running inside WSL — bridging to Windows service management via PowerShell interop.');
   }
+}
+
+/**
+ * Probe that a CONNECT tunnel can be established through the local HTTPS proxy
+ * to the target host. Does NOT send any API request — just verifies the
+ * network path is open (proxy → target TCP connect → 200 Connection established).
+ *
+ * @param {object} opts
+ * @param {string} opts.proxyHost - e.g. '127.0.0.1'
+ * @param {number} opts.proxyPort - e.g. 8888
+ * @param {string} opts.targetHost - e.g. 'api.individual.githubcopilot.com'
+ * @param {number} opts.targetPort - e.g. 443
+ * @param {number} [opts.timeoutMs] - default 5000
+ * @returns {Promise<{ok: boolean, detail: string}>}
+ */
+export function probeProxyTunnel({ proxyHost, proxyPort, targetHost, targetPort, timeoutMs = 5000 } = {}) {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: proxyHost, port: proxyPort });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      socket.destroy();
+      resolve({ ok: false, detail: `timeout after ${timeoutMs}ms` });
+    }, timeoutMs);
+
+    socket.once('error', (err) => {
+      clearTimeout(timer);
+      if (!timedOut) resolve({ ok: false, detail: err.message });
+    });
+
+    socket.once('connect', () => {
+      socket.write(`CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\nHost: ${targetHost}:${targetPort}\r\n\r\n`);
+    });
+
+    let buf = '';
+    socket.on('data', (chunk) => {
+      buf += chunk.toString('ascii');
+      if (buf.includes('\r\n\r\n')) {
+        clearTimeout(timer);
+        socket.destroy();
+        const firstLine = buf.split('\r\n')[0];
+        const ok = /^HTTP\/1\.[01] 200/.test(firstLine);
+        resolve({ ok, detail: ok ? `tunnel to ${targetHost}:${targetPort} established` : firstLine });
+      }
+    });
+  });
 }
 
 function engineInstanceLabel({ engine, role }) {
@@ -142,11 +190,13 @@ export async function buildVerifyResults({
   whichImpl = which,
   resolveManagedMitmBinaryImpl = resolveManagedMitmBinary,
   probeHeadroomLiteImpl = (port) => probeHeadroomLite(port),
+  probeProxyTunnelImpl = probeProxyTunnel,
   includeToolChecks = true,
   includeMitmCheck = true,
   includeCopilotHeadroomCheck = true,
   includeWatchdogChecks = true,
   includeManagedRuntimeCheck = true,
+  e2e = false,
   platform = process.platform,
   execSyncImpl = execSync,
 } = {}) {
@@ -210,6 +260,21 @@ export async function buildVerifyResults({
       detail: mitmSvc.running
         ? `running${mitmdump ? ` (${mitmdump})` : ''}`
         : mitmdump ? 'not running — try: myelin diagnose' : 'mitmdump not found — run: myelin update',
+    });
+  }
+
+  // --e2e: probe that HTTPS CONNECT tunnels work through mitmproxy to the
+  // Copilot API. This makes real TCP connections but NO API calls (no tokens).
+  if (e2e && cfg.proxy?.mitm?.enabled) {
+    const proxyPort = cfg.proxy?.mitm?.port ?? 8888;
+    const copilotTunnel = await probeProxyTunnelImpl({
+      proxyHost: '127.0.0.1', proxyPort,
+      targetHost: 'api.individual.githubcopilot.com', targetPort: 443,
+    });
+    results.push({
+      name: 'E2E: Copilot API tunnel',
+      ok: copilotTunnel.ok,
+      detail: copilotTunnel.detail,
     });
   }
 

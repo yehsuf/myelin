@@ -488,6 +488,61 @@ describe('buildVerifyResults engine selection', () => {
     assert.ok(!healthRow.detail.includes('v'), `should not have version prefix, got: ${healthRow.detail}`);
     assert.ok(healthRow.detail.includes('cache'), `should include mode, got: ${healthRow.detail}`);
   });
+
+  it('adds E2E Copilot API tunnel row when e2e=true and mitmproxy is enabled', async () => {
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { enabled: true, port: 8787 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      e2e: true,
+      engineInstanceStatusImpl: async () => ({ running: true }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
+      mitmServiceStatusImpl: async () => ({ running: true }),
+      probeProxyTunnelImpl: async ({ targetHost }) => ({ ok: true, detail: `tunnel to ${targetHost}:443 established` }),
+      resolveManagedMitmBinaryImpl: () => { throw new Error('no managed binary'); },
+      whichImpl: async () => '/usr/bin/mitmdump',
+      detectToolImpl: async () => null,
+      detectRtkImpl: async () => null,
+      includeToolChecks: false,
+      includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
+    });
+    const e2eRow = results.find(r => r.name === 'E2E: Copilot API tunnel');
+    assert.ok(e2eRow, 'should have E2E row when e2e=true');
+    assert.ok(e2eRow.ok);
+    assert.ok(e2eRow.detail.includes('api.individual.githubcopilot.com'));
+  });
+
+  it('omits E2E rows when e2e=false (default)', async () => {
+    const results = await buildVerifyResults({
+      config: {
+        proxy: {
+          engine: 'headroom_lite',
+          headroom_lite: { enabled: true, port: 8787 },
+          mitm: { enabled: true, port: 8888 },
+          copilot_headroom: { enabled: false, port: 8788 },
+          windows_service: { manager: 'registry' },
+        },
+      },
+      engineInstanceStatusImpl: async () => ({ running: true }),
+      probeHeadroomLiteImpl: async () => ({ status: 'ok', mode: 'deterministic' }),
+      mitmServiceStatusImpl: async () => ({ running: true }),
+      resolveManagedMitmBinaryImpl: () => { throw new Error('no managed binary'); },
+      whichImpl: async () => '/usr/bin/mitmdump',
+      detectToolImpl: async () => null,
+      detectRtkImpl: async () => null,
+      includeToolChecks: false,
+      includeWatchdogChecks: false,
+      includeManagedRuntimeCheck: false,
+    });
+    assert.ok(!results.some(r => r.name.startsWith('E2E:')), 'no E2E rows by default');
+  });
 });
 
 describe('checkManagedRuntime', () => {

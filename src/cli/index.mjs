@@ -9,9 +9,10 @@ program.addCommand(configCommand());
 
 program.command('verify')
   .description('Verify all components are healthy')
-  .action(async () => {
+  .option('--e2e', 'Run end-to-end connectivity probes (real TCP connections, no API calls)')
+  .action(async (opts) => {
     const { runVerify } = await import('./verify.mjs');
-    const ok = await runVerify();
+    const ok = await runVerify({ e2e: opts.e2e ?? false });
     process.exit(ok ? 0 : 1);
   });
 
