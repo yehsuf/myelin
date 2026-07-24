@@ -62,19 +62,21 @@ git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
 
 ### Start a feature (per agent)
 
+**DEFAULT: Reuse an existing agent directory. Create a new branch in-place. Never create a new `~/myelin-agents/<name>/` directory per feature — one agent = one persistent directory.**
+
 ```bash
+# First time for this agent — create the directory and worktree:
 git --git-dir="$HOME/myelin-agents/.bare/myelin.git" fetch origin
 git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree add \
     ~/myelin-agents/<agent>/myelin -b <branch> origin/main
+
+# All subsequent features in the same session — switch branch in-place:
+git -C ~/myelin-agents/<agent>/myelin fetch origin
+git -C ~/myelin-agents/<agent>/myelin switch -c <branch> origin/main
 cd ~/myelin-agents/<agent>/myelin          # start the Copilot/Claude session FROM here
 ```
 
-Reuse the same worktree path across branches where practical (keeps Serena's path-baked cache warm) — switch in place instead of creating a new worktree dir:
-
-```bash
-git -C ~/myelin-agents/<agent>/myelin fetch origin
-git -C ~/myelin-agents/<agent>/myelin switch -c <branch> origin/main   # or: switch <existing-branch>
-```
+Reusing the directory keeps Serena's path-baked cache warm across branches. The `<agent>` name is derived from the session (e.g., `cli` for Copilot CLI sessions, `architect` for architecture sessions).
 
 Put ALL scratch in `~/myelin-agents/<agent>/scratch/` — never in the worktree.
 
@@ -109,11 +111,13 @@ git -C ~/myelin-agents/<agent>/myelin push -u origin <branch>
 gh pr create --base main --head <branch>   # then ASK the human to approve the merge
 ```
 
-### Remove a worktree when done
+### Remove a worktree and directory when done with all work for this session
 
 ```bash
 git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree remove ~/myelin-agents/<agent>/myelin
 git --git-dir="$HOME/myelin-agents/.bare/myelin.git" worktree prune
+# Remove the now-empty agent directory itself:
+rm -rf ~/myelin-agents/<agent>
 ```
 
 ### Retiring the legacy `~/tokenstack-wt-*` worktrees (coordinated — NOT unilateral)
