@@ -65,9 +65,11 @@ describe('runStatus (STATUSBAR-001)', () => {
     assert.ok('hlite' in data);
     assert.ok('avgCompressionPct' in data);
     assert.ok('topModel' in data);
+    assert.ok('cachedAt' in data, 'must include cachedAt for staleness detection');
     assert.equal(data.hlite, true);
     assert.equal(data.topModel, 'gpt-5.4-nano');
     assert.ok(Math.abs(data.avgCompressionPct - 27.5) < 0.1);
+    assert.ok(data.cachedAt !== null, 'cachedAt should be the timestamp string');
   });
 
   it('prompt format contains ANSI codes and health mark', async () => {

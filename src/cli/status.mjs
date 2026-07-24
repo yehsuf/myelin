@@ -68,8 +68,8 @@ const C = {
 /**
  * @param {{ format?: 'plain'|'json'|'prompt', home?: string, env?: NodeJS.ProcessEnv,
  *           platform?: string, _exec?: typeof execSync, _readFile?: typeof readFileSync,
- *           _probeAlive?: typeof probeAlive, _existsSync?: typeof existsSync,
- *           _loadConfig?: typeof loadConfig }} opts
+ *           _probeAlive?: (port: number, ms: number, exec: typeof execSync) => boolean,
+ *           _existsSync?: typeof existsSync, _loadConfig?: typeof loadConfig }} opts
  */
 export async function runStatus({
   format = 'plain',
@@ -90,8 +90,13 @@ export async function runStatus({
   const mitmPort  = cfg?.proxy?.mitm?.port ?? 8888;
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;
 
-  const hliteOk = _probeAlive(hlitePort, 800, _exec);
-  const mitmOk  = mitmEnabled ? _probeAlive(mitmPort, 800, _exec) : null;
+  // Run probes in parallel so total latency = max(t_hlite, t_mitm), not sum.
+  // This keeps myelin status within Starship's default 1500 ms command timeout.
+  const probeAsync = (port) => new Promise((resolve) => resolve(_probeAlive(port, 800, _exec)));
+  const [hliteOk, mitmOk] = await Promise.all([
+    probeAsync(hlitePort),
+    mitmEnabled ? probeAsync(mitmPort) : Promise.resolve(null),
+  ]);
 
   // Read savings from the status-cache written by `myelin stats` (fast, no log parsing).
   const cachePath = joinManaged(paths.root, STATUS_CACHE_FILENAME);
@@ -106,6 +111,7 @@ export async function runStatus({
     avgCompressionPct: cache?.avgCompressionPct ?? null,
     reqCount: cache?.reqCount ?? 0,
     topModel: cache?.topModel ?? null,
+    cachedAt: cache?.cachedAt ?? null,
   };
 
   if (format === 'json') {
