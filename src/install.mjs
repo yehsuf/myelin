@@ -2943,6 +2943,14 @@ async function main() {
         ok('agentcairn installed');
       } catch { warn('agentcairn install failed — will use uvx fallback'); }
     } else { skip('agentcairn (installed)'); }
+    // socksio enables SOCKS5 proxy support in httpx (used by huggingface_hub) so
+    // `cairn warm` can download embedding models behind a SOCKS proxy.
+    // Idempotent — uv pip install does nothing if already present.
+    try {
+      const cairnPython = execSync('uv tool run --from agentcairn python -c "import sys; print(sys.executable)"',
+        { stdio: 'pipe', timeout: 5000 }).toString().trim();
+      execSync(`uv pip install --python "${cairnPython}" socksio`, { stdio: 'pipe', timeout: 30000 });
+    } catch { /* socksio is optional — proxy will work without it on non-SOCKS networks */ }
     // Claude Code plugin gives richer auto-recall hooks — install if claude CLI is available
     if (claudeCC) {
       try {
