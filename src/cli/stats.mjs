@@ -1,9 +1,19 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { loadConfig } from '../config/reader.mjs';
 import { buildEngineInstancePlan } from '../config/engine-runtime.mjs';
 import { managedPaths, joinManaged } from '../shared/myelin-paths.mjs';
+
+export const STATUS_CACHE_FILENAME = 'status-cache.json';
+
+/** Write a compact status summary for `myelin status` to read without re-parsing the log. */
+export function writeStatusCache(data, home = homedir(), env = process.env, platform = process.platform, writeFile = writeFileSync) {
+  try {
+    const path = joinManaged(managedPaths({ home, env, platform }).root, STATUS_CACHE_FILENAME);
+    writeFile(path, JSON.stringify({ ...data, cachedAt: new Date().toISOString() }), 'utf8');
+  } catch { /* never fail myelin stats just because cache write failed */ }
+}
 
 const SEP = '─'.repeat(60);
 const WIDE_DISCOVERY_HINT = 'More detail: myelin stats --wide';
@@ -485,6 +495,11 @@ export async function runStats({ wide = false } = {}, {
           logFn('  running  (no compressed requests yet)');
           return;
         }
+        // Write status cache for `myelin status` to read without re-parsing the log.
+        writeStatusCache(
+          { avgCompressionPct: parseFloat(d.avgPct), reqCount: d.reqCount, topModel: d.topModels[0]?.[0] ?? null },
+          homeDir, env,
+        );
         row(logFn, 'Status:', 'running');
         row(logFn, 'Requests compressed:', `${d.reqCount}  (processed ${d.processedGb} GB)`);
         row(logFn, 'Avg compression:', `${d.avgPct}%  (${d.savedMb} MB saved)`);

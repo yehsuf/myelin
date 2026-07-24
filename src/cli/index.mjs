@@ -83,6 +83,14 @@ program.command('stats')
     await runStats({ wide: opts.wide });
   });
 
+program.command('status')
+  .description('Show compact proxy health + savings (for shell prompt / statusline)')
+  .option('--format <fmt>', 'Output format: plain | json | prompt', 'plain')
+  .action(async (opts) => {
+    const { runStatus } = await import('./status.mjs');
+    await runStatus({ format: opts.format });
+  });
+
 program.command('init')
   .description('Initialize current git repo with Serena + Semble (register + index)')
   .option('-y, --yes', 'Auto-accept all prompts')
