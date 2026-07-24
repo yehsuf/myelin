@@ -24,7 +24,8 @@ def _safe_filter(value: str, label: str) -> str:
 
 def _run_git(cmd: list[str], label: str) -> str:
     try:
-        return subprocess.check_output(cmd, text=True, timeout=15, stderr=subprocess.STDOUT)
+        return subprocess.check_output(cmd, text=True, encoding='utf-8', errors='replace',
+                                       timeout=15, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as exc:
         return f'{label} failed: {exc.output}'
     except OSError as exc:
