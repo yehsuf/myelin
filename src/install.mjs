@@ -3426,6 +3426,20 @@ async function main() {
     ok('~/.claude/CLAUDE.md managed section');
   }
 
+  // copilot-instructions.md managed section (output protocol, token efficiency)
+  if (copilot) {
+    const copilotBlock = renderManagedBlock({
+      target: 'global',
+      provider: 'copilot',
+      cfg: installCfg,
+    });
+    if (copilotBlock.trim()) {
+      const copilotInstructionsPath = join(home, '.copilot', 'copilot-instructions.md');
+      writeManagedSection(copilotInstructionsPath, `\n${copilotBlock}`);
+      ok('~/.copilot/copilot-instructions.md managed section (output protocol)');
+    }
+  }
+
   const rtkEnabledInConfig = installCfg.shell_compression?.rtk !== false;
   if (!flags['no-rtk'] && rtkEnabledInConfig && tools.rtk.installed) {
     const rtkInitPlans = [];

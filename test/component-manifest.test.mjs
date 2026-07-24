@@ -102,6 +102,13 @@ describe('component manifest', () => {
         bin: 'codegraph',
         optional: true,
       },
+      caveman: {
+        kind: 'npm',
+        package: '@juliusbrussee/caveman-code',
+        version: '0.65.2',
+        bin: 'caveman',
+        optional: true,
+      },
       tokenOptimizer: {
         kind: 'git-checkout',
         repository: 'https://github.com/alexgreensh/token-optimizer.git',

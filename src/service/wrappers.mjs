@@ -141,6 +141,10 @@ ${restoreLines}
 }`;
   }
   const unsetFlags = COPILOT_FORBIDDEN_ENV.map(k => `-u ${k}`).join(' ');
+  // -u MallocStackLogging: completely remove from env (not set to 0 — that enables
+  // a "lite" mode that fails with "could not tag MSL-related memory as no_footprint").
+  // Unsetting means macOS never starts the logging machinery at all.
+  const mallocFlag = '-u MallocStackLogging';
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
@@ -158,15 +162,14 @@ function _copilot() {
   fi
   local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${mitmPort} 2>/dev/null; then
-    env ${unsetFlags} \\
+    env ${unsetFlags} ${mallocFlag} \\
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
-      MallocStackLogging=0 \\
       $_osc52_env \\
       copilot "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
-    env ${unsetFlags} MallocStackLogging=0 $_osc52_env copilot "$@"
+    env ${unsetFlags} ${mallocFlag} $_osc52_env copilot "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
@@ -216,7 +219,7 @@ ${restoreLines}
 # Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT (via env -u ...) so a stray
 # global value can never point Claude at a nonexistent proxy port.
 function _claude() {
-  env ${unsetFlags} MallocStackLogging=0 claude "$@"
+  env ${unsetFlags} -u MallocStackLogging claude "$@"
 }`;
   }
   if (os === 'windows') {
@@ -246,6 +249,7 @@ ${restoreLines}
 }`;
   }
   const unsetFlags = CLAUDE_FORBIDDEN_ENV.map(k => `-u ${k}`).join(' ');
+  const mallocFlag = '-u MallocStackLogging';
   return `# _claude routes Claude Code traffic through Myelin headroom (token compression).
 # Actively unsets Copilot-proxy env vars (via env -u ...) so a stray
 # HTTPS_PROXY in the shell can never double-route Claude through mitmproxy.
@@ -263,15 +267,14 @@ function _claude() {
   fi
   local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${headroomPort} 2>/dev/null; then
-    env ${unsetFlags} \\
+    env ${unsetFlags} ${mallocFlag} \\
       ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
       ENABLE_PROMPT_CACHING_1H=1 \\
-      MallocStackLogging=0 \\
       $_osc52_env \\
       claude "$@"
   else
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
-    env ${unsetFlags} MallocStackLogging=0 $_osc52_env claude "$@"
+    env ${unsetFlags} ${mallocFlag} $_osc52_env claude "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
