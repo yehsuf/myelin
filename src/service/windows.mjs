@@ -594,10 +594,10 @@ export function generateWinswInstallScript({ serviceExePath, configPath, legacyR
   const startFailureGuard = port != null
     ? `
 if ($LASTEXITCODE -ne 0) {
-  $deadline = (Get-Date).AddSeconds(2)
+  $deadline = (Get-Date).AddSeconds(10)
   $portUp = $false
   do {
-    Start-Sleep -Milliseconds 200
+    Start-Sleep -Milliseconds 500
     try {
       $tc = New-Object System.Net.Sockets.TcpClient
       $tc.Connect('127.0.0.1', ${port})
