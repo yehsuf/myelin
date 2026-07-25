@@ -3684,7 +3684,11 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
       // backend is disabled (selectedProxyPort == null) HEADROOM_PORT is omitted
       // entirely so nothing points at a nonexistent proxy.
       const headroomExport = selectedProxyPort != null ? `export HEADROOM_PORT=${selectedProxyPort}` : '';
-      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      // RPROMPT integration: show myelin status (cache-only, 50ms) on the right
+      // side of the shell prompt. Zsh only; reads status-cache.json written by
+      // `myelin stats` so there is no HTTP probe overhead per prompt.
+      const rpromptSnippet = `\n# myelin status in RPROMPT (zsh, cache-only — run 'myelin stats' to refresh)\nif [ -n "$ZSH_VERSION" ]; then\n  setopt PROMPT_SUBST 2>/dev/null || true\n  RPROMPT='$(myelin status --no-probe --format prompt 2>/dev/null)'\nfi`;
+      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}${rpromptSnippet}\n# <<< myelin managed <<<\n`;
     }
     const updated = MANAGED_BLOCK_RE.test(existing)
       ? existing.replace(MANAGED_BLOCK_RE, block)

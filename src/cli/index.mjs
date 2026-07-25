@@ -86,9 +86,10 @@ program.command('stats')
 program.command('status')
   .description('Show compact proxy health + savings (for shell prompt / statusline)')
   .option('--format <fmt>', 'Output format: plain | json | prompt', 'plain')
+  .option('--no-probe', 'Skip health probes — read cache only (instant, for RPROMPT)')
   .action(async (opts) => {
     const { runStatus } = await import('./status.mjs');
-    await runStatus({ format: opts.format });
+    await runStatus({ format: opts.format, noProbe: opts.probe === false });
   });
 
 program.command('init')
