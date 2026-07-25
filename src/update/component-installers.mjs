@@ -337,13 +337,21 @@ export function buildComponentInstallPlan(component, destination, platform = pro
         ],
       };
     }
-    case 'npm':
+    case 'npm': {
+      const noBuildPlatforms = Array.isArray(component.noBuildOnPlatforms) ? component.noBuildOnPlatforms : [];
+      const skipOnPlatform = noBuildPlatforms.includes(normalizedPlatform.os);
+      if (skipOnPlatform) {
+        // Return a no-op plan so the orchestrator skips this optional component
+        // gracefully rather than attempting a native build that would fail.
+        return { ...base, skip: true, skipReason: `noBuildOnPlatforms includes ${normalizedPlatform.os}`, commands: [] };
+      }
       return {
         ...base,
         commands: [
           ['npm', 'install', '--prefix', normalizedDestination, `${component.package}@${component.version}`],
         ],
       };
+    }
     case 'npm-git':
       return {
         ...base,
@@ -1017,6 +1025,13 @@ export function stageComponent({
   const normalizedPlatform = normalizePlatform(platform);
   const versionDirectory = componentVersionDir(root, name, component?.version, pathFor(normalizedPlatform));
   const plan = buildComponentInstallPlan(component, versionDirectory, normalizedPlatform);
+
+  // noBuildOnPlatforms skip: return a no-op result without touching the
+  // component directory so EPERM errors on read-only files are avoided.
+  if (plan.skip) {
+    return { name, version: component.version, destination: plan.destination, binPath: plan.binPath, plan, skipped: true };
+  }
+
   const destination = plan.destination;
   fs.mkdirSync(pathFor(plan.platform).dirname(destination), { recursive: true });
   prepareStageDestination(destination, fs, plan.platform);

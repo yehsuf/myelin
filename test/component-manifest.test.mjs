@@ -108,6 +108,7 @@ describe('component manifest', () => {
         version: '0.65.2',
         bin: 'caveman',
         optional: true,
+        noBuildOnPlatforms: ['win32'],
       },
       tokenOptimizer: {
         kind: 'git-checkout',
