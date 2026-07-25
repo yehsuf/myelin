@@ -247,6 +247,9 @@ const RELEASED_COMPONENTS = {
     version: '0.65.2',
     bin: 'caveman',
     optional: true,
+    // Requires better-sqlite3 which needs MSVS to build from source.
+    // No prebuilt binaries exist for Node >=24 on Windows — skip gracefully.
+    noBuildOnPlatforms: ['win32'],
   },
   tokenOptimizer: {
     kind: 'git-checkout',
