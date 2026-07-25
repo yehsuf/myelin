@@ -583,18 +583,39 @@ function winswLogDir({ id, home, logPath, env = process.env } = {}) {
   return pathWin32.extname(normalized) ? pathWin32.dirname(normalized) : normalized;
 }
 
-export function generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }) {
+export function generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey, port = null }) {
   const cleanupRunKey = legacyRunKey
     ? `Remove-ItemProperty -Path ${psQuote(REG_RUN)} -Name ${psQuote(legacyRunKey)} -ErrorAction SilentlyContinue`
     : '';
+  // After a WinSW start failure, check whether the port is already responding
+  // (another process — e.g. registry Run-key process — may already own it).
+  // If the port is up within 2 s we treat the start as a soft success so the
+  // PowerShell script exits cleanly instead of throwing.
+  const startFailureGuard = port != null
+    ? `
+if ($LASTEXITCODE -ne 0) {
+  $deadline = (Get-Date).AddSeconds(2)
+  $portUp = $false
+  do {
+    Start-Sleep -Milliseconds 200
+    try {
+      $tc = New-Object System.Net.Sockets.TcpClient
+      $tc.Connect('127.0.0.1', ${port})
+      $tc.Close()
+      $portUp = $true
+    } catch {}
+  } while (-not $portUp -and (Get-Date) -lt $deadline)
+  if (-not $portUp) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start. Check the WinSW logs and ensure the shell is elevated." }
+}`
+    : `
+if ($LASTEXITCODE -ne 0) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start. Check the WinSW logs and ensure the shell is elevated." }`;
   return `
 try { & ${psQuote(serviceExePath)} stop ${psQuote(configPath)} --force --no-wait | Out-Null } catch {}
 try { & ${psQuote(serviceExePath)} uninstall ${psQuote(configPath)} | Out-Null } catch {}
 Start-Sleep -Seconds 1
 & ${psQuote(serviceExePath)} install ${psQuote(configPath)} | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "WinSW install failed (exit $LASTEXITCODE). Registering a Windows service may require an elevated (Administrator) shell." }
-& ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "WinSW start failed (exit $LASTEXITCODE). The service was registered but did not start. Check the WinSW logs and ensure the shell is elevated." }
+& ${psQuote(serviceExePath)} start ${psQuote(configPath)} | Out-Null${startFailureGuard}
 ${cleanupRunKey}
 `;
 }
@@ -1235,7 +1256,7 @@ export async function installWinswService({
   //    the service is up. This prevents update-orchestrator rollback when the
   //    SSH session is elevated but the process is already serving on the port.
   try {
-    runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey }), { home: winHome });
+    runPsFn(generateWinswInstallScript({ serviceExePath, configPath, legacyRunKey, port }), { home: winHome });
   } catch (err) {
     if (port != null && await _isPortResponding(port)) {
       // Service is already up on the expected port — start failure is benign.
