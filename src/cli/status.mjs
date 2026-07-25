@@ -66,13 +66,15 @@ const C = {
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 /**
- * @param {{ format?: 'plain'|'json'|'prompt', home?: string, env?: NodeJS.ProcessEnv,
- *           platform?: string, _exec?: typeof execSync, _readFile?: typeof readFileSync,
+ * @param {{ format?: 'plain'|'json'|'prompt', noProbe?: boolean, home?: string,
+ *           env?: NodeJS.ProcessEnv, platform?: string, _exec?: typeof execSync,
+ *           _readFile?: typeof readFileSync,
  *           _probeAlive?: (port: number, ms: number, exec: typeof execSync) => boolean,
  *           _existsSync?: typeof existsSync, _loadConfig?: typeof loadConfig }} opts
  */
 export async function runStatus({
   format = 'plain',
+  noProbe = false,
   home = homedir(),
   env = process.env,
   platform = process.platform,
@@ -91,12 +93,14 @@ export async function runStatus({
   const mitmEnabled = cfg?.proxy?.mitm?.enabled ?? false;
 
   // Run probes in parallel so total latency = max(t_hlite, t_mitm), not sum.
-  // This keeps myelin status within Starship's default 1500 ms command timeout.
+  // --no-probe: skip HTTP checks entirely — reads cache only (instant, for RPROMPT).
   const probeAsync = (port) => new Promise((resolve) => resolve(_probeAlive(port, 800, _exec)));
-  const [hliteOk, mitmOk] = await Promise.all([
-    probeAsync(hlitePort),
-    mitmEnabled ? probeAsync(mitmPort) : Promise.resolve(null),
-  ]);
+  const [hliteOk, mitmOk] = noProbe
+    ? [null, null]
+    : await Promise.all([
+        probeAsync(hlitePort),
+        mitmEnabled ? probeAsync(mitmPort) : Promise.resolve(null),
+      ]);
 
   // Read savings from the status-cache written by `myelin stats` (fast, no log parsing).
   const cachePath = joinManaged(paths.root, STATUS_CACHE_FILENAME);
@@ -119,15 +123,18 @@ export async function runStatus({
     return;
   }
 
-  const proxyOk = hliteOk && (mitmEnabled ? mitmOk : true);
-  const healthMark = proxyOk ? '✓' : '✗';
+  // noProbe: use cache-based proxy state (null = unknown → shown as neutral ○)
+  const proxyOk = hliteOk == null
+    ? null
+    : hliteOk && (mitmEnabled ? mitmOk : true);
+  const healthMark = proxyOk == null ? '○' : proxyOk ? '✓' : '✗';
   const savingsPart = data.avgCompressionPct !== null
     ? `${data.avgCompressionPct.toFixed(1)}% saved`
     : null;
   const modelPart = data.topModel ? `[${data.topModel}]` : null;
 
   if (format === 'prompt') {
-    const color = proxyOk ? C.green : C.red;
+    const color = proxyOk == null ? C.dim : proxyOk ? C.green : C.red;
     const parts = [
       `${color}⚡${C.reset}`,
       `myelin`,
