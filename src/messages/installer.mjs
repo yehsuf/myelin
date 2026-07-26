@@ -10,9 +10,10 @@
  */
 import { mkdirSync, writeFileSync, existsSync, readFileSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { bootReplaceLaunchdService } from '../service/launchd.mjs';
 
 const LABEL = 'com.myelin.messages-watcher';
 const SYSTEMD_UNIT = 'myelin-messages-watcher.service';
@@ -83,13 +84,15 @@ function buildLaunchdPlist({ nodePath, watcherDst, logFile, msgDir }) {
 }
 
 function buildSystemdUnit({ nodePath, watcherDst, logFile, msgDir }) {
+  // Escape paths for systemd ExecStart: wrap in double-quotes, escape inner quotes/backslashes.
+  const esc = (p) => `"${String(p).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   return `[Unit]
 Description=myelin messages watcher
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=${nodePath} ${watcherDst}
+ExecStart=${esc(nodePath)} ${esc(watcherDst)}
 WorkingDirectory=${msgDir}
 StandardOutput=append:${logFile}
 StandardError=append:${logFile}
@@ -106,41 +109,36 @@ function readPid(pidFile) {
   catch { return null; }
 }
 
-function killExistingWatcher(pidFile, execSyncImpl) {
-  const pid = readPid(pidFile);
-  if (!pid) return;
-  try { execSyncImpl(`kill ${pid}`, { stdio: 'ignore' }); } catch {}
-}
-
 /**
  * Install the myelin messages watcher daemon.
  *
  * @param {object} opts
  * @param {string}   [opts.home]        - User home directory
- * @param {string}   [opts.os]          - 'mac' | 'linux' | 'windows'
+ * @param {string}   [opts.os]          - 'darwin' | 'linux' | 'windows' (detectOS() convention)
  * @param {string}   [opts.nodePath]    - Absolute path to node binary
  * @param {Function} [opts.ok]          - Success logger
  * @param {Function} [opts.warn]        - Warning logger
  * @param {boolean}  [opts.dryRun]      - If true, return plan without writing
  * @param {Function} [opts.execSyncImpl]
  * @param {Function} [opts.existsSyncImpl]
+ * @param {Function} [opts.bootReplaceLaunchdImpl]
  * @returns {{ plistPath?: string, plist?: string, unitPath?: string, unit?: string }}
  */
 export function installMessagesWatcher({
   home = homedir(),
-  os: osName = 'mac',
+  os: osName = 'darwin',
   nodePath = process.execPath,
   ok = () => {},
   warn = () => {},
   dryRun = false,
   execSyncImpl = execSync,
   existsSyncImpl = existsSync,
+  bootReplaceLaunchdImpl = bootReplaceLaunchdService,
 } = {}) {
   const msgDir     = join(home, '.myelin', 'messages');
   const watcherSrc = fileURLToPath(new URL('watcher.mjs', import.meta.url));
   const watcherDst = join(msgDir, 'watcher.mjs');
   const checkScript = join(msgDir, 'check-messages.sh');
-  const pidFile    = join(msgDir, '.watcher-pid');
   const logFile    = join(msgDir, 'watcher.log');
 
   if (!dryRun) {
@@ -154,29 +152,24 @@ export function installMessagesWatcher({
     try { chmodSync(checkScript, 0o755); } catch {}
   }
 
-  if (osName === 'mac') {
+  // Accept both 'darwin' (detectOS() value) and legacy 'mac' spelling
+  if (osName === 'darwin' || osName === 'mac') {
     const laDir  = join(home, 'Library', 'LaunchAgents');
     const laFile = join(laDir, `${LABEL}.plist`);
     const plist  = buildLaunchdPlist({ nodePath, watcherDst, logFile, msgDir });
 
     if (!dryRun) {
       mkdirSync(laDir, { recursive: true });
-      killExistingWatcher(pidFile, execSyncImpl);
-
-      // Unload any stale registration before (re)writing the plist
-      try {
-        execSyncImpl(`launchctl bootout gui/$(id -u)/${LABEL} 2>/dev/null || true`,
-          { shell: true, stdio: 'pipe' });
-      } catch {}
-
       writeFileSync(laFile, plist);
 
       try {
-        execSyncImpl(`launchctl bootstrap gui/$(id -u) '${laFile}'`,
-          { shell: true, stdio: 'pipe' });
+        const uid = userInfo().uid;
+        bootReplaceLaunchdImpl({
+          uid, label: LABEL, plistPath: laFile, home, execSyncImpl,
+        });
         ok('messages watcher started (launchd)');
-      } catch {
-        warn(`messages watcher plist installed — run: launchctl bootstrap gui/$(id -u) '${laFile}'`);
+      } catch (e) {
+        warn(`messages watcher plist installed — run: launchctl bootstrap gui/$(id -u) '${laFile}' (${e.message?.split('\n')[0]})`);
       }
     }
 
@@ -190,7 +183,6 @@ export function installMessagesWatcher({
 
     if (!dryRun) {
       mkdirSync(unitDir, { recursive: true });
-      killExistingWatcher(pidFile, execSyncImpl);
       writeFileSync(unitPath, unit);
 
       try {
