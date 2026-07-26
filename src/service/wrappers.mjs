@@ -239,11 +239,9 @@ ${savedLines}
   if ($probe) {
     $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
     $env:ANTHROPIC_FOUNDRY_BASE_URL = "http://127.0.0.1:${headroomPort}"
-    $env:ENABLE_PROMPT_CACHING_1H = "1"
     & claude @args
     $env:ANTHROPIC_BASE_URL = $null
     $env:ANTHROPIC_FOUNDRY_BASE_URL = $null
-    $env:ENABLE_PROMPT_CACHING_1H = $null
   } else {
     Write-Warning "myelin: headroom offline (port ${headroomPort}) - running uncompressed"
     & claude @args
@@ -275,7 +273,6 @@ function _claude() {
     env ${unsetFlags} ${mallocFlag} \\
       ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
       ANTHROPIC_FOUNDRY_BASE_URL=http://127.0.0.1:${headroomPort} \\
-      ENABLE_PROMPT_CACHING_1H=1 \\
       $_osc52_env \\
       claude "$@"
   else

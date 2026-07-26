@@ -130,16 +130,22 @@ describe('_claude wrapper — sets its own env per-invocation', () => {
       it('sets ANTHROPIC_BASE_URL pointing at headroom port', () => {
         assert.ok(assignsVar(w, 'ANTHROPIC_BASE_URL') && w.includes('127.0.0.1:8787'));
       });
-      it('sets ENABLE_PROMPT_CACHING_1H (Claude token-caching improvement)', () => {
-        assert.ok(assignsVar(w, 'ENABLE_PROMPT_CACHING_1H'));
+      it('sets ANTHROPIC_FOUNDRY_BASE_URL pointing at headroom port', () => {
+        assert.ok(assignsVar(w, 'ANTHROPIC_FOUNDRY_BASE_URL') && w.includes('127.0.0.1:8787'));
+      });
+      it('does not set ENABLE_PROMPT_CACHING_1H (Foundry does not support extended cache TTL)', () => {
+        assert.ok(!assignsVar(w, 'ENABLE_PROMPT_CACHING_1H'),
+          '_claude must NOT set ENABLE_PROMPT_CACHING_1H when routing through Foundry');
       });
       it('scopes/unsets ANTHROPIC_BASE_URL so it does not persist in the shell', () => {
         if (os === 'windows') {
           assert.ok(w.includes('$env:ANTHROPIC_BASE_URL = $null'),
             'Windows _claude must unset ANTHROPIC_BASE_URL after the call.');
-          assert.ok(w.includes('$env:ENABLE_PROMPT_CACHING_1H = $null'));
+          assert.ok(w.includes('$env:ANTHROPIC_FOUNDRY_BASE_URL = $null'),
+            'Windows _claude must unset ANTHROPIC_FOUNDRY_BASE_URL after the call.');
         } else {
           assert.match(w, /ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:8787 \\/);
+          assert.match(w, /ANTHROPIC_FOUNDRY_BASE_URL=http:\/\/127\.0\.0\.1:8787 \\/);
         }
       });
       it('honours a custom port', () => {
