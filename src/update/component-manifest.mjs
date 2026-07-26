@@ -164,8 +164,8 @@ const RELEASED_COMPONENTS = {
   headroomLite: {
     kind: 'npm-git',
     package: 'github:yehsuf/headroom-lite',
-    version: '0.32.0-3',
-    ref: 'v0.32.0-3',
+    version: '0.32.0-2',
+    ref: 'v0.32.0-2',
     bin: 'headroom-lite',
   },
   headroomOriginal: {
