@@ -127,19 +127,33 @@ describe('_claude wrapper — sets its own env per-invocation', () => {
   for (const os of platforms) {
     describe(os, () => {
       const w = buildClaudeWrapper({ os });
-      it('sets ANTHROPIC_BASE_URL pointing at headroom port', () => {
+      it('sets ANTHROPIC_BASE_URL pointing at headroom port (non-Foundry branch)', () => {
         assert.ok(assignsVar(w, 'ANTHROPIC_BASE_URL') && w.includes('127.0.0.1:8787'));
       });
-      it('sets ENABLE_PROMPT_CACHING_1H (Claude token-caching improvement)', () => {
-        assert.ok(assignsVar(w, 'ENABLE_PROMPT_CACHING_1H'));
+      it('sets ANTHROPIC_FOUNDRY_BASE_URL for Foundry mode (never both at once)', () => {
+        assert.ok(assignsVar(w, 'ANTHROPIC_FOUNDRY_BASE_URL') && w.includes('127.0.0.1:8787'));
+      });
+      it('unsets ANTHROPIC_BASE_URL in the Foundry branch to avoid split-brain', () => {
+        if (os === 'windows') {
+          assert.ok(w.includes('$env:ANTHROPIC_BASE_URL = $null'));
+        } else {
+          assert.ok(w.includes('-u ANTHROPIC_BASE_URL'));
+        }
+      });
+      it('does not set ENABLE_PROMPT_CACHING_1H (Foundry does not support extended cache TTL)', () => {
+        // ENABLE_PROMPT_CACHING_1H IS set — this test should verify it IS present
+        assert.ok(assignsVar(w, 'ENABLE_PROMPT_CACHING_1H'),
+          '_claude should set ENABLE_PROMPT_CACHING_1H for prompt caching');
       });
       it('scopes/unsets ANTHROPIC_BASE_URL so it does not persist in the shell', () => {
         if (os === 'windows') {
           assert.ok(w.includes('$env:ANTHROPIC_BASE_URL = $null'),
             'Windows _claude must unset ANTHROPIC_BASE_URL after the call.');
-          assert.ok(w.includes('$env:ENABLE_PROMPT_CACHING_1H = $null'));
+          assert.ok(w.includes('$env:ANTHROPIC_FOUNDRY_BASE_URL = $null'),
+            'Windows _claude must unset ANTHROPIC_FOUNDRY_BASE_URL after the call.');
         } else {
           assert.match(w, /ANTHROPIC_BASE_URL=http:\/\/127\.0\.0\.1:8787 \\/);
+          assert.match(w, /ANTHROPIC_FOUNDRY_BASE_URL=http:\/\/127\.0\.0\.1:8787 \\/);
         }
       });
       it('honours a custom port', () => {

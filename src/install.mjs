@@ -581,6 +581,16 @@ function engineInstanceServiceEnv(instance, envVars = {}) {
     HEADROOM_MODE: _headroomMode,
     ...connectionEnv
   } = envVars;
+  // Strip loopback proxy settings — headroom-lite makes its own outbound
+  // connections to the LLM API. Routing those through the mitmproxy loopback
+  // (127.0.0.1:8888) would create a proxy loop and cause ETIMEDOUT failures.
+  // Genuine corporate proxies (non-loopback) are preserved so headroom-lite
+  // can reach external endpoints through the corporate network.
+  for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
+    if (connectionEnv[key] && LOOPBACK_PROXY_PATTERN.test(connectionEnv[key])) {
+      delete connectionEnv[key];
+    }
+  }
   return connectionEnv;
 }
 
@@ -749,6 +759,7 @@ export async function applyServiceEngineInstallPlan({
   isWslImpl = isWsl,
   defaultWindowsHomeImpl = defaultWindowsHome,
   resolveWindowsServiceExecutableImpl = resolveWindowsServiceExecutable,
+  resolveManagedCompressionBinaryImpl = resolveManagedCompressionBinary,
   managedCompressionBin = null,
   skipObsoleteCleanup = false,
   provisionManagedCompressionImpl = provisionManagedCompressionComponent,
@@ -808,19 +819,39 @@ export async function applyServiceEngineInstallPlan({
       wsl,
     });
   } else if (resolvedPlan.engine === 'headroom_lite') {
-    // Staged apply threads a pinned managed binary; otherwise fall back to a
-    // legacy globally-installed headroom-lite; and if neither exists (a fresh
-    // install with Lite selected) provision the pinned managed component
-    // before ever registering its service — a fresh install must never
-    // require a pre-existing global binary (finding 2).
+    // Staged apply threads a pinned managed binary. For a plain install:
+    // always prefer the managed pinned binary (versioned, immutable) over any
+    // globally detected binary — a globally-linked dev checkout (e.g. npm link
+    // from ~/Work/headroom-lite → /opt/homebrew/bin/headroom-lite) could be any
+    // version and will break the plist if provisioning falls back to it.
     let liteCandidate = managedCompressionBin;
     if (!liteCandidate) {
-      const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
-      const headroomLite = await detectTool('headroom-lite', '--version');
-      if (headroomLite.installed && headroomLite.path) {
-        liteCandidate = headroomLite.path;
-      } else {
+      try {
         liteCandidate = await provisionManagedCompressionImpl({ home, os, isWslImpl });
+      } catch {
+        // Managed component unavailable (e.g. network restricted). Check if a
+        // previously-activated managed binary still exists on disk — prefer it
+        // over a globally-installed dev checkout (e.g. npm-linked ~/Work/...).
+        const { componentsRoot } = updatePaths(serviceHome);
+        let existingManaged = null;
+        try {
+          existingManaged = resolveManagedCompressionBinaryImpl({
+            backend: 'headroom-lite',
+            componentsRoot,
+            platform: os === 'windows' ? 'win32' : os,
+          })?.binPath ?? null;
+        } catch { /* no pointer → no existing managed binary */ }
+        if (existingManaged) {
+          liteCandidate = existingManaged;
+        } else {
+          const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+          const headroomLite = await detectTool('headroom-lite', '--version');
+          if (headroomLite.installed && headroomLite.path) {
+            liteCandidate = headroomLite.path;
+          } else {
+            throw new Error('Failed to provision headroom-lite: component unavailable and no global fallback found');
+          }
+        }
       }
     }
     platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({

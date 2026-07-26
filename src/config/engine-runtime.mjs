@@ -74,7 +74,7 @@ function normalizePort(value, label) {
   return n;
 }
 
-function buildEngineInstance({ engine, role, port, egressPort, config, root }) {
+function buildEngineInstance({ engine, role, port, egressPort, config, root, env: processEnv = process.env }) {
   const id = `${engine}-${role}`;
   const stateDir = joinManaged(root, 'state', id);
   const logPath = joinManaged(root, `${id}.log`);
@@ -89,8 +89,15 @@ function buildEngineInstance({ engine, role, port, egressPort, config, root }) {
     };
   } else if (engine === 'headroom_lite' && role === 'primary') {
     // Primary headroom-lite handles Claude Code traffic — enable same compression.
+    // Detect the actual Anthropic upstream from the install-time environment so the
+    // service can proxy + compress Claude requests to the right endpoint (e.g. Akamai
+    // Foundry). ANTHROPIC_FOUNDRY_BASE_URL takes precedence over ANTHROPIC_BASE_URL.
+    const anthropicUpstream =
+      processEnv['ANTHROPIC_FOUNDRY_BASE_URL'] || processEnv['ANTHROPIC_BASE_URL'] || null;
     env = {
       HEADROOM_LITE_COMPRESS: 'live',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      ...(anthropicUpstream ? { HEADROOM_LITE_UPSTREAM_ANTHROPIC: anthropicUpstream } : {}),
     };
   } else if (engine === 'headroom' && role === 'copilot') {
     const loopbackTarget = `http://127.0.0.1:${egressPort}`;
@@ -124,6 +131,7 @@ export function buildEngineInstancePlan(config = {}, {
   home = homedir(),
   os = detectOS(),
   defaultWindowsHomeImpl = defaultWindowsHome,
+  env = process.env,
 } = {}) {
   if (isCompressionDisabled(config)) {
     return { engine: 'disabled', instances: [] };
@@ -164,14 +172,14 @@ export function buildEngineInstancePlan(config = {}, {
     assertNoPlanPortCollisions(primaryPort, copilotPort, mitmPort, egressPort);
 
     const instances = [
-      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config, root }),
-      buildEngineInstance({ engine, role: 'copilot', port: copilotPort, egressPort, config, root }),
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort, config, root, env }),
+      buildEngineInstance({ engine, role: 'copilot', port: copilotPort, egressPort, config, root, env }),
     ];
     return { engine, instances };
   } else {
     assertNoPlanPortCollisions(primaryPort, null, mitmPort, null);
     const instances = [
-      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort: null, config, root }),
+      buildEngineInstance({ engine, role: 'primary', port: primaryPort, egressPort: null, config, root, env }),
     ];
     return { engine, instances };
   }

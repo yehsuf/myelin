@@ -110,7 +110,7 @@ describe('buildEngineInstancePlan', () => {
         copilot_headroom: { enabled: true, port: 8788 },
         mitm: { egress_port: 8889 },
       },
-    });
+    }, { env: {} });
     assert.deepEqual(plan.instances.map(({ engine, role, port }) => ({ engine, role, port })), [
       { engine: 'headroom_lite', role: 'primary', port: 8790 },
       { engine: 'headroom_lite', role: 'copilot', port: 8788 },
@@ -122,6 +122,43 @@ describe('buildEngineInstancePlan', () => {
     });
     assert.deepEqual(plan.instances[0].env, {
       HEADROOM_LITE_COMPRESS: 'live',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+    });
+  });
+
+  it('injects HEADROOM_LITE_UPSTREAM_ANTHROPIC from ANTHROPIC_FOUNDRY_BASE_URL into primary Lite instance', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    }, { env: { ANTHROPIC_FOUNDRY_BASE_URL: 'https://foundry.example.com/apim/claude' } });
+    assert.deepEqual(plan.instances[0].env, {
+      HEADROOM_LITE_COMPRESS: 'live',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      HEADROOM_LITE_UPSTREAM_ANTHROPIC: 'https://foundry.example.com/apim/claude',
+    });
+    // Copilot instance should not be affected
+    assert.deepEqual(plan.instances[1].env, {
+      HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      HEADROOM_LITE_COMPRESS: 'live',
+    });
+  });
+
+  it('falls back to ANTHROPIC_BASE_URL for HEADROOM_LITE_UPSTREAM_ANTHROPIC when FOUNDRY_BASE_URL is absent', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+      },
+    }, { env: { ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } });
+    assert.deepEqual(plan.instances[0].env, {
+      HEADROOM_LITE_COMPRESS: 'live',
+      HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      HEADROOM_LITE_UPSTREAM_ANTHROPIC: 'https://api.anthropic.com',
     });
   });
 

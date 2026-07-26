@@ -185,18 +185,18 @@ function _copilot() {
  * - Falls back to plain `claude` (with a warning) if headroom is offline;
  *   forbidden vars remain unset even on the fallback path.
  *
- * WARNING for maintainers: never set ANTHROPIC_BASE_URL globally (shell
- * $PROFILE, .bashrc, Windows registry) — Anthropic-compatible SDKs used
- * inside Copilot CLI would then be routed to headroom too, bypassing
- * mitmproxy and breaking the MITM pipeline (the July 2026 "418 to
- * api.anthropic.com" regression). Keep it here, per-invocation only.
+ * WARNING: Do NOT set ANTHROPIC_FOUNDRY_BASE_URL here. Claude Code passes
+ * all process env vars to child processes including MCP servers. MCP servers
+ * (e.g. akamai-tools) create their own Foundry clients and fail with
+ * "Must provide baseURL or resource" if ANTHROPIC_FOUNDRY_BASE_URL is a
+ * localhost URL. Standard Anthropic routing uses ANTHROPIC_BASE_URL only.
  */
 export function buildClaudeWrapper({ os, headroomPort = 8787 } = {}) {
   if (headroomPort == null) {
     // Compression backend disabled → NO proxy exists. Run Claude Code
-    // unproxied and ACTIVELY UNSET ANTHROPIC_BASE_URL/HEADROOM_PORT so a stale
-    // value left in the shell/global env by a prior install can never point
-    // Claude at a nonexistent proxy port.
+    // unproxied and ACTIVELY UNSET ANTHROPIC_BASE_URL/HEADROOM_PORT
+    // so a stale value left in the shell/global env by a prior install can never
+    // point Claude at a nonexistent proxy port.
     const unsetVars = [...CLAUDE_FORBIDDEN_ENV, 'ANTHROPIC_BASE_URL', 'HEADROOM_PORT'];
     if (os === 'windows') {
       const savedLines = unsetVars
@@ -206,8 +206,8 @@ export function buildClaudeWrapper({ os, headroomPort = 8787 } = {}) {
         .map(k => `  $env:${k} = $saved_${k}`)
         .join('\n');
       return `# _claude: compression backend disabled — runs Claude Code unproxied.
-# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT so a stray global value can
-# never point Claude at a nonexistent proxy port.
+# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT so a stray
+# global value can never point Claude at a nonexistent proxy port.
 function global:_claude {
 ${savedLines}
   & claude @args
@@ -216,8 +216,8 @@ ${restoreLines}
     }
     const unsetFlags = unsetVars.map(k => `-u ${k}`).join(' ');
     return `# _claude: compression backend disabled — runs Claude Code unproxied.
-# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT (via env -u ...) so a stray
-# global value can never point Claude at a nonexistent proxy port.
+# Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT (via env -u ...)
+# so a stray global value can never point Claude at a nonexistent proxy port.
 function _claude() {
   env ${unsetFlags} -u MallocStackLogging claude "$@"
 }`;
@@ -230,17 +230,26 @@ function _claude() {
       .map(k => `  $env:${k} = $saved_${k}`)
       .join('\n');
     return `# _claude: routes Claude Code through Myelin headroom with health-check fallback.
-# Actively unsets Copilot-proxy env vars so a stray HTTPS_PROXY in the shell
-# can never double-route Claude through mitmproxy on top of headroom.
+# Detects Foundry mode to avoid setting conflicting provider vars — never set
+# both ANTHROPIC_BASE_URL and ANTHROPIC_FOUNDRY_BASE_URL simultaneously.
 function global:_claude {
 ${savedLines}
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${headroomPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
-    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
-    $env:ENABLE_PROMPT_CACHING_1H = "1"
-    & claude @args
-    $env:ANTHROPIC_BASE_URL = $null
-    $env:ENABLE_PROMPT_CACHING_1H = $null
+    if ($env:CLAUDE_CODE_USE_FOUNDRY -eq '1') {
+      $env:ANTHROPIC_FOUNDRY_BASE_URL = "http://127.0.0.1:${headroomPort}"
+      $env:ENABLE_PROMPT_CACHING_1H = "1"
+      $env:ANTHROPIC_BASE_URL = $null
+      & claude @args
+      $env:ANTHROPIC_FOUNDRY_BASE_URL = $null
+      $env:ENABLE_PROMPT_CACHING_1H = $null
+    } else {
+      $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
+      $env:ENABLE_PROMPT_CACHING_1H = "1"
+      & claude @args
+      $env:ANTHROPIC_BASE_URL = $null
+      $env:ENABLE_PROMPT_CACHING_1H = $null
+    }
   } else {
     Write-Warning "myelin: headroom offline (port ${headroomPort}) - running uncompressed"
     & claude @args
@@ -253,6 +262,9 @@ ${restoreLines}
   return `# _claude routes Claude Code traffic through Myelin headroom (token compression).
 # Actively unsets Copilot-proxy env vars (via env -u ...) so a stray
 # HTTPS_PROXY in the shell can never double-route Claude through mitmproxy.
+# Detects Foundry mode at runtime to avoid setting conflicting provider env
+# vars — ANTHROPIC_BASE_URL and ANTHROPIC_FOUNDRY_BASE_URL must never both be
+# set or the MCP child SDK resolver enters a split-brain state.
 # Falls back to plain claude with a warning if headroom is offline.
 function _claude() {
   # osc52d: start clipboard daemon so compact-prepare can reach the real tty
@@ -267,11 +279,22 @@ function _claude() {
   fi
   local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${headroomPort} 2>/dev/null; then
-    env ${unsetFlags} ${mallocFlag} \\
-      ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
-      ENABLE_PROMPT_CACHING_1H=1 \\
-      $_osc52_env \\
-      claude "$@"
+    if [ "\${CLAUDE_CODE_USE_FOUNDRY:-}" = "1" ]; then
+      # Foundry mode: set ONLY ANTHROPIC_FOUNDRY_BASE_URL — never set both vars
+      # simultaneously or the Foundry SDK in spawned MCP servers breaks.
+      env ${unsetFlags} ${mallocFlag} -u ANTHROPIC_BASE_URL \\
+        ANTHROPIC_FOUNDRY_BASE_URL=http://127.0.0.1:${headroomPort} \\
+        ENABLE_PROMPT_CACHING_1H=1 \\
+        $_osc52_env \\
+        claude "$@"
+    else
+      # Standard Anthropic API mode.
+      env ${unsetFlags} ${mallocFlag} \\
+        ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
+        ENABLE_PROMPT_CACHING_1H=1 \\
+        $_osc52_env \\
+        claude "$@"
+    fi
   else
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
     env ${unsetFlags} ${mallocFlag} $_osc52_env claude "$@"
