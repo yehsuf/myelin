@@ -285,6 +285,21 @@ export async function buildVerifyResults({
     } catch {
       results.push({ name: 'Watchdog', ok: false, detail: 'not registered — run: myelin update (or reinstall)' });
     }
+    try {
+      execSyncImpl('launchctl list com.myelin.messages-watcher', { stdio: 'ignore' });
+      results.push({ name: 'Messages watcher', ok: true, detail: 'active — fs.watch on ~/.myelin/messages/messages.md' });
+    } catch {
+      results.push({ name: 'Messages watcher', ok: false, detail: 'not registered — run: myelin install' });
+    }
+  }
+
+  if (includeWatchdogChecks && platform === 'linux') {
+    try {
+      execSyncImpl('systemctl --user is-active myelin-messages-watcher.service', { stdio: 'ignore' });
+      results.push({ name: 'Messages watcher', ok: true, detail: 'active — fs.watch on ~/.myelin/messages/messages.md' });
+    } catch {
+      results.push({ name: 'Messages watcher', ok: false, detail: 'not active — run: myelin install' });
+    }
   }
 
   if (includeWatchdogChecks && platform === 'win32' && winManager === 'winsw' && cfg.proxy?.windows_service?.watchdog_enabled) {

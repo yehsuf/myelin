@@ -3887,6 +3887,16 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
     step('[6/7] Hooks: managed per-project by `myelin init`');
   } else { step('[6/7] Hooks: skipped (--copilot-only)'); }
 
+  // Messages watcher — lightweight fs.watch() daemon that signals the agent
+  // when ~/.myelin/messages/messages.md changes, enabling a cheap marker check
+  // instead of per-call mtime stat.
+  try {
+    const { installMessagesWatcher } = await import('./messages/installer.mjs');
+    installMessagesWatcher({ home, os, nodePath: process.execPath, ok, warn });
+  } catch (e) {
+    warn(`messages watcher: ${e.message?.split('\n')[0]}`);
+  }
+
   // 7. Summary
   step('[7/7] Complete! \ud83e\uddec\n' + '\u2500'.repeat(55));
   console.log(`  Headroom port: ${selectedProxyPort ?? 'disabled (unproxied)'}`);
