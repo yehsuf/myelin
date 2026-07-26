@@ -118,6 +118,10 @@ describe('buildEngineInstancePlan', () => {
     assert.deepEqual(plan.instances[1].env, {
       HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889',
       HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      HEADROOM_LITE_COMPRESS: 'live',
+    });
+    assert.deepEqual(plan.instances[0].env, {
+      HEADROOM_LITE_COMPRESS: 'live',
     });
   });
 
