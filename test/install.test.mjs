@@ -723,6 +723,8 @@ describe('applyServiceEngineInstallPlan', () => {
         removeEngineInstanceImpl: async (instance) => removed.push(instance),
         ensureManagedHeadroomServiceImpl: () => assert.fail('Python must not run'),
         detectToolImpl: async () => ({ installed: false, path: null }),
+        // No existing managed binary — provisioning is truly required.
+        resolveManagedCompressionBinaryImpl: () => null,
         restartHeadroomLiteImpl: () => assert.fail('Lite must not be revived during installation'),
         provisionManagedCompressionImpl: async () => {
           throw new Error('Failed to provision headroom-lite: network unreachable');
