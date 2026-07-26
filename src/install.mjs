@@ -581,6 +581,16 @@ function engineInstanceServiceEnv(instance, envVars = {}) {
     HEADROOM_MODE: _headroomMode,
     ...connectionEnv
   } = envVars;
+  // Strip loopback proxy settings — headroom-lite makes its own outbound
+  // connections to the LLM API. Routing those through the mitmproxy loopback
+  // (127.0.0.1:8888) would create a proxy loop and cause ETIMEDOUT failures.
+  // Genuine corporate proxies (non-loopback) are preserved so headroom-lite
+  // can reach external endpoints through the corporate network.
+  for (const key of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) {
+    if (connectionEnv[key] && LOOPBACK_PROXY_PATTERN.test(connectionEnv[key])) {
+      delete connectionEnv[key];
+    }
+  }
   return connectionEnv;
 }
 
