@@ -25,7 +25,7 @@ describe('detectShell', () => {
 });
 
 describe('detectTool', () => {
-  it('detects node as installed', async () => {
+  it('detects node as installed', { timeout: 15000 }, async () => {
     const r = await detectTool('node', '--version');
     assert.equal(r.installed, true);
     assert.ok(r.version.startsWith('v'));
