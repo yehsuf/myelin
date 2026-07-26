@@ -808,19 +808,25 @@ export async function applyServiceEngineInstallPlan({
       wsl,
     });
   } else if (resolvedPlan.engine === 'headroom_lite') {
-    // Staged apply threads a pinned managed binary; otherwise fall back to a
-    // legacy globally-installed headroom-lite; and if neither exists (a fresh
-    // install with Lite selected) provision the pinned managed component
-    // before ever registering its service — a fresh install must never
-    // require a pre-existing global binary (finding 2).
+    // Staged apply threads a pinned managed binary. For a plain install:
+    // prefer the managed pinned binary (versioned, immutable) over a globally
+    // detected one — a globally-linked dev checkout could be any version.
+    // Fall back to the global binary only if the managed component is missing,
+    // then provision if neither exists.
     let liteCandidate = managedCompressionBin;
     if (!liteCandidate) {
-      const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
-      const headroomLite = await detectTool('headroom-lite', '--version');
-      if (headroomLite.installed && headroomLite.path) {
-        liteCandidate = headroomLite.path;
-      } else {
+      try {
         liteCandidate = await provisionManagedCompressionImpl({ home, os, isWslImpl });
+      } catch {
+        // Managed component unavailable (e.g. network restricted) — fall back
+        // to a globally installed headroom-lite as a best-effort substitute.
+        const detectTool = detectToolImpl ?? (await import('./detect/tools.mjs')).detectTool;
+        const headroomLite = await detectTool('headroom-lite', '--version');
+        if (headroomLite.installed && headroomLite.path) {
+          liteCandidate = headroomLite.path;
+        } else {
+          throw new Error('Failed to provision headroom-lite: component unavailable and no global fallback found');
+        }
       }
     }
     platformOptions.headroomLiteBin = resolveWindowsServiceExecutableImpl({
