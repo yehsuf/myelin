@@ -3467,7 +3467,9 @@ printf "%b" "$parts"
     try {
       mkdirSync(join(home, '.copilot'), { recursive: true });
       writeFileSync(copilotStatuslineScript, copilotStatuslineSrc, 'utf8');
-      execSync(`chmod +x "${copilotStatuslineScript}"`, { stdio: 'ignore' });
+      if (os !== 'windows') {
+        try { execSync(`chmod +x "${copilotStatuslineScript}"`, { stdio: 'ignore' }); } catch {}
+      }
       // Patch ~/.copilot/settings.json to enable the statusline.
       const copilotSettingsPath = join(home, '.copilot', 'settings.json');
       if (existsSync(copilotSettingsPath)) {
