@@ -3446,6 +3446,48 @@ async function main() {
       writeManagedSection(copilotInstructionsPath, `\n${copilotBlock}`);
       ok('~/.copilot/copilot-instructions.md managed section (output protocol)');
     }
+
+    // Copilot CLI statusline script — shows dir, branch, myelin proxy status.
+    // Requires settings.json: { "experimental": true, "statusLine": { "type": "command", ... } }
+    const copilotStatuslineScript = join(home, '.copilot', 'statusline.sh');
+    const copilotStatuslineSrc = `#!/usr/bin/env bash
+# ~/.copilot/statusline.sh — Copilot CLI statusline (managed by myelin)
+# Shows: dir | branch | myelin proxy status (Copilot-channel compression)
+reset='\\033[0m'; dim='\\033[2m'; green='\\033[32m'
+cwd="\${PWD:-$(pwd)}"; dir=$(basename "$cwd")
+parts="\${dim}\${dir}\${reset}"
+if git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
+  branch=$(git -C "$cwd" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+  [ -n "$branch" ] && parts="\${parts} \${dim}on\${reset} \${green}\${branch}\${reset}"
+fi
+myelin_status=$(myelin status --no-probe --format prompt 2>/dev/null)
+[ -n "$myelin_status" ] && parts="\${parts} \${dim}|\${reset} \${myelin_status}"
+printf "%b" "$parts"
+`;
+    try {
+      mkdirSync(join(home, '.copilot'), { recursive: true });
+      writeFileSync(copilotStatuslineScript, copilotStatuslineSrc, 'utf8');
+      execSync(`chmod +x "${copilotStatuslineScript}"`, { stdio: 'ignore' });
+      // Patch ~/.copilot/settings.json to enable the statusline.
+      const copilotSettingsPath = join(home, '.copilot', 'settings.json');
+      if (existsSync(copilotSettingsPath)) {
+        try {
+          const copilotSettings = JSON.parse(readFileSync(copilotSettingsPath, 'utf8'));
+          if (!copilotSettings.statusLine) {
+            copilotSettings.experimental = true;
+            copilotSettings.statusLine = { type: 'command', command: copilotStatuslineScript };
+            writeFileSync(copilotSettingsPath, JSON.stringify(copilotSettings, null, 4), 'utf8');
+            ok('~/.copilot/statusline.sh + settings.json statusLine enabled');
+          } else {
+            skip('~/.copilot/statusline.sh (statusLine already configured)');
+          }
+        } catch { warn('~/.copilot/statusline.sh written but settings.json patch failed'); }
+      } else {
+        ok('~/.copilot/statusline.sh (settings.json not found — enable manually with /statusline)');
+      }
+    } catch (e) {
+      warn(`~/.copilot/statusline.sh: ${e.message?.split('\n')[0]}`);
+    }
   }
 
   const rtkEnabledInConfig = installCfg.shell_compression?.rtk !== false;
@@ -3684,11 +3726,7 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
       // backend is disabled (selectedProxyPort == null) HEADROOM_PORT is omitted
       // entirely so nothing points at a nonexistent proxy.
       const headroomExport = selectedProxyPort != null ? `export HEADROOM_PORT=${selectedProxyPort}` : '';
-      // RPROMPT integration: show myelin status (cache-only, 50ms) on the right
-      // side of the shell prompt. Zsh only; reads status-cache.json written by
-      // `myelin stats` so there is no HTTP probe overhead per prompt.
-      const rpromptSnippet = `\n# myelin status in RPROMPT (zsh, cache-only — run 'myelin stats' to refresh)\nif [ -n "$ZSH_VERSION" ]; then\n  setopt PROMPT_SUBST 2>/dev/null || true\n  RPROMPT='$(myelin status --no-probe --format prompt 2>/dev/null)'\nfi`;
-      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}${rpromptSnippet}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = MANAGED_BLOCK_RE.test(existing)
       ? existing.replace(MANAGED_BLOCK_RE, block)
