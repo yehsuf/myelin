@@ -623,6 +623,7 @@ describe('applyServiceEngineInstallPlan', () => {
     assert.deepEqual(copilot.instance.env, {
       HEADROOM_LITE_UPSTREAM: 'http://127.0.0.1:8889',
       HEADROOM_LITE_COMPRESS_PROXY: 'true',
+      HEADROOM_LITE_COMPRESS: 'live',
     });
     assert.deepEqual(copilot.options.envVars, {});
   });
