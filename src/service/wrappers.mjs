@@ -230,15 +230,26 @@ function _claude() {
       .map(k => `  $env:${k} = $saved_${k}`)
       .join('\n');
     return `# _claude: routes Claude Code through Myelin headroom with health-check fallback.
-# Actively unsets Copilot-proxy env vars so a stray HTTPS_PROXY in the shell
-# can never double-route Claude through mitmproxy on top of headroom.
+# Detects Foundry mode to avoid setting conflicting provider vars — never set
+# both ANTHROPIC_BASE_URL and ANTHROPIC_FOUNDRY_BASE_URL simultaneously.
 function global:_claude {
 ${savedLines}
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${headroomPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
-    $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
-    & claude @args
-    $env:ANTHROPIC_BASE_URL = $null
+    if ($env:CLAUDE_CODE_USE_FOUNDRY -eq '1') {
+      $env:ANTHROPIC_FOUNDRY_BASE_URL = "http://127.0.0.1:${headroomPort}"
+      $env:ENABLE_PROMPT_CACHING_1H = "1"
+      $env:ANTHROPIC_BASE_URL = $null
+      & claude @args
+      $env:ANTHROPIC_FOUNDRY_BASE_URL = $null
+      $env:ENABLE_PROMPT_CACHING_1H = $null
+    } else {
+      $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
+      $env:ENABLE_PROMPT_CACHING_1H = "1"
+      & claude @args
+      $env:ANTHROPIC_BASE_URL = $null
+      $env:ENABLE_PROMPT_CACHING_1H = $null
+    }
   } else {
     Write-Warning "myelin: headroom offline (port ${headroomPort}) - running uncompressed"
     & claude @args
@@ -251,6 +262,9 @@ ${restoreLines}
   return `# _claude routes Claude Code traffic through Myelin headroom (token compression).
 # Actively unsets Copilot-proxy env vars (via env -u ...) so a stray
 # HTTPS_PROXY in the shell can never double-route Claude through mitmproxy.
+# Detects Foundry mode at runtime to avoid setting conflicting provider env
+# vars — ANTHROPIC_BASE_URL and ANTHROPIC_FOUNDRY_BASE_URL must never both be
+# set or the MCP child SDK resolver enters a split-brain state.
 # Falls back to plain claude with a warning if headroom is offline.
 function _claude() {
   # osc52d: start clipboard daemon so compact-prepare can reach the real tty
@@ -265,10 +279,22 @@ function _claude() {
   fi
   local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
   if nc -z 127.0.0.1 ${headroomPort} 2>/dev/null; then
-    env ${unsetFlags} ${mallocFlag} \\
-      ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
-      $_osc52_env \\
-      claude "$@"
+    if [ "\${CLAUDE_CODE_USE_FOUNDRY:-}" = "1" ]; then
+      # Foundry mode: set ONLY ANTHROPIC_FOUNDRY_BASE_URL — never set both vars
+      # simultaneously or the Foundry SDK in spawned MCP servers breaks.
+      env ${unsetFlags} ${mallocFlag} -u ANTHROPIC_BASE_URL \\
+        ANTHROPIC_FOUNDRY_BASE_URL=http://127.0.0.1:${headroomPort} \\
+        ENABLE_PROMPT_CACHING_1H=1 \\
+        $_osc52_env \\
+        claude "$@"
+    else
+      # Standard Anthropic API mode.
+      env ${unsetFlags} ${mallocFlag} \\
+        ANTHROPIC_BASE_URL=http://127.0.0.1:${headroomPort} \\
+        ENABLE_PROMPT_CACHING_1H=1 \\
+        $_osc52_env \\
+        claude "$@"
+    fi
   else
     echo "⚠  myelin: headroom offline (port ${headroomPort}) — running uncompressed" >&2
     env ${unsetFlags} ${mallocFlag} $_osc52_env claude "$@"
