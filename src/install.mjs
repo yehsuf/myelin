@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
 import { join, resolve, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -3203,6 +3203,29 @@ async function main() {
     }
     const rtkVersionWarning = getRtkVersionWarning(tools.rtk);
     if (rtkVersionWarning) warn(rtkVersionWarning);
+
+    // On POSIX, ensure ~/.myelin/bin/rtk is a symlink to the managed component
+    // current binary. Older installs may have left a stale bare binary there;
+    // a symlink that follows the `current` pointer self-updates on future bumps.
+    if (os !== 'windows') {
+      const managedRtkBin = joinManaged(home, 'components', 'rtk', 'current', 'bin', 'rtk');
+      const myelinBinRtk = joinManaged(home, 'bin', 'rtk');
+      if (existsSync(managedRtkBin)) {
+        let needsLink = false;
+        try {
+          const st = lstatSync(myelinBinRtk);
+          needsLink = !st.isSymbolicLink() || readlinkSync(myelinBinRtk) !== managedRtkBin;
+        } catch {
+          needsLink = true; // not present
+        }
+        if (needsLink) {
+          try {
+            try { unlinkSync(myelinBinRtk); } catch { /* not present */ }
+            symlinkSync(managedRtkBin, myelinBinRtk);
+          } catch { /* not writable — ignore */ }
+        }
+      }
+    }
   }
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
