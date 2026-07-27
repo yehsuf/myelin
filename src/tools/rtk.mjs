@@ -5,7 +5,7 @@ import { homedir, platform as osPlatform, arch as osArch } from 'node:os';
 import { managedPaths, joinManaged, isWindowsStylePath } from '../shared/myelin-paths.mjs';
 import { posixSingleQuote } from '../shared/shell-quote.mjs';
 
-export const RTK_PINNED_VERSION = '0.43.0';
+export const RTK_PINNED_VERSION = '0.44.0';
 
 export function parseRtkVersion(raw = '') {
   const m = raw.match(/(\d+\.\d+\.\d+)/);

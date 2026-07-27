@@ -164,8 +164,8 @@ describe('component install plans', () => {
     );
 
     assert.deepEqual(npm.commands, [[
-      'npm', 'install', '--prefix', '/components/astGrep/0.44.1',
-      '@ast-grep/cli@0.44.1',
+      'npm', 'install', '--prefix', '/components/astGrep/0.45.0',
+      '@ast-grep/cli@0.45.0',
     ]]);
     assert.deepEqual(npmGit.commands, [[
       'npm', 'install', '--prefix', '/components/headroomLite/0.32.0-3',
@@ -255,7 +255,7 @@ describe('GitHub binary install plans', () => {
       '=https',
       '--header',
       'Accept: application/vnd.github+json',
-      'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.43.0',
+      'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.44.0',
     ]]);
     assert.equal(
       selectGithubBinaryAsset(release, platform)?.name,
@@ -327,7 +327,7 @@ describe('GitHub binary install plans', () => {
           '=https',
           '--header',
           'Accept: application/vnd.github+json',
-          'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.43.0',
+          'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.44.0',
         ],
       ],
       [
@@ -509,7 +509,7 @@ describe('GitHub binary install plans', () => {
       },
     });
 
-    const binaryPath = 'C:\\components\\rtk\\0.43.0\\bin\\rtk.exe';
+    const binaryPath = 'C:\\components\\rtk\\0.44.0\\bin\\rtk.exe';
     assert.equal(
       fs.calls.some(([method, path]) => method === 'writeFileSync' && path === binaryPath),
       true,
@@ -713,7 +713,7 @@ describe('staging and managed detection', () => {
         '/d',
         '/s',
         '/c',
-        'npm "install" "--prefix" "C:\\components\\astGrep\\0.44.1" "@ast-grep/cli@0.44.1"',
+        'npm "install" "--prefix" "C:\\components\\astGrep\\0.45.0" "@ast-grep/cli@0.45.0"',
       ],
       options: { stdio: 'inherit', windowsVerbatimArguments: true },
     }]);
@@ -765,8 +765,8 @@ describe('staging and managed detection', () => {
     };
     const calls = [];
     const fs = makeFakeFs({
-      'C:\\components\\rtk\\0.43.0': makeFakeStatus('directory'),
-      'C:\\components\\rtk\\0.43.0\\.myelin-stage-complete': makeFakeStatus('file'),
+      'C:\\components\\rtk\\0.44.0': makeFakeStatus('directory'),
+      'C:\\components\\rtk\\0.44.0\\.myelin-stage-complete': makeFakeStatus('file'),
     });
 
     assert.throws(
@@ -809,7 +809,7 @@ describe('staging and managed detection', () => {
         exec(file, args, options) {
           calls.push({ file, args, options });
           if (args.at(-1).includes('/releases/tags/')) {
-            fs.existing.set('C:\\components\\rtk\\0.43.0', makeFakeStatus('directory'));
+            fs.existing.set('C:\\components\\rtk\\0.44.0', makeFakeStatus('directory'));
             return JSON.stringify(makeRelease(asset));
           }
           if (args.at(-1) === asset.browser_download_url) return binary;
@@ -831,7 +831,7 @@ describe('staging and managed detection', () => {
         '=https',
         '--header',
         'Accept: application/vnd.github+json',
-        'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.43.0',
+        'https://api.github.com/repos/rtk-ai/rtk/releases/tags/v0.44.0',
       ],
     ]]);
     assert.equal(fs.calls.some(([method]) => method === 'writeFileSync'), false);
@@ -846,7 +846,7 @@ describe('staging and managed detection', () => {
       platform: { os: 'windows', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
-        return Buffer.from('ast-grep 0.44.1\n');
+        return Buffer.from('ast-grep 0.45.0\n');
       },
     });
 
@@ -856,7 +856,7 @@ describe('staging and managed detection', () => {
       '/d',
       '/s',
       '/c',
-      'call "C:\\components\\astGrep\\0.44.1\\node_modules\\.bin\\ast-grep.cmd" "--version"',
+      'call "C:\\components\\astGrep\\0.45.0\\node_modules\\.bin\\ast-grep.cmd" "--version"',
     ]);
     assert.equal(calls[0].options.windowsVerbatimArguments, true);
   });

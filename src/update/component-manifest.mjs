@@ -204,14 +204,14 @@ const RELEASED_COMPONENTS = {
   rtk: {
     kind: 'github-binary',
     repository: 'rtk-ai/rtk',
-    version: '0.43.0',
-    ref: 'v0.43.0',
+    version: '0.44.0',
+    ref: 'v0.44.0',
     bin: 'rtk',
   },
   astGrep: {
     kind: 'npm',
     package: '@ast-grep/cli',
-    version: '0.44.1',
+    version: '0.45.0',
     bin: 'ast-grep',
   },
   mitmproxy: {
