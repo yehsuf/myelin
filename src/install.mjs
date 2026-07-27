@@ -3210,11 +3210,15 @@ async function main() {
   // leave stale bare binaries that shadow the managed ones in PATH; symlinks
   // through the `current` pointer self-update automatically on future bumps.
   //
+  // Also repairs stale SYMLINKS in ~/.local/bin (uv tool installs) — only
+  // symlinks are replaced, never bare binaries.
+  //
   // Skips: compression backends (headroomLite, headroomOriginal, mitmproxy, winsw)
   //        which are service binaries managed separately.
   // npm/npm-git components put their binary at node_modules/.bin/<name>, not bin/<name>.
   if (os !== 'windows') {
     const SKIP_LINK = new Set(['headroomLite', 'headroomOriginal', 'mitmproxy', 'winsw', 'tokenOptimizer']);
+    const localBinDir = join(homedir(), '.local', 'bin');
     for (const [name, component] of Object.entries(COMPONENTS)) {
       if (SKIP_LINK.has(name)) continue;
       const binName = component.bin;
@@ -3222,20 +3226,29 @@ async function main() {
       const isNpm = component.kind === 'npm' || component.kind === 'npm-git';
       const binSegments = isNpm ? ['node_modules', '.bin', binName] : ['bin', binName];
       const managedBin = joinManaged(managed.root, 'components', name, 'current', ...binSegments);
-      const myelinBin = joinManaged(managed.binDir, binName);
       if (!existsSync(managedBin)) continue;
-      let needsLink = false;
+
+      // Paths to maintain as symlinks → managed binary
+      const targets = [joinManaged(managed.binDir, binName)];
+      const localBin = join(localBinDir, binName);
       try {
-        const st = lstatSync(myelinBin);
-        needsLink = !st.isSymbolicLink() || readlinkSync(myelinBin) !== managedBin;
-      } catch {
-        needsLink = true;
-      }
-      if (needsLink) {
+        if (lstatSync(localBin).isSymbolicLink()) targets.push(localBin);
+      } catch { /* not present — skip */ }
+
+      for (const target of targets) {
+        let needsLink = false;
         try {
-          try { unlinkSync(myelinBin); } catch { /* not present */ }
-          symlinkSync(managedBin, myelinBin);
-        } catch { /* not writable — ignore */ }
+          const st = lstatSync(target);
+          needsLink = !st.isSymbolicLink() || readlinkSync(target) !== managedBin;
+        } catch {
+          needsLink = target === targets[0]; // create ~/.myelin/bin/<name> if missing; skip ~/.local/bin/<name> if absent
+        }
+        if (needsLink) {
+          try {
+            try { unlinkSync(target); } catch { /* not present */ }
+            symlinkSync(managedBin, target);
+          } catch { /* not writable — ignore */ }
+        }
       }
     }
   }
