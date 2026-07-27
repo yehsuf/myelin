@@ -240,6 +240,9 @@ describe('resolveCompressionConfig', () => {
         enabled: true,
         port: 8789,
       },
+      lite: {
+        cache_reset: false,
+      },
       original: {
         mode: 'token',
         intercept_tool_results: false,

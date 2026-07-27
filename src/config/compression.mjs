@@ -148,6 +148,9 @@ export function resolveCompressionConfig(config = {}) {
       enabled: compression.copilot_proxy?.enabled !== false,
       port: asPort(compression.copilot_proxy?.port, 8788),
     },
+    lite: {
+      cache_reset: compression.lite?.cache_reset === true,
+    },
     original: {
       mode: compression.original?.mode ?? 'cache',
       intercept_tool_results:

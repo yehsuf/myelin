@@ -63,6 +63,9 @@ function runtimeFor({
   const upstream = `http://127.0.0.1:${egressPort}`;
 
   if (selected.backend === 'headroom-lite') {
+    const cacheResetEnv = selected.lite?.cache_reset
+      ? { HEADROOM_LITE_CACHE_RESET: 'true' }
+      : {};
     return {
       purpose,
       backend: selected.backend,
@@ -71,11 +74,12 @@ function runtimeFor({
       command: headroomLiteBin,
       args: [],
       env: purpose === 'primary'
-        ? { HEADROOM_LITE_PORT: String(port) }
+        ? { HEADROOM_LITE_PORT: String(port), ...cacheResetEnv }
         : {
             HEADROOM_LITE_PORT: String(port),
             HEADROOM_LITE_COMPRESS_PROXY: 'true',
             HEADROOM_LITE_UPSTREAM: upstream,
+            ...cacheResetEnv,
           },
       healthUrl: healthUrlFor(port),
       serviceId,
