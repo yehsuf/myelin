@@ -346,8 +346,9 @@ function claudeEncodeProjectPath(absPath) {
  * from JSONL entries. Returns 0 as fallback if none found (caller uses file mtime).
  * @param {string} filePath
  * @param {number} [tailBytes=4096]
+ * @returns {number} milliseconds since epoch, or 0 if not found
  */
-function jsonlLastTimestamp(filePath, tailBytes = 4096) {
+export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
   try {
     const { size } = statSync(filePath);
     if (size === 0) return 0;
