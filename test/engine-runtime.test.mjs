@@ -148,6 +148,35 @@ describe('buildEngineInstancePlan', () => {
     });
   });
 
+  it('injects HEADROOM_LITE_CACHE_RESET into both primary and copilot when compression.lite.cache_reset is true', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+      compression: {
+        lite: { cache_reset: true },
+      },
+    }, { env: {} });
+    assert.ok(plan.instances[0].env.HEADROOM_LITE_CACHE_RESET === 'true', 'primary should have CACHE_RESET');
+    assert.ok(plan.instances[1].env.HEADROOM_LITE_CACHE_RESET === 'true', 'copilot should have CACHE_RESET');
+  });
+
+  it('does NOT inject HEADROOM_LITE_CACHE_RESET when cache_reset is absent or false', () => {
+    const plan = buildEngineInstancePlan({
+      proxy: {
+        engine: 'headroom_lite',
+        headroom_lite: { port: 8790 },
+        copilot_headroom: { enabled: true, port: 8788 },
+        mitm: { egress_port: 8889 },
+      },
+    }, { env: {} });
+    assert.ok(!('HEADROOM_LITE_CACHE_RESET' in plan.instances[0].env), 'primary must not have CACHE_RESET by default');
+    assert.ok(!('HEADROOM_LITE_CACHE_RESET' in plan.instances[1].env), 'copilot must not have CACHE_RESET by default');
+  });
+
   it('falls back to ANTHROPIC_BASE_URL for HEADROOM_LITE_UPSTREAM_ANTHROPIC when FOUNDRY_BASE_URL is absent', () => {
     const plan = buildEngineInstancePlan({
       proxy: {
