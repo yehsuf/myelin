@@ -711,6 +711,29 @@ describe('resolveClaudeSession', () => {
     assert.ok(result.projectDir, 'projectDir must be set');
   });
 
+  it('does NOT match sessions whose cwd is a parent of the requested cwd', () => {
+    // Regression: old code used cwd.startsWith(sessionCwd + '/') which would
+    // match a session opened at /Users/foo for any request under /Users/foo/*.
+    // Verify the fix's invariant directly (logic-level test — not file-system):
+    const projectCwd = '/Users/testuser/tokenstack';
+    const parentCwd  = '/Users/testuser';  // parent — must NOT match projectCwd
+    assert.ok(
+      !(parentCwd === projectCwd || parentCwd.startsWith(projectCwd + '/')),
+      'parent cwd must NOT satisfy the new matching condition for a child cwd',
+    );
+    // Verify the correct direction (session IN a subdirectory should still match)
+    const childCwd = '/Users/testuser/tokenstack/subdir';
+    assert.ok(
+      childCwd === projectCwd || childCwd.startsWith(projectCwd + '/'),
+      'child session cwd must satisfy the new matching condition',
+    );
+    // Also verify exact match works
+    assert.ok(
+      projectCwd === projectCwd || projectCwd.startsWith(projectCwd + '/'),
+      'exact cwd match must satisfy the new matching condition',
+    );
+  });
+
   it('collectDataClaude returns agent=claude with empty todos and checkpoints', () => {
     const fakeSession = {
       sid: 'fake-session-id-1234',

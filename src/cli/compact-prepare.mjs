@@ -385,8 +385,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
           }
         }
       } catch { /* malformed — skip */ }
-      // Match if session cwd starts with our cwd (covers nested dirs)
-      if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
+      // Match if session cwd is exactly our cwd or a subdirectory of it.
+      // Do NOT match sessions whose cwd is a parent of ours — e.g. a session
+      // opened at /Users/foo would otherwise shadow any session in /Users/foo/project.
+      if (sessionCwd && (sessionCwd === cwd || sessionCwd.startsWith(cwd + '/'))) {
         candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
       }
     }
