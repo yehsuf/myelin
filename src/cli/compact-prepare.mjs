@@ -53,6 +53,11 @@ function detectClipboardCandidates({
   const osc52Candidate = buildOsc52Candidate(env);
 
   if (platform === 'darwin') {
+    // Note: the OSC52_SOCKET/python3 candidate spawns an interpreter — itself a
+    // gated operation in most sandboxed harnesses (Claude Code, restricted shells).
+    // If clipboard writes fail with "exit 1, no stderr", the sandbox is likely
+    // blocking pasteboard IPC; set MYELIN_NO_CLIPBOARD=1 or retry in an
+    // unsandboxed shell (same approach as git push / GPG signing in this env).
     return [...(osc52Candidate ? [osc52Candidate] : []), { cmd: 'pbcopy', args: [] }];
   }
   if (platform === 'win32') {
@@ -647,11 +652,15 @@ export function renderHint(sections) {
 /**
  * Copy text to clipboard using the first available platform tool.
  * Returns the tool name used, or null if none available.
+ * Prints a diagnostic warning when all candidates fail, including the
+ * last error's exit code and stderr so agents can distinguish "tool not
+ * installed" from "tool blocked by sandbox/permissions".
  * @param {string} text
  */
 function copyToClipboard(text) {
   if (process.env.MYELIN_NO_CLIPBOARD) return null;
   const candidates = detectClipboardCandidates();
+  const failures = [];
   for (const { cmd, args } of candidates) {
     try {
       execFileSync(cmd, args, {
@@ -660,7 +669,18 @@ function copyToClipboard(text) {
         timeout: 3000,
       });
       return cmd;
-    } catch { /* not available or failed — try next */ }
+    } catch (err) {
+      const status = err.status != null ? `exit ${err.status}` : (err.code ?? 'unknown error');
+      const stderr = (err.stderr?.toString() ?? '').trim();
+      failures.push(`${cmd}: ${status}${stderr ? ` — ${stderr}` : ''}`);
+    }
+  }
+  if (failures.length > 0) {
+    process.stderr.write(
+      `[compact-prepare] clipboard unavailable. Candidates tried:\n${failures.map(f => `  ${f}`).join('\n')}\n` +
+      `  Tip: if running in a sandboxed harness (Claude Code etc.), pasteboard IPC may be blocked.\n` +
+      `  Set MYELIN_NO_CLIPBOARD=1 to suppress this warning.\n`,
+    );
   }
   return null;
 }
