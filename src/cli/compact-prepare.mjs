@@ -348,74 +348,100 @@ function claudeEncodeProjectPath(absPath) {
  * Claude Code stores sessions as JSONL files under:
  *   ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
  * Each file's first 'user' entry carries { cwd, gitBranch, sessionId }.
- * We pick the most recently modified JSONL file whose cwd matches.
+ *
+ * Selection strategy (in order):
+ *  1. Walk from cwd up to the git root; collect matching sessions.
+ *  2. If nothing found, try one level above the git root (fallback for sessions
+ *     opened at a workspace parent, e.g. a monorepo root above the git boundary).
+ *  3. Sort by "active" first: sessions modified in the last 2 hours rank above
+ *     older ones; within each tier, sort by most-recently-modified JSONL.
  */
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
   // Resolve the git root so we stop walking up at the project boundary.
-  // This prevents a session opened at a generic ancestor (e.g. the home
-  // directory) from shadowing the real project session.
   let gitRoot = null;
   try {
     gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch { /* not a git repo — no cap */ }
 
-  // Walk up from cwd toward the git root (or at most 4 levels if no git root).
+  // Build primary searchDirs: cwd up to (and including) git root.
   const MAX_LEVELS = 4;
-  const searchDirs = [];
+  const primaryDirs = [];
   let p = cwd;
   let levelsUp = 0;
   while (true) {
-    searchDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
+    primaryDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
     const parent = path.dirname(p);
-    if (parent === p) break; // reached filesystem root
-    if (gitRoot && p === gitRoot) break; // don't walk above git root
-    if (levelsUp >= MAX_LEVELS) break;   // safety cap if no git root
+    if (parent === p) break;
+    if (gitRoot && p === gitRoot) break;
+    if (levelsUp >= MAX_LEVELS) break;
     levelsUp++;
     p = parent;
   }
 
-  const candidates = [];
-  for (const projectDir of searchDirs) {
-    if (!existsSync(projectDir)) continue;
-    let files;
-    try { files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl')); }
-    catch { continue; }
+  // Build fallback dir: one level above the git root boundary (or above cwd if
+  // no git root). Allows recovery when Claude was opened at a workspace parent.
+  const boundary = gitRoot ?? cwd;
+  const fallbackParent = path.dirname(boundary);
+  const fallbackDir = (fallbackParent && fallbackParent !== boundary)
+    ? path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(fallbackParent))
+    : null;
 
-    for (const f of files) {
-      const filePath = path.join(projectDir, f);
-      let st;
-      try { st = statSync(filePath); } catch { continue; }
-      const sid = f.slice(0, -'.jsonl'.length);
-      // Read first user entry to get cwd/gitBranch
-      let sessionCwd = null;
-      let gitBranch = null;
-      try {
-        const content = readFileSync(filePath, 'utf8');
-        for (const line of content.split('\n')) {
-          if (!line.trim()) continue;
-          const entry = JSON.parse(line);
-          if (entry.type === 'user' && entry.cwd) {
-            sessionCwd = entry.cwd;
-            gitBranch = entry.gitBranch || null;
-            break;
+  // Collect candidates from primary dirs, then from fallback (only if primary empty).
+  function collectCandidates(dirs) {
+    const found = [];
+    for (const projectDir of dirs) {
+      if (!existsSync(projectDir)) continue;
+      let files;
+      try { files = readdirSync(projectDir).filter(f => f.endsWith('.jsonl')); }
+      catch { continue; }
+
+      for (const f of files) {
+        const filePath = path.join(projectDir, f);
+        let st;
+        try { st = statSync(filePath); } catch { continue; }
+        const sid = f.slice(0, -'.jsonl'.length);
+        let sessionCwd = null;
+        let gitBranch = null;
+        try {
+          const content = readFileSync(filePath, 'utf8');
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue;
+            const entry = JSON.parse(line);
+            if (entry.type === 'user' && entry.cwd) {
+              sessionCwd = entry.cwd;
+              gitBranch = entry.gitBranch || null;
+              break;
+            }
           }
+        } catch { /* malformed — skip */ }
+        if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
+          found.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
         }
-      } catch { /* malformed — skip */ }
-      // Match if session cwd is an ancestor of (or equal to) the requested cwd.
-      // The walk is already capped at the git root, so very generic ancestors
-      // (home dir, filesystem root) are excluded.
-      if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
-        candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
       }
+      if (found.length > 0) break; // most specific dir wins
     }
-    if (candidates.length > 0) break; // found in the most specific dir
+    return found;
   }
 
+  let candidates = collectCandidates(primaryDirs);
+  if (candidates.length === 0 && fallbackDir) {
+    candidates = collectCandidates([fallbackDir]);
+  }
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.mtime - a.mtime);
+
+  // Sort: recently-active sessions (JSONL modified in last 2 h) before older ones;
+  // within each tier, sort by most-recently-modified.
+  const ACTIVE_MS = 2 * 60 * 60 * 1000;
+  const now = Date.now();
+  candidates.sort((a, b) => {
+    const aActive = (now - a.mtime) <= ACTIVE_MS ? 1 : 0;
+    const bActive = (now - b.mtime) <= ACTIVE_MS ? 1 : 0;
+    if (bActive !== aActive) return bActive - aActive; // active first
+    return b.mtime - a.mtime;                          // then newest
+  });
   return candidates[0];
 }
 
