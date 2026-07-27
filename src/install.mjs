@@ -3203,27 +3203,39 @@ async function main() {
     }
     const rtkVersionWarning = getRtkVersionWarning(tools.rtk);
     if (rtkVersionWarning) warn(rtkVersionWarning);
+  }
 
-    // On POSIX, ensure ~/.myelin/bin/rtk is a symlink to the managed component
-    // current binary. Older installs may have left a stale bare binary there;
-    // a symlink that follows the `current` pointer self-updates on future bumps.
-    if (os !== 'windows') {
-      const managedRtkBin = joinManaged(managed.root, 'components', 'rtk', 'current', 'bin', 'rtk');
-      const myelinBinRtk = joinManaged(managed.binDir, 'rtk');
-      if (existsSync(managedRtkBin)) {
-        let needsLink = false;
+  // On POSIX, ensure ~/.myelin/bin/<name> symlinks point to the managed
+  // component current binaries. Older installs or global tool installs may
+  // leave stale bare binaries that shadow the managed ones in PATH; symlinks
+  // through the `current` pointer self-update automatically on future bumps.
+  //
+  // Skips: compression backends (headroomLite, headroomOriginal, mitmproxy, winsw)
+  //        which are service binaries managed separately.
+  // npm/npm-git components put their binary at node_modules/.bin/<name>, not bin/<name>.
+  if (os !== 'windows') {
+    const SKIP_LINK = new Set(['headroomLite', 'headroomOriginal', 'mitmproxy', 'winsw', 'tokenOptimizer']);
+    for (const [name, component] of Object.entries(COMPONENTS)) {
+      if (SKIP_LINK.has(name)) continue;
+      const binName = component.bin;
+      if (!binName) continue;
+      const isNpm = component.kind === 'npm' || component.kind === 'npm-git';
+      const binSegments = isNpm ? ['node_modules', '.bin', binName] : ['bin', binName];
+      const managedBin = joinManaged(managed.root, 'components', name, 'current', ...binSegments);
+      const myelinBin = joinManaged(managed.binDir, binName);
+      if (!existsSync(managedBin)) continue;
+      let needsLink = false;
+      try {
+        const st = lstatSync(myelinBin);
+        needsLink = !st.isSymbolicLink() || readlinkSync(myelinBin) !== managedBin;
+      } catch {
+        needsLink = true;
+      }
+      if (needsLink) {
         try {
-          const st = lstatSync(myelinBinRtk);
-          needsLink = !st.isSymbolicLink() || readlinkSync(myelinBinRtk) !== managedRtkBin;
-        } catch {
-          needsLink = true; // not present
-        }
-        if (needsLink) {
-          try {
-            try { unlinkSync(myelinBinRtk); } catch { /* not present */ }
-            symlinkSync(managedRtkBin, myelinBinRtk);
-          } catch { /* not writable — ignore */ }
-        }
+          try { unlinkSync(myelinBin); } catch { /* not present */ }
+          symlinkSync(managedBin, myelinBin);
+        } catch { /* not writable — ignore */ }
       }
     }
   }
