@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -61,7 +61,7 @@ function renderWindowsLauncher(launcherPath, nodeBin = process.execPath, { rejec
 function renderManagedLauncherSource() {
   return `#!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 
@@ -162,9 +162,41 @@ function resolveRuntimeEntrypoint(home = homedir()) {
   return join(currentRelease.runtimeRoot, 'src', 'cli', 'index.mjs');
 }
 
+// If current.json points to a missing release (e.g. interrupted update or
+// aggressive cleanup), find the most recently modified valid release that
+// has a working entrypoint and fall back to it automatically.
+function findFallbackEntrypoint(home = homedir()) {
+  const { releasesDir } = runtimePaths(home);
+  try {
+    const entries = readdirSync(releasesDir, { withFileTypes: true });
+    const candidates = entries
+      .filter(e => e.isDirectory() && RELEASE_ID_RE.test(e.name))
+      .map(e => {
+        const root = join(releasesDir, e.name);
+        const ep = join(root, 'src', 'cli', 'index.mjs');
+        return { name: e.name, root, ep };
+      })
+      .filter(c => existsSync(c.ep))
+      .sort((a, b) => {
+        try { return statSync(b.root).mtimeMs - statSync(a.root).mtimeMs; }
+        catch { return 0; }
+      });
+    return candidates[0] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 try {
   const entrypoint = resolveRuntimeEntrypoint();
   if (!existsSync(entrypoint)) {
+    const fallback = findFallbackEntrypoint();
+    if (fallback) {
+      process.stderr.write(\`[myelin] WARNING: active release missing — falling back to \${fallback.name}. Run: myelin update\\n\`);
+      const child = spawnSync(process.execPath, [fallback.ep, ...process.argv.slice(2)], { stdio: 'inherit' });
+      if (child.error) throw child.error;
+      process.exit(child.status ?? 1);
+    }
     throw new Error(\`managed runtime entrypoint missing: \${entrypoint}\`);
   }
 
@@ -236,10 +268,38 @@ export function runManagedLauncher({
   home = homedir(),
   rootDir,
   existsSyncFn = existsSync,
+  readdirSyncFn = readdirSync,
+  statSyncFn = statSync,
   spawnSyncFn = spawnSync,
 } = {}) {
   const entrypoint = resolveRuntimeEntrypoint({ home, rootDir });
   if (!existsSyncFn(entrypoint)) {
+    const { releasesDir } = runtimePaths({ home, rootDir });
+    const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+    let fallback = null;
+    try {
+      const entries = readdirSyncFn(releasesDir, { withFileTypes: true });
+      const candidates = entries
+        .filter(e => e.isDirectory() && RELEASE_ID_RE.test(e.name))
+        .map(e => {
+          const root = joinManaged(releasesDir, e.name);
+          const ep = joinManaged(root, 'src', 'cli', 'index.mjs');
+          return { name: e.name, root, ep };
+        })
+        .filter(c => existsSyncFn(c.ep))
+        .sort((a, b) => {
+          try { return statSyncFn(b.root).mtimeMs - statSyncFn(a.root).mtimeMs; }
+          catch { return 0; }
+        });
+      fallback = candidates[0] ?? null;
+    } catch { /* ignore scan errors */ }
+
+    if (fallback) {
+      process.stderr.write(`[myelin] WARNING: active release missing — falling back to ${fallback.name}. Run: myelin update\n`);
+      const child = spawnSyncFn(process.execPath, [fallback.ep, ...process.argv.slice(2)], { stdio: 'inherit' });
+      if (child.error) throw child.error;
+      return child.status ?? 1;
+    }
     throw new Error(`managed runtime entrypoint missing: ${entrypoint}`);
   }
 

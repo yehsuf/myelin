@@ -2,7 +2,7 @@ import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
 
 // A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
@@ -556,6 +556,70 @@ describe('writeManagedLauncher', () => {
       assert.ok(existsSync(result.commandPath));
     } finally {
       chmodSync(binDir, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+import { runManagedLauncher } from '../src/runtime/launcher.mjs';
+import { writeCurrentRelease } from '../src/runtime/release-store.mjs';
+
+describe('runManagedLauncher fallback', () => {
+  it('throws when no release is configured', () => {
+    const home = makeTempHome('launcher-no-release');
+    try {
+      assert.throws(
+        () => runManagedLauncher({ home }),
+        /no current managed runtime configured/,
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when current.json points to missing release and no fallback exists', () => {
+    const home = makeTempHome('launcher-missing-no-fallback');
+    try {
+      writeCurrentRelease({ home, releaseId: 'main-deadbeef1234567890' });
+      assert.throws(
+        () => runManagedLauncher({ home }),
+        /managed runtime entrypoint missing/,
+      );
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to valid release when current.json points to missing release', () => {
+    const home = makeTempHome('launcher-fallback');
+    try {
+      // Create a valid "old" release with a dummy entrypoint
+      const oldReleaseId = 'main-aabbccdd11223344556677889900aabb11223344';
+      const oldRoot = join(home, '.myelin', 'releases', oldReleaseId);
+      mkdirSync(join(oldRoot, 'src', 'cli'), { recursive: true });
+      writeFileSync(join(oldRoot, 'src', 'cli', 'index.mjs'), `process.exit(42);\n`, 'utf8');
+
+      // Point current.json at a non-existent release
+      writeCurrentRelease({ home, releaseId: 'main-deadbeef1234567890' });
+
+      const spawnedArgs = [];
+      const exitCode = runManagedLauncher({
+        home,
+        existsSyncFn: existsSync,
+        readdirSyncFn: readdirSync,
+        statSyncFn: statSync,
+        spawnSyncFn: (_execPath, args, _opts) => {
+          spawnedArgs.push(...args);
+          return { status: 42, error: null };
+        },
+      });
+
+      assert.equal(exitCode, 42);
+      assert.ok(
+        spawnedArgs.some(a => a.includes(oldReleaseId)),
+        `expected fallback to ${oldReleaseId}, got: ${JSON.stringify(spawnedArgs)}`,
+      );
+    } finally {
       rmSync(home, { recursive: true, force: true });
     }
   });
