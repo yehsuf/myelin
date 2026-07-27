@@ -3208,8 +3208,8 @@ async function main() {
     // current binary. Older installs may have left a stale bare binary there;
     // a symlink that follows the `current` pointer self-updates on future bumps.
     if (os !== 'windows') {
-      const managedRtkBin = joinManaged(home, 'components', 'rtk', 'current', 'bin', 'rtk');
-      const myelinBinRtk = joinManaged(home, 'bin', 'rtk');
+      const managedRtkBin = joinManaged(managed.root, 'components', 'rtk', 'current', 'bin', 'rtk');
+      const myelinBinRtk = joinManaged(managed.binDir, 'rtk');
       if (existsSync(managedRtkBin)) {
         let needsLink = false;
         try {
