@@ -93,6 +93,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 - Exit 2: tell user "Run this inside an active Copilot CLI session, or set COPILOT_AGENT_SESSION_ID."
 - Exit 3/4: tell user "Session directory problem — check stderr output."
 - `sqlite3` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
+- **Clipboard unavailable / "exit 1, no stderr"**: the sandbox is likely blocking pasteboard IPC (same restriction as `git push`/GPG signing in Claude Code). Treat like a permission-gated tool: set `MYELIN_NO_CLIPBOARD=1` to suppress, or tell the user to paste the hint manually from the printed output.
 
 ## Optional configuration
 

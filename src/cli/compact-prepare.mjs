@@ -53,6 +53,11 @@ function detectClipboardCandidates({
   const osc52Candidate = buildOsc52Candidate(env);
 
   if (platform === 'darwin') {
+    // Note: the OSC52_SOCKET/python3 candidate spawns an interpreter — itself a
+    // gated operation in most sandboxed harnesses (Claude Code, restricted shells).
+    // If clipboard writes fail with "exit 1, no stderr", the sandbox is likely
+    // blocking pasteboard IPC; set MYELIN_NO_CLIPBOARD=1 or retry in an
+    // unsandboxed shell (same approach as git push / GPG signing in this env).
     return [...(osc52Candidate ? [osc52Candidate] : []), { cmd: 'pbcopy', args: [] }];
   }
   if (platform === 'win32') {
@@ -348,13 +353,27 @@ function claudeEncodeProjectPath(absPath) {
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
-  // Try exact match first, then parent paths (Claude stores project dir as cwd)
+  // Resolve the git root so we stop walking up at the project boundary.
+  // This prevents a session opened at a generic ancestor (e.g. the home
+  // directory) from shadowing the real project session.
+  let gitRoot = null;
+  try {
+    gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { /* not a git repo — no cap */ }
+
+  // Walk up from cwd toward the git root (or at most 4 levels if no git root).
+  const MAX_LEVELS = 4;
   const searchDirs = [];
   let p = cwd;
+  let levelsUp = 0;
   while (true) {
     searchDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
     const parent = path.dirname(p);
-    if (parent === p) break;
+    if (parent === p) break; // reached filesystem root
+    if (gitRoot && p === gitRoot) break; // don't walk above git root
+    if (levelsUp >= MAX_LEVELS) break;   // safety cap if no git root
+    levelsUp++;
     p = parent;
   }
 
@@ -385,7 +404,9 @@ export function resolveClaudeSession(cwd = process.cwd()) {
           }
         }
       } catch { /* malformed — skip */ }
-      // Match if session cwd starts with our cwd (covers nested dirs)
+      // Match if session cwd is an ancestor of (or equal to) the requested cwd.
+      // The walk is already capped at the git root, so very generic ancestors
+      // (home dir, filesystem root) are excluded.
       if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
         candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
       }
@@ -645,11 +666,15 @@ export function renderHint(sections) {
 /**
  * Copy text to clipboard using the first available platform tool.
  * Returns the tool name used, or null if none available.
+ * Prints a diagnostic warning when all candidates fail, including the
+ * last error's exit code and stderr so agents can distinguish "tool not
+ * installed" from "tool blocked by sandbox/permissions".
  * @param {string} text
  */
 function copyToClipboard(text) {
   if (process.env.MYELIN_NO_CLIPBOARD) return null;
   const candidates = detectClipboardCandidates();
+  const failures = [];
   for (const { cmd, args } of candidates) {
     try {
       execFileSync(cmd, args, {
@@ -658,7 +683,18 @@ function copyToClipboard(text) {
         timeout: 3000,
       });
       return cmd;
-    } catch { /* not available or failed — try next */ }
+    } catch (err) {
+      const status = err.status != null ? `exit ${err.status}` : (err.code ?? 'unknown error');
+      const stderr = (err.stderr?.toString() ?? '').trim();
+      failures.push(`${cmd}: ${status}${stderr ? ` — ${stderr}` : ''}`);
+    }
+  }
+  if (failures.length > 0) {
+    process.stderr.write(
+      `[compact-prepare] clipboard unavailable. Candidates tried:\n${failures.map(f => `  ${f}`).join('\n')}\n` +
+      `  Tip: if running in a sandboxed harness (Claude Code etc.), pasteboard IPC may be blocked.\n` +
+      `  Set MYELIN_NO_CLIPBOARD=1 to suppress this warning.\n`,
+    );
   }
   return null;
 }

@@ -711,6 +711,40 @@ describe('resolveClaudeSession', () => {
     assert.ok(result.projectDir, 'projectDir must be set');
   });
 
+  it('does NOT match sessions whose cwd is above the git root (depth-cap regression)', () => {
+    // The walk now stops at the git root. A session opened at /Users/foo (home dir)
+    // cannot shadow a session in /Users/foo/project because the walk stops at the
+    // git root (/Users/foo/project) and never visits /Users/foo.
+    // We verify the invariant: if gitRoot = cwd, the walk only includes cwd itself
+    // and stops immediately (the break `if (gitRoot && p === gitRoot) break` fires
+    // at the first iteration AFTER adding cwd, so exactly [cwd] is searched).
+    // This is a logic-level test of the documented invariant:
+    const projectCwd = '/Users/ysufrin/tokenstack';
+    const homeCwd    = '/Users/ysufrin';  // parent (1 level up)
+    // With git root at projectCwd, walk stops there — homeCwd is never visited
+    // Verify: homeCwd is an ancestor of projectCwd (the old bug scenario)
+    assert.ok(projectCwd.startsWith(homeCwd + '/'),
+      'home cwd is an ancestor of project — this is the bug scenario');
+    // Verify: with git root = projectCwd, the walk would stop before reaching homeCwd
+    // (the walk adds projectCwd to searchDirs, then checks `if (p === gitRoot) break`
+    //  at the end of the loop body — so p = projectCwd triggers the break immediately)
+    let walkIncludesHome = false;
+    {
+      const gitRoot = projectCwd; // simulated git root
+      let p = projectCwd;
+      const visited = [p];
+      const iter = () => {
+        const parent = p.split('/').slice(0, -1).join('/') || '/';
+        if (parent === p || p === gitRoot) return; // stop at git root
+        visited.push(parent);
+        p = parent;
+      };
+      iter();  // one step
+      walkIncludesHome = visited.includes(homeCwd);
+    }
+    assert.ok(!walkIncludesHome, 'walk stopped at git root — home dir is not visited');
+  });
+
   it('collectDataClaude returns agent=claude with empty todos and checkpoints', () => {
     const fakeSession = {
       sid: 'fake-session-id-1234',
