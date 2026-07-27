@@ -86,6 +86,7 @@ function buildEngineInstance({ engine, role, port, egressPort, config, root, env
       HEADROOM_LITE_COMPRESS_PROXY: 'true',
       // Enable lossless deterministic compression (same as mitmproxy path).
       HEADROOM_LITE_COMPRESS: 'live',
+      ...(config?.compression?.lite?.cache_reset === true ? { HEADROOM_LITE_CACHE_RESET: 'true' } : {}),
     };
   } else if (engine === 'headroom_lite' && role === 'primary') {
     // Primary headroom-lite handles Claude Code traffic — enable same compression.
@@ -98,6 +99,7 @@ function buildEngineInstance({ engine, role, port, egressPort, config, root, env
       HEADROOM_LITE_COMPRESS: 'live',
       HEADROOM_LITE_COMPRESS_PROXY: 'true',
       ...(anthropicUpstream ? { HEADROOM_LITE_UPSTREAM_ANTHROPIC: anthropicUpstream } : {}),
+      ...(config?.compression?.lite?.cache_reset === true ? { HEADROOM_LITE_CACHE_RESET: 'true' } : {}),
     };
   } else if (engine === 'headroom' && role === 'copilot') {
     const loopbackTarget = `http://127.0.0.1:${egressPort}`;

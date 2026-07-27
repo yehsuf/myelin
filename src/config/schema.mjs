@@ -128,6 +128,13 @@ export const DEFAULT_CONFIG = {
       corporate_proxy: '',
       openai_target_url: 'https://api.githubcopilot.com',
     },
+    // lite: settings that apply when backend is 'headroom-lite'.
+    lite: {
+      // cache_reset: deliberately break Anthropic prompt-cache hits on a schedule
+      // to shrink permanently-frozen cache prefixes. Off by default — power-user feature.
+      // Set to true via: myelin config set compression.lite.cache_reset true
+      cache_reset: false,
+    },
   },
   index_tier: 'default',
   code_discovery: {
