@@ -353,13 +353,20 @@ function claudeEncodeProjectPath(absPath) {
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
-  // Try exact match first, then parent paths (Claude stores project dir as cwd)
+  // Walk up from cwd toward the root, searching Claude project dirs.
+  // Cap at MAX_ANCESTOR_LEVELS levels above cwd to avoid matching sessions
+  // opened at a generic ancestor (e.g. the home directory) that would shadow
+  // the actual project session.
+  const MAX_ANCESTOR_LEVELS = 3;
+  const cwdDepth = cwd.split(path.sep).length;
   const searchDirs = [];
   let p = cwd;
   while (true) {
     searchDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
     const parent = path.dirname(p);
     if (parent === p) break;
+    const parentDepth = parent.split(path.sep).length;
+    if (cwdDepth - parentDepth >= MAX_ANCESTOR_LEVELS) break; // cap walk
     p = parent;
   }
 
@@ -390,10 +397,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
           }
         }
       } catch { /* malformed — skip */ }
-      // Match if session cwd is exactly our cwd or a subdirectory of it.
-      // Do NOT match sessions whose cwd is a parent of ours — e.g. a session
-      // opened at /Users/foo would otherwise shadow any session in /Users/foo/project.
-      if (sessionCwd && (sessionCwd === cwd || sessionCwd.startsWith(cwd + '/'))) {
+      // Match if session cwd is an ancestor of (or equal to) our cwd.
+      // The searchDirs walk is already capped at MAX_ANCESTOR_LEVELS above,
+      // so very generic ancestors (home dir etc.) are excluded by the walk cap.
+      if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
         candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
       }
     }
