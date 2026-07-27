@@ -1944,12 +1944,16 @@ describe('managed release store', { concurrency: false }, () => {
 
   it('writes launchers that resolve the current release at invocation time', () => {
     const root = makeRoot();
-    const posixResult = installStableLauncher({ home: root, platform: 'linux' });
+    const nodeBin = '/test/node/bin/node';
+    const posixResult = installStableLauncher({ home: root, platform: 'linux', nodeBin });
     const posixLauncher = readFileSync(posixResult.launcher, 'utf8');
 
     assert.match(posixLauncher, /current\/bin\/myelin/);
-    assert.match(posixLauncher, /exec "\$entry" "\$@"/);
-    assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use node to run the shell wrapper
+    // Must invoke the explicit node binary, not just exec "$entry" via shebang.
+    // This ensures systems with an older system node (e.g. v16) work correctly.
+    assert.match(posixLauncher, /\/test\/node\/bin\/node/);
+    assert.doesNotMatch(posixLauncher, /exec "\$entry" "\$@"/); // must not rely on shebang
+    assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use bare 'node' command
 
     const windowsHome = join(root, 'home & still-safe');
     const windowsResult = installStableLauncher({
