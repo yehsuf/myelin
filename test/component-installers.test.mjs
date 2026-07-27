@@ -119,16 +119,16 @@ describe('component install plans', () => {
   it('pins uv packages exactly', () => {
     const plan = buildComponentInstallPlan(
       COMPONENTS.semble,
-      '/components/semble/0.5.1',
+      '/components/semble/0.5.2',
       'linux',
     );
 
     assert.deepEqual(plan.commands, [
-      ['uv', 'venv', '--python', '3.12', '/components/semble/0.5.1'],
+      ['uv', 'venv', '--python', '3.12', '/components/semble/0.5.2'],
       [
         'uv', 'pip', 'install',
-        '--python', '/components/semble/0.5.1',
-        'semble[mcp]==0.5.1',
+        '--python', '/components/semble/0.5.2',
+        'semble[mcp]==0.5.2',
       ],
     ]);
   });
@@ -136,13 +136,13 @@ describe('component install plans', () => {
   it('pins Serena to an immutable commit', () => {
     const plan = buildComponentInstallPlan(
       COMPONENTS.serena,
-      '/components/serena/93b9544ea9def8e93cb6a90f8ea67befe3c8fee4',
+      '/components/serena/bcac0969fb8685783ea6d0f2642468fcc47e6395',
       'linux',
     );
 
     assert.match(
       plan.commands[1].at(-1),
-      /serena\.git@93b9544ea9def8e93cb6a90f8ea67befe3c8fee4$/,
+      /serena\.git@bcac0969fb8685783ea6d0f2642468fcc47e6395$/,
     );
   });
 
@@ -536,19 +536,19 @@ describe('staging and managed detection', () => {
       },
     });
 
-    assert.equal(result.destination, '/components/semble/0.5.1');
+    assert.equal(result.destination, '/components/semble/0.5.2');
     assert.deepEqual(calls, [
       {
         file: 'uv',
-        args: ['venv', '--python', '3.12', '/components/semble/0.5.1'],
+        args: ['venv', '--python', '3.12', '/components/semble/0.5.2'],
         options: { stdio: 'inherit' },
       },
       {
         file: 'uv',
         args: [
           'pip', 'install',
-          '--python', '/components/semble/0.5.1',
-          'semble[mcp]==0.5.1',
+          '--python', '/components/semble/0.5.2',
+          'semble[mcp]==0.5.2',
         ],
         options: { stdio: 'inherit' },
       },
@@ -681,13 +681,13 @@ describe('staging and managed detection', () => {
       platform: { os: 'linux', arch: 'x64' },
       exec(file, args, options) {
         calls.push({ file, args, options });
-        return Buffer.from('0.5.1\n');
+        return Buffer.from('0.5.2\n');
       },
     });
 
     assert.equal(state.pinnedVersionMatches, true);
     assert.deepEqual(calls, [{
-      file: '/components/semble/0.5.1/bin/python',
+      file: '/components/semble/0.5.2/bin/python',
       args: ['-c', 'from importlib.metadata import version; print(version("semble"))'],
       options: { timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] },
     }]);
