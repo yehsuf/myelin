@@ -3541,7 +3541,7 @@ printf "%b" "$parts"
         args: ['init', '--global', '--auto-patch'],
       });
     }
-    // RTK 0.43.0 exposes no subcommand-level rewrite exclusions via `init`,
+    // RTK 0.44.0 exposes no subcommand-level rewrite exclusions via `init`,
     // `hook`, `rewrite`, or the generated filters template, so we keep broad
     // shell rewrites even when Headroom intercept_tool_results is enabled.
     for (const plan of rtkInitPlans) {
