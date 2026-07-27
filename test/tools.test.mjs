@@ -2,7 +2,7 @@ import { after, describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, posix } from 'node:path';
 
 // A POSIX `sh` is absent on Windows hosts (spawnSync sh -> ENOENT). Guard any
@@ -590,14 +590,19 @@ describe('runManagedLauncher fallback', () => {
     }
   });
 
-  it('falls back to valid release when current.json points to missing release', () => {
+  it('falls back to the NEWEST valid release when current.json points to missing release', () => {
     const home = makeTempHome('launcher-fallback');
     try {
-      // Create a valid "old" release with a dummy entrypoint
       const oldReleaseId = 'main-aabbccdd11223344556677889900aabb11223344';
-      const oldRoot = join(home, '.myelin', 'releases', oldReleaseId);
-      mkdirSync(join(oldRoot, 'src', 'cli'), { recursive: true });
-      writeFileSync(join(oldRoot, 'src', 'cli', 'index.mjs'), `process.exit(42);\n`, 'utf8');
+      const newReleaseId = 'main-11223344aabbccdd11223344556677889900aabb';
+
+      // Create two releases; set mtimes explicitly so the sort is deterministic
+      for (const [id, mtime] of [[oldReleaseId, 1_000_000], [newReleaseId, 2_000_000]]) {
+        const root = join(home, '.myelin', 'releases', id);
+        mkdirSync(join(root, 'src', 'cli'), { recursive: true });
+        writeFileSync(join(root, 'src', 'cli', 'index.mjs'), `process.exit(0);\n`, 'utf8');
+        utimesSync(root, mtime, mtime); // atime, mtime in seconds
+      }
 
       // Point current.json at a non-existent release
       writeCurrentRelease({ home, releaseId: 'main-deadbeef1234567890' });
@@ -610,14 +615,19 @@ describe('runManagedLauncher fallback', () => {
         statSyncFn: statSync,
         spawnSyncFn: (_execPath, args, _opts) => {
           spawnedArgs.push(...args);
-          return { status: 42, error: null };
+          return { status: 0, error: null };
         },
       });
 
-      assert.equal(exitCode, 42);
+      assert.equal(exitCode, 0);
+      // Must pick the NEWER release (higher mtime = 2_000_000), not the older one
       assert.ok(
-        spawnedArgs.some(a => a.includes(oldReleaseId)),
-        `expected fallback to ${oldReleaseId}, got: ${JSON.stringify(spawnedArgs)}`,
+        spawnedArgs.some(a => a.includes(newReleaseId)),
+        `expected fallback to newest release ${newReleaseId}, got: ${JSON.stringify(spawnedArgs)}`,
+      );
+      assert.ok(
+        !spawnedArgs.some(a => a.includes(oldReleaseId)),
+        `must not fall back to older release ${oldReleaseId}`,
       );
     } finally {
       rmSync(home, { recursive: true, force: true });

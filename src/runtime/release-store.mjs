@@ -1,7 +1,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeSync } from 'node:fs';
 import { joinManaged, managedPaths } from '../shared/myelin-paths.mjs';
 
-const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+export const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
 
 function normalizeRootArgs(arg) {
   return typeof arg === 'string' ? { home: arg } : (arg ?? {});

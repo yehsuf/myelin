@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync 
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readCurrentRelease, runtimePaths } from './release-store.mjs';
+import { readCurrentRelease, RELEASE_ID_RE, runtimePaths } from './release-store.mjs';
 import { joinManaged } from '../shared/myelin-paths.mjs';
 import { normalizeWindowsFilesystemPath } from '../service/windows.mjs';
 import { isWsl } from '../detect/wsl.mjs';
@@ -275,7 +275,6 @@ export function runManagedLauncher({
   const entrypoint = resolveRuntimeEntrypoint({ home, rootDir });
   if (!existsSyncFn(entrypoint)) {
     const { releasesDir } = runtimePaths({ home, rootDir });
-    const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
     let fallback = null;
     try {
       const entries = readdirSyncFn(releasesDir, { withFileTypes: true });
