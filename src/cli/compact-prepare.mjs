@@ -353,20 +353,27 @@ function claudeEncodeProjectPath(absPath) {
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
-  // Walk up from cwd toward the root, searching Claude project dirs.
-  // Cap at MAX_ANCESTOR_LEVELS levels above cwd to avoid matching sessions
-  // opened at a generic ancestor (e.g. the home directory) that would shadow
-  // the actual project session.
-  const MAX_ANCESTOR_LEVELS = 3;
-  const cwdDepth = cwd.split(path.sep).length;
+  // Resolve the git root so we stop walking up at the project boundary.
+  // This prevents a session opened at a generic ancestor (e.g. the home
+  // directory) from shadowing the real project session.
+  let gitRoot = null;
+  try {
+    gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch { /* not a git repo — no cap */ }
+
+  // Walk up from cwd toward the git root (or at most 4 levels if no git root).
+  const MAX_LEVELS = 4;
   const searchDirs = [];
   let p = cwd;
+  let levelsUp = 0;
   while (true) {
     searchDirs.push(path.join(CLAUDE_PROJECTS_ROOT, claudeEncodeProjectPath(p)));
     const parent = path.dirname(p);
-    if (parent === p) break;
-    const parentDepth = parent.split(path.sep).length;
-    if (cwdDepth - parentDepth >= MAX_ANCESTOR_LEVELS) break; // cap walk
+    if (parent === p) break; // reached filesystem root
+    if (gitRoot && p === gitRoot) break; // don't walk above git root
+    if (levelsUp >= MAX_LEVELS) break;   // safety cap if no git root
+    levelsUp++;
     p = parent;
   }
 
@@ -397,9 +404,9 @@ export function resolveClaudeSession(cwd = process.cwd()) {
           }
         }
       } catch { /* malformed — skip */ }
-      // Match if session cwd is an ancestor of (or equal to) our cwd.
-      // The searchDirs walk is already capped at MAX_ANCESTOR_LEVELS above,
-      // so very generic ancestors (home dir etc.) are excluded by the walk cap.
+      // Match if session cwd is an ancestor of (or equal to) the requested cwd.
+      // The walk is already capped at the git root, so very generic ancestors
+      // (home dir, filesystem root) are excluded.
       if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
         candidates.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
       }
