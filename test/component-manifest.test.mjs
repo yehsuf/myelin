@@ -46,14 +46,14 @@ describe('component manifest', () => {
         kind: 'uv-git',
         package: 'serena-agent',
         repository: 'https://github.com/oraios/serena.git',
-        version: '1.6.0',
-        ref: '93b9544ea9def8e93cb6a90f8ea67befe3c8fee4',
+        version: '1.6.1',
+        ref: 'bcac0969fb8685783ea6d0f2642468fcc47e6395',
         bin: 'serena',
       },
       semble: {
         kind: 'uv-venv',
         package: 'semble[mcp]',
-        version: '0.5.1',
+        version: '0.5.2',
         bin: 'semble',
       },
       agentcairn: {

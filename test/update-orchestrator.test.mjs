@@ -130,11 +130,11 @@ describe('planUpdate', { concurrency: false }, () => {
       manifest: {
         headroomLite: { version: '0.31.0' },
         headroomOriginal: { version: '0.31.0' },
-        serena: { version: '1.6.0' },
+        serena: { version: '1.6.1' },
       },
       installed: {
         headroomLite: { current: '0.30.0', previous: null },
-        serena: { current: '1.6.0', previous: null },
+        serena: { current: '1.6.1', previous: null },
       },
       target: { version: '1.1.0' },
     });
