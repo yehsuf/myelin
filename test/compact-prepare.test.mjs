@@ -785,10 +785,24 @@ describe('jsonlLastTimestamp', () => {
 });
 
 describe('resolveClaudeSession — CLAUDE_SESSION_ID override', () => {
-  it('respects CLAUDE_SESSION_ID when the session file exists under tokenstack', () => {
+  it('CLAUDE_SESSION_ID with nonexistent UUID returns null (proves env var is read)', () => {
+    // If the env var were silently ignored, resolveClaudeSession would run the normal
+    // path and potentially return a real session. Setting a bogus UUID that cannot
+    // exist as a JSONL file proves the override code is actually being executed.
+    const orig = process.env.CLAUDE_SESSION_ID;
+    try {
+      process.env.CLAUDE_SESSION_ID = '00000000-0000-0000-0000-000000000000';
+      const result = resolveClaudeSession(process.cwd());
+      assert.equal(result, null, 'bogus CLAUDE_SESSION_ID must return null, not fall through to normal path');
+    } finally {
+      if (orig === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = orig;
+    }
+  });
+
+  it('CLAUDE_SESSION_ID with valid UUID returns that specific session', () => {
     const tokenstackCwd = pathJoin(process.env.HOME || '', 'tokenstack');
     const projectsRoot = pathJoin(process.env.HOME || '', '.claude', 'projects');
-    // Find an actual session file under tokenstack
     const encoded = tokenstackCwd.replace(/[^a-zA-Z0-9]/g, '-');
     const projectDir = pathJoin(projectsRoot, encoded);
     if (!existsSync(projectDir)) return; // skip if no Claude data
