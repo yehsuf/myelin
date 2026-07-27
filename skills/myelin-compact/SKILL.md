@@ -94,6 +94,7 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 - Exit 3/4: tell user "Session directory problem — check stderr output."
 - `sqlite3` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
 - **Clipboard unavailable / "exit 1, no stderr"**: the sandbox is likely blocking pasteboard IPC (same restriction as `git push`/GPG signing in Claude Code). Treat like a permission-gated tool: set `MYELIN_NO_CLIPBOARD=1` to suppress, or tell the user to paste the hint manually from the printed output.
+- **Wrong Claude session picked** (two sessions in same directory): set `CLAUDE_SESSION_ID=<uuid>` to pin to a specific session. Tell the user to find the UUID from `~/.claude/projects/<encoded-cwd>/` (it's the filename of the JSONL that is being actively written by Claude Code).
 
 ## Optional configuration
 

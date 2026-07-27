@@ -6,7 +6,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -738,5 +738,89 @@ describe('resolveClaudeSession', () => {
     assert.deepEqual(data.todos, []);
     assert.deepEqual(data.checkpoints, []);
     assert.equal(data.sid, 'fake-session-id-1234');
+  });
+});
+
+// ─── jsonlLastTimestamp ────────────────────────────────────────
+import { jsonlLastTimestamp } from '../src/cli/compact-prepare.mjs';
+import { join as pathJoin } from 'node:path';
+import * as os from 'node:os';
+
+describe('jsonlLastTimestamp', () => {
+  const tmpDir = pathJoin(os.tmpdir(), `compact-ts-test-${process.pid}`);
+  before(() => mkdirSync(tmpDir, { recursive: true }));
+  after(() => rmSync(tmpDir, { recursive: true, force: true }));
+
+  it('returns the timestamp from the last timestamped entry', () => {
+    const knownTs = '2025-01-15T10:30:00.000Z';
+    const knownMs = new Date(knownTs).getTime();
+    const lines = [
+      JSON.stringify({ type: 'user', cwd: '/project', timestamp: '2025-01-15T10:00:00.000Z' }),
+      JSON.stringify({ type: 'assistant', message: 'hello', timestamp: knownTs }),
+    ].join('\n');
+    const f = pathJoin(tmpDir, 'ts-test.jsonl');
+    writeFileSync(f, lines);
+    assert.equal(jsonlLastTimestamp(f), knownMs, 'should return the last entry timestamp');
+  });
+
+  it('returns 0 for a file with no timestamp fields', () => {
+    const lines = [
+      JSON.stringify({ type: 'last-prompt', sessionId: 'abc' }),
+      JSON.stringify({ type: 'user', cwd: '/project' }),  // no timestamp
+    ].join('\n');
+    const f = pathJoin(tmpDir, 'no-ts.jsonl');
+    writeFileSync(f, lines);
+    assert.equal(jsonlLastTimestamp(f), 0);
+  });
+
+  it('returns 0 for an empty file', () => {
+    const f = pathJoin(tmpDir, 'empty.jsonl');
+    writeFileSync(f, '');
+    assert.equal(jsonlLastTimestamp(f), 0);
+  });
+
+  it('returns 0 for a non-existent file', () => {
+    assert.equal(jsonlLastTimestamp(pathJoin(tmpDir, 'nonexistent.jsonl')), 0);
+  });
+});
+
+describe('resolveClaudeSession — CLAUDE_SESSION_ID override', () => {
+  it('CLAUDE_SESSION_ID with nonexistent UUID returns null (proves env var is read)', () => {
+    // If the env var were silently ignored, resolveClaudeSession would run the normal
+    // path and potentially return a real session. Setting a bogus UUID that cannot
+    // exist as a JSONL file proves the override code is actually being executed.
+    const orig = process.env.CLAUDE_SESSION_ID;
+    try {
+      process.env.CLAUDE_SESSION_ID = '00000000-0000-0000-0000-000000000000';
+      const result = resolveClaudeSession(process.cwd());
+      assert.equal(result, null, 'bogus CLAUDE_SESSION_ID must return null, not fall through to normal path');
+    } finally {
+      if (orig === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = orig;
+    }
+  });
+
+  it('CLAUDE_SESSION_ID with valid UUID returns that specific session', () => {
+    const tokenstackCwd = pathJoin(process.env.HOME || '', 'tokenstack');
+    const projectsRoot = pathJoin(process.env.HOME || '', '.claude', 'projects');
+    const encoded = tokenstackCwd.replace(/[^a-zA-Z0-9]/g, '-');
+    const projectDir = pathJoin(projectsRoot, encoded);
+    if (!existsSync(projectDir)) return; // skip if no Claude data
+    const files = (() => {
+      try { return readdirSync(projectDir).filter(f => f.endsWith('.jsonl')); }
+      catch { return []; }
+    })();
+    if (files.length === 0) return; // skip if no sessions
+    const targetSid = files[0].slice(0, -6); // strip .jsonl
+    const orig = process.env.CLAUDE_SESSION_ID;
+    try {
+      process.env.CLAUDE_SESSION_ID = targetSid;
+      const result = resolveClaudeSession(tokenstackCwd);
+      assert.ok(result !== null, 'should find the pinned session');
+      assert.equal(result.sid, targetSid, 'should return the pinned session ID');
+    } finally {
+      if (orig === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = orig;
+    }
   });
 });
