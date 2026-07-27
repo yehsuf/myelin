@@ -18,7 +18,7 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -342,12 +342,45 @@ function claudeEncodeProjectPath(absPath) {
 }
 
 /**
+ * Read the last N bytes of a file and extract the most recent ISO timestamp
+ * from JSONL entries. Returns 0 as fallback if none found (caller uses file mtime).
+ * @param {string} filePath
+ * @param {number} [tailBytes=4096]
+ */
+function jsonlLastTimestamp(filePath, tailBytes = 4096) {
+  try {
+    const { size } = statSync(filePath);
+    if (size === 0) return 0;
+    const offset = Math.max(0, size - tailBytes);
+    const buf = Buffer.alloc(Math.min(tailBytes, size));
+    const fd = openSync(filePath, 'r');
+    try {
+      readSync(fd, buf, 0, buf.length, offset);
+    } finally {
+      closeSync(fd);
+    }
+    const fragment = buf.toString('utf8');
+    // Scan lines in reverse for any entry with a timestamp field
+    const lines = fragment.split('\n').reverse();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const e = JSON.parse(line);
+        if (e.timestamp) return new Date(e.timestamp).getTime();
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* fallback */ }
+  return 0; // caller uses mtime as fallback
+}
+
+/**
  * Try to resolve a Claude Code session for the given cwd.
  * Returns { sid, gitBranch, cwd, projectDir } or null.
  *
  * Claude Code stores sessions as JSONL files under:
  *   ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
  * Each file's first 'user' entry carries { cwd, gitBranch, sessionId }.
+ * Later entries carry { timestamp, type, ... } for activity tracking.
  *
  * Override: set CLAUDE_SESSION_ID=<uuid> to pin to a specific session.
  * Useful when two sessions share the same working directory.
@@ -356,13 +389,14 @@ function claudeEncodeProjectPath(absPath) {
  *  1. Walk from cwd up to the git root; collect matching sessions.
  *  2. If nothing found, try one level above the git root (fallback for sessions
  *     opened at a workspace parent, e.g. a monorepo root above the git boundary).
- *  3. Sort by recency tier:
- *     - very-recent: JSONL modified < 5 min ago (almost certainly the active session)
- *     - active: modified < 2 hours ago
+ *  3. Sort by recency tier using the LAST MESSAGE TIMESTAMP from the JSONL:
+ *     - very-recent: last message < 5 min ago (almost certainly the active session)
+ *     - active: last message < 2 hours ago
  *     - stale: older
- *     Within each tier, sort by most-recently-modified. This ensures that two
- *     concurrent sessions in the same directory are distinguished by which one
- *     was used most recently.
+ *     Within each tier, sort by most-recently-active. Using JSONL timestamps
+ *     rather than file mtime avoids false matches from background processes
+ *     (backup, rsync, IDE indexing) that can update file mtime without
+ *     representing real session activity.
  */
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
@@ -453,7 +487,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
           }
         } catch { /* malformed — skip */ }
         if (sessionCwd && (sessionCwd === cwd || cwd.startsWith(sessionCwd + '/'))) {
-          found.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: st.mtimeMs });
+          // Use actual last-message timestamp from JSONL tail for more reliable recency.
+          // Fall back to file mtime if no timestamp found (returns 0 from jsonlLastTimestamp).
+          const lastActive = jsonlLastTimestamp(filePath) || st.mtimeMs;
+          found.push({ sid, gitBranch, cwd: sessionCwd, projectDir, mtime: lastActive });
         }
       }
       if (found.length > 0) break;
