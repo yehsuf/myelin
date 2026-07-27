@@ -3210,16 +3210,18 @@ async function main() {
   // leave stale bare binaries that shadow the managed ones in PATH; symlinks
   // through the `current` pointer self-update automatically on future bumps.
   //
-  // Skips compression backends (headroomLite, headroomOriginal, mitmproxy)
-  // which are service binaries managed separately, and optional components
-  // that may not be installed.
+  // Skips: compression backends (headroomLite, headroomOriginal, mitmproxy, winsw)
+  //        which are service binaries managed separately.
+  // npm/npm-git components put their binary at node_modules/.bin/<name>, not bin/<name>.
   if (os !== 'windows') {
-    const SKIP_LINK = new Set(['headroomLite', 'headroomOriginal', 'mitmproxy', 'winsw', 'codegraph', 'caveman', 'tokenOptimizer']);
+    const SKIP_LINK = new Set(['headroomLite', 'headroomOriginal', 'mitmproxy', 'winsw', 'tokenOptimizer']);
     for (const [name, component] of Object.entries(COMPONENTS)) {
       if (SKIP_LINK.has(name)) continue;
       const binName = component.bin;
       if (!binName) continue;
-      const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', binName);
+      const isNpm = component.kind === 'npm' || component.kind === 'npm-git';
+      const binSegments = isNpm ? ['node_modules', '.bin', binName] : ['bin', binName];
+      const managedBin = joinManaged(managed.root, 'components', name, 'current', ...binSegments);
       const myelinBin = joinManaged(managed.binDir, binName);
       if (!existsSync(managedBin)) continue;
       let needsLink = false;
