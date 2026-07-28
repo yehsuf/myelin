@@ -358,7 +358,9 @@ function isProcessAlive(pid) {
 
 /**
  * Collect ancestor PIDs of the current process (up to maxDepth levels).
- * On POSIX, reads /proc/<pid>/status (Linux) or uses ps (macOS).
+ * Uses multiple fallback methods:
+ *  1. Read /proc/<pid>/status (Linux) for PPid field
+ *  2. ps -p <pid> -o ppid= (macOS, may be sandboxed)
  * Returns array of [ppid, ppid's ppid, ...].
  */
 function ancestorPids(maxDepth = 4) {
@@ -366,10 +368,22 @@ function ancestorPids(maxDepth = 4) {
   let pid = typeof process.ppid === 'number' ? process.ppid : 0;
   for (let i = 0; i < maxDepth && pid > 1; i++) {
     pids.push(pid);
+    let parentPid = 0;
+    // Linux: read /proc/<pid>/status
     try {
-      const r = execFileSync('ps', ['-p', String(pid), '-o', 'ppid='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-      pid = parseInt(r.trim(), 10);
-    } catch { break; }
+      const status = readFileSync(`/proc/${pid}/status`, 'utf8');
+      const m = status.match(/^PPid:\s*(\d+)/m);
+      if (m) { parentPid = parseInt(m[1], 10); }
+    } catch {
+      // macOS or /proc unavailable: try ps
+      try {
+        const r = execFileSync('ps', ['-p', String(pid), '-o', 'ppid='],
+          { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        parentPid = parseInt(r.trim(), 10);
+      } catch { /* sandboxed or unavailable — stop walking */ }
+    }
+    if (!parentPid || parentPid <= 1) break;
+    pid = parentPid;
   }
   return pids;
 }
