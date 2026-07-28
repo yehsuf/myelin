@@ -32,8 +32,11 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 
 2. Run:
    ```bash
-   command node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
+   CLAUDE_SESSION_PID=$PPID command node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
    ```
+   (`CLAUDE_SESSION_PID=$PPID` lets the script auto-detect the Claude Code session from
+   `~/.claude/sessions/$PPID.json`. In Copilot CLI, `$PPID` has no matching session file
+   and is safely ignored — the Copilot path uses `COPILOT_AGENT_SESSION_ID` instead.)
 
 3. Print the full script output verbatim. The `<<<SESSION_STATE_BRIEF>>>` block
    is a factual summary (todos, git, checkpoints, plan.md, rules) — it is NOT

@@ -485,6 +485,20 @@ export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
+  // CLAUDE_SESSION_PID: the simplest override — directly reads ~/.claude/sessions/<pid>.json.
+  // When /myelin:compact runs, it can inject: CLAUDE_SESSION_PID=$PPID
+  // (in Claude Code bash, $PPID is the Claude Code process PID = the session JSON's pid field).
+  const explicitPid = parseInt(process.env.CLAUDE_SESSION_PID ?? '', 10);
+  if (explicitPid > 0) {
+    const pidSessionPath = path.join(CLAUDE_SESSIONS_DIR, `${explicitPid}.json`);
+    try {
+      const data = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
+      if (data.sessionId) {
+        return { sid: data.sessionId, gitBranch: data.gitBranch ?? null, cwd, projectDir: null };
+      }
+    } catch { /* session file not found or unreadable — fall through */ }
+  }
+
   // Honour explicit session ID or name override — useful when two sessions share a cwd.
   const explicitSid = process.env.CLAUDE_SESSION_ID?.trim();
   const explicitName = process.env.CLAUDE_SESSION_NAME?.trim();

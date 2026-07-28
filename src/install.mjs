@@ -3700,7 +3700,8 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
    \`\`\`bash
    CLAUDE_SESSION_PID=$PPID node ~/.copilot/skills/myelin-compact/compact-prepare.mjs --runtime claude prepare 2>&1
    \`\`\`
-   (The \`--runtime claude\` flag restricts resolution to Claude Code sessions only — no Copilot CLI sessions are consulted.)
+   (The \`--runtime claude\` flag restricts resolution to Claude Code sessions only — no Copilot CLI sessions are consulted.
+   \`$PPID\` is the Claude Code process PID; the script reads \`~/.claude/sessions/$PPID.json\` to identify the current session.)
 
 2. Print the full script output verbatim.
 
