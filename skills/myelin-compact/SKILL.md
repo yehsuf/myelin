@@ -94,7 +94,11 @@ Let `$MODE` = first token of `$ARGUMENTS`, default `prepare`. Must be `prepare` 
 - Exit 3/4: tell user "Session directory problem — check stderr output."
 - `sqlite3` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
 - **Clipboard unavailable / "exit 1, no stderr"**: the sandbox is likely blocking pasteboard IPC (same restriction as `git push`/GPG signing in Claude Code). Treat like a permission-gated tool: set `MYELIN_NO_CLIPBOARD=1` to suppress, or tell the user to paste the hint manually from the printed output.
-- **Wrong Claude session picked** (two sessions in same directory): set `CLAUDE_SESSION_ID=<uuid>` to pin to a specific session. Tell the user to find the UUID from `~/.claude/projects/<encoded-cwd>/` (it's the filename of the JSONL that is being actively written by Claude Code).
+- **Wrong Claude session picked** (two sessions in same directory): use one of these env vars to pin to a specific session:
+  - `CLAUDE_SESSION_ID=<uuid>` — the UUID shown in `~/.claude/sessions/*.json` (field: `sessionId`)
+  - `CLAUDE_SESSION_NAME="WCP | Pulsar frontend - Session main repo"` — the session name shown in the terminal header (field: `name` in the sessions JSON, may have outer quotes stripped)
+  - Find current sessions: `ls ~/.claude/sessions/` → read the JSON for your session
+  - Auto-detection: if running compact-prepare from within Claude Code (not via CLI), the PPID is used to find the parent Claude Code process automatically
 
 ## Optional configuration
 

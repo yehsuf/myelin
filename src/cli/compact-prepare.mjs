@@ -359,16 +359,15 @@ function isProcessAlive(pid) {
 /**
  * Resolve a Claude Code session from ~/.claude/sessions/*.json.
  * These files are maintained by Claude Code and contain real-time session state:
- * pid, sessionId, cwd, status, updatedAt.
+ * pid, sessionId, cwd, status, updatedAt, name.
  *
- * This is more reliable than JSONL scanning because:
- * - It reflects RUNNING sessions (can check pid liveness)
- * - The cwd is where Claude Code started (correct project root)
- * - updatedAt provides accurate recency without JSONL parsing
+ * If ppid is provided (the parent process PID), sessions with that exact pid
+ * are ranked first — this auto-detects the Claude Code session that spawned
+ * compact-prepare without requiring any env var.
  *
  * Returns { sid, gitBranch, cwd, projectDir } or null.
  */
-function resolveFromSessionsDir(cwd, gitRoot) {
+function resolveFromSessionsDir(cwd, gitRoot, ppid = null) {
   if (!existsSync(CLAUDE_SESSIONS_DIR)) return null;
   let files;
   try { files = readdirSync(CLAUDE_SESSIONS_DIR).filter(f => f.endsWith('.json')); }
@@ -392,12 +391,14 @@ function resolveFromSessionsDir(cwd, gitRoot) {
     }
 
     const alive = isProcessAlive(pid);
-    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive });
+    const isParent = ppid != null && pid === ppid;
+    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive, isParent });
   }
   if (candidates.length === 0) return null;
 
-  // Sort: alive sessions first, then most-recently-updated
+  // Sort: parent pid first (auto-detect spawner), then alive, then most-recently-updated
   candidates.sort((a, b) => {
+    if (a.isParent !== b.isParent) return a.isParent ? -1 : 1;
     if (a.alive !== b.alive) return a.alive ? -1 : 1;
     return b.updatedAt - a.updatedAt;
   });
@@ -450,38 +451,45 @@ export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
-  // Honour explicit session ID override — useful when two sessions share a cwd.
+  // Honour explicit session ID or name override — useful when two sessions share a cwd.
   const explicitSid = process.env.CLAUDE_SESSION_ID?.trim();
-  if (explicitSid) {
-    // First: check ~/.claude/sessions/ for the session with this ID (most reliable)
+  const explicitName = process.env.CLAUDE_SESSION_NAME?.trim();
+  if (explicitSid || explicitName) {
+    // Scan ~/.claude/sessions/*.json for matching session ID or name
     try {
       for (const f of readdirSync(CLAUDE_SESSIONS_DIR)) {
         if (!f.endsWith('.json')) continue;
         const data = JSON.parse(readFileSync(path.join(CLAUDE_SESSIONS_DIR, f), 'utf8'));
-        if (data.sessionId === explicitSid) {
-          return { sid: explicitSid, gitBranch: data.gitBranch ?? null, cwd, projectDir: null };
+        const idMatch = explicitSid && data.sessionId === explicitSid;
+        // Session name may be quoted: `"WCP | ..."` — strip outer quotes for comparison
+        const nameRaw = typeof data.name === 'string' ? data.name.replace(/^"|"$/g, '') : '';
+        const nameMatch = explicitName && (nameRaw === explicitName || data.name === explicitName);
+        if (idMatch || nameMatch) {
+          return { sid: data.sessionId, gitBranch: data.gitBranch ?? null, cwd, projectDir: null };
         }
       }
     } catch { /* sessions dir absent or unreadable */ }
-    // Fallback: search JSONL files for this session ID
-    try {
-      for (const projectDirName of readdirSync(CLAUDE_PROJECTS_ROOT)) {
-        const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
-        const jsonlPath = path.join(projectDir, `${explicitSid}.jsonl`);
-        if (!existsSync(jsonlPath)) continue;
-        let gitBranch = null;
-        try {
-          for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
-            if (!line.trim()) continue;
-            const entry = JSON.parse(line);
-            if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
-          }
-        } catch { /* malformed */ }
-        // Always use the caller's cwd — the JSONL may have been started elsewhere
-        return { sid: explicitSid, gitBranch, cwd, projectDir };
-      }
-    } catch { /* ignore scan errors */ }
-    return null; // explicit ID given but not found
+    // Fallback: search JSONL files by session ID
+    if (explicitSid) {
+      try {
+        for (const projectDirName of readdirSync(CLAUDE_PROJECTS_ROOT)) {
+          const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
+          const jsonlPath = path.join(projectDir, `${explicitSid}.jsonl`);
+          if (!existsSync(jsonlPath)) continue;
+          let gitBranch = null;
+          try {
+            for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
+              if (!line.trim()) continue;
+              const entry = JSON.parse(line);
+              if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
+            }
+          } catch { /* malformed */ }
+          // Always use the caller's cwd — the JSONL may have been started elsewhere
+          return { sid: explicitSid, gitBranch, cwd, projectDir };
+        }
+      } catch { /* ignore scan errors */ }
+    }
+    return null; // explicit ID/name given but not found
   }
 
   // Resolve the git root so we stop walking up at the project boundary.
@@ -492,7 +500,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   } catch { /* not a git repo — no cap */ }
 
   // Primary: ~/.claude/sessions/*.json (real-time, pid-liveness-aware)
-  const liveSession = resolveFromSessionsDir(cwd, gitRoot);
+  // Also try parent PID auto-detection: if compact-prepare was run FROM Claude Code,
+  // the parent PID (process.ppid) or grandparent PID should match a session.
+  const ppid = typeof process.ppid === 'number' ? process.ppid : null;
+  const liveSession = resolveFromSessionsDir(cwd, gitRoot, ppid);
   if (liveSession) return liveSession;
 
   // Build primary searchDirs: cwd up to (and including) git root.
