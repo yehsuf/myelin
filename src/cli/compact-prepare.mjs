@@ -483,23 +483,25 @@ export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
  *  3. Fallback one level above git root (monorepo parent)
  */
 export function resolveClaudeSession(cwd = process.cwd()) {
-  if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
-
-  // CLAUDE_SESSION_PID: the simplest override — directly reads ~/.claude/sessions/<pid>.json.
-  // When /myelin:compact runs, it can inject: CLAUDE_SESSION_PID=$PPID
-  // (in Claude Code bash, $PPID is the Claude Code process PID = the session JSON's pid field).
+  // CLAUDE_SESSION_PID: directly reads ~/.claude/sessions/<pid>.json — the authoritative
+  // live session record maintained by Claude Code. Does NOT require ~/.claude/projects to
+  // exist (that dir is only needed by the JSONL-walk fallback below).
   const explicitPid = parseInt(process.env.CLAUDE_SESSION_PID ?? '', 10);
   if (explicitPid > 0) {
     const pidSessionPath = path.join(CLAUDE_SESSIONS_DIR, `${explicitPid}.json`);
     try {
       const data = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
       if (data.sessionId) {
-        return { sid: data.sessionId, gitBranch: data.gitBranch ?? null, cwd, projectDir: null };
+        // Prefer the session's stored cwd (authoritative for the running session) over
+        // process.cwd() (which may differ if the compact command runs from a sub-dir).
+        return { sid: data.sessionId, gitBranch: data.gitBranch ?? null, cwd: data.cwd || cwd, projectDir: null };
       }
     } catch { /* session file not found or unreadable — fall through */ }
   }
 
   // Honour explicit session ID or name override — useful when two sessions share a cwd.
+  // Also does not require ~/.claude/projects: first tries ~/.claude/sessions/*.json,
+  // then falls back to JSONL scan only if explicitSid is set.
   const explicitSid = process.env.CLAUDE_SESSION_ID?.trim();
   const explicitName = process.env.CLAUDE_SESSION_NAME?.trim();
   if (explicitSid || explicitName) {
@@ -517,8 +519,8 @@ export function resolveClaudeSession(cwd = process.cwd()) {
         }
       }
     } catch { /* sessions dir absent or unreadable */ }
-    // Fallback: search JSONL files by session ID
-    if (explicitSid) {
+    // Fallback: search JSONL files by session ID (requires ~/.claude/projects)
+    if (explicitSid && existsSync(CLAUDE_PROJECTS_ROOT)) {
       try {
         for (const projectDirName of readdirSync(CLAUDE_PROJECTS_ROOT)) {
           const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
@@ -539,6 +541,9 @@ export function resolveClaudeSession(cwd = process.cwd()) {
     }
     return null; // explicit ID/name given but not found
   }
+
+  // ~/.claude/projects is required for the heuristic JSONL walk below.
+  if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
   // Resolve the git root so we stop walking up at the project boundary.
   let gitRoot = null;

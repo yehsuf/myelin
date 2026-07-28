@@ -721,11 +721,11 @@ describe('resolveClaudeSession', () => {
     mkdirSync(CLAUDE_FIXTURE, { recursive: true });
   });
 
-  it('returns null when ~/.claude/projects does not exist', () => {
-    const home = path.join(CLAUDE_FIXTURE, 'no-claude-home');
-    mkdirSync(home, { recursive: true });
-    // Override resolveClaudeSession's HOME via patching CLAUDE_PROJECTS_ROOT
-    // is not straightforward; instead test by pointing to a cwd with no sessions
+  it('returns null when ~/.claude/projects does not exist and no explicit env override', () => {
+    // CLAUDE_SESSION_PID, CLAUDE_SESSION_ID, CLAUDE_SESSION_NAME: any of these bypass the
+    // projects-dir check. This test verifies the heuristic JSONL walk still returns null
+    // when no projects dir exists and no override env is set.
+    // Test via a cwd that never matches any real session.
     const result = resolveClaudeSession('/nonexistent-cwd-that-never-matches');
     assert.equal(result, null);
   });
