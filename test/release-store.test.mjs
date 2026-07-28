@@ -1949,9 +1949,10 @@ describe('managed release store', { concurrency: false }, () => {
     const posixLauncher = readFileSync(posixResult.launcher, 'utf8');
 
     assert.match(posixLauncher, /current\/bin\/myelin/);
-    // Must invoke the explicit node binary, not just exec "$entry" via shebang.
-    // This ensures systems with an older system node (e.g. v16) work correctly.
-    assert.match(posixLauncher, /\/test\/node\/bin\/node/);
+    // Must invoke the explicit node binary wrapped in single-quotes (shellQuote),
+    // not just exec "$entry" via shebang. Without quotes, paths with spaces break.
+    // Without the explicit path, v16 systems fail with ERR_UNKNOWN_FILE_EXTENSION.
+    assert.match(posixLauncher, /exec '\/test\/node\/bin\/node' "\$entry"/);
     assert.doesNotMatch(posixLauncher, /exec "\$entry" "\$@"/); // must not rely on shebang
     assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use bare 'node' command
 
