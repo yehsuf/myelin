@@ -852,7 +852,7 @@ describe('resolveClaudeSession — CLAUDE_SESSION_ID override', () => {
     }
   });
 
-  it('CLAUDE_SESSION_ID with valid UUID returns that specific session', () => {
+  it('CLAUDE_SESSION_ID with valid UUID returns that specific session with caller cwd', () => {
     const tokenstackCwd = pathJoin(process.env.HOME || '', 'tokenstack');
     const projectsRoot = pathJoin(process.env.HOME || '', '.claude', 'projects');
     const encoded = tokenstackCwd.replace(/[^a-zA-Z0-9]/g, '-');
@@ -870,6 +870,9 @@ describe('resolveClaudeSession — CLAUDE_SESSION_ID override', () => {
       const result = resolveClaudeSession(tokenstackCwd);
       assert.ok(result !== null, 'should find the pinned session');
       assert.equal(result.sid, targetSid, 'should return the pinned session ID');
+      // The returned cwd MUST be the caller's cwd (tokenstackCwd), not the JSONL's stored cwd.
+      // This ensures CLAUDE_SESSION_ID works even if the JSONL was started in a different directory.
+      assert.equal(result.cwd, tokenstackCwd, 'cwd must be the caller cwd, not JSONL stored cwd');
     } finally {
       if (orig === undefined) delete process.env.CLAUDE_SESSION_ID;
       else process.env.CLAUDE_SESSION_ID = orig;
