@@ -93,6 +93,7 @@ function detectClipboardCandidates({
 const HOME = process.env.HOME ?? os.homedir();
 const SESSION_ROOT = process.env.COPILOT_AGENT_SESSION_ROOT ?? path.join(HOME, '.copilot', 'session-state');
 const CLAUDE_PROJECTS_ROOT = path.join(HOME, '.claude', 'projects');
+const CLAUDE_SESSIONS_DIR = path.join(HOME, '.claude', 'sessions');
 const MAX_HINT = 4000; // /compact customInstructions hard cap
 
 // ─── multi-session claims reader ──────────────────────────────
@@ -342,6 +343,68 @@ function claudeEncodeProjectPath(absPath) {
 }
 
 /**
+ * Check if a process is alive using kill -0 (POSIX only).
+ * Returns true if alive, false if dead or unknown.
+ */
+function isProcessAlive(pid) {
+  if (!pid || typeof pid !== 'number') return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve a Claude Code session from ~/.claude/sessions/*.json.
+ * These files are maintained by Claude Code and contain real-time session state:
+ * pid, sessionId, cwd, status, updatedAt.
+ *
+ * This is more reliable than JSONL scanning because:
+ * - It reflects RUNNING sessions (can check pid liveness)
+ * - The cwd is where Claude Code started (correct project root)
+ * - updatedAt provides accurate recency without JSONL parsing
+ *
+ * Returns { sid, gitBranch, cwd, projectDir } or null.
+ */
+function resolveFromSessionsDir(cwd, gitRoot) {
+  if (!existsSync(CLAUDE_SESSIONS_DIR)) return null;
+  let files;
+  try { files = readdirSync(CLAUDE_SESSIONS_DIR).filter(f => f.endsWith('.json')); }
+  catch { return null; }
+
+  const candidates = [];
+  for (const f of files) {
+    const filePath = path.join(CLAUDE_SESSIONS_DIR, f);
+    let data;
+    try { data = JSON.parse(readFileSync(filePath, 'utf8')); }
+    catch { continue; }
+    const { pid, sessionId, cwd: sessionCwd, updatedAt, gitBranch } = data;
+    if (!sessionId || !sessionCwd) continue;
+
+    // Match if session cwd is within the git boundary (same logic as JSONL walk)
+    const cwdMatches = sessionCwd === cwd || cwd.startsWith(sessionCwd + '/');
+    if (!cwdMatches) continue;
+    // Also reject if sessionCwd is too far above the git root (same boundary)
+    if (gitRoot && !sessionCwd.startsWith(gitRoot) && sessionCwd !== gitRoot) {
+      if (!gitRoot.startsWith(sessionCwd + '/') || sessionCwd.split(path.sep).length < (cwd.split(path.sep).length - 1)) continue;
+    }
+
+    const alive = isProcessAlive(pid);
+    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive });
+  }
+  if (candidates.length === 0) return null;
+
+  // Sort: alive sessions first, then most-recently-updated
+  candidates.sort((a, b) => {
+    if (a.alive !== b.alive) return a.alive ? -1 : 1;
+    return b.updatedAt - a.updatedAt;
+  });
+  return candidates[0];
+}
+
+/**
  * Read the last N bytes of a file and extract the most recent ISO timestamp
  * from JSONL entries. Returns 0 as fallback if none found (caller uses file mtime).
  * @param {string} filePath
@@ -378,26 +441,11 @@ export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
  * Try to resolve a Claude Code session for the given cwd.
  * Returns { sid, gitBranch, cwd, projectDir } or null.
  *
- * Claude Code stores sessions as JSONL files under:
- *   ~/.claude/projects/<encoded-cwd>/<session-id>.jsonl
- * Each file's first 'user' entry carries { cwd, gitBranch, sessionId }.
- * Later entries carry { timestamp, type, ... } for activity tracking.
- *
- * Override: set CLAUDE_SESSION_ID=<uuid> to pin to a specific session.
- * Useful when two sessions share the same working directory.
- *
- * Selection strategy (in order):
- *  1. Walk from cwd up to the git root; collect matching sessions.
- *  2. If nothing found, try one level above the git root (fallback for sessions
- *     opened at a workspace parent, e.g. a monorepo root above the git boundary).
- *  3. Sort by recency tier using the LAST MESSAGE TIMESTAMP from the JSONL:
- *     - very-recent: last message < 5 min ago (almost certainly the active session)
- *     - active: last message < 2 hours ago
- *     - stale: older
- *     Within each tier, sort by most-recently-active. Using JSONL timestamps
- *     rather than file mtime avoids false matches from background processes
- *     (backup, rsync, IDE indexing) that can update file mtime without
- *     representing real session activity.
+ * Resolution order (most to least reliable):
+ *  0. CLAUDE_SESSION_ID env var → use that session ID directly (caller's cwd always used)
+ *  1. ~/.claude/sessions/*.json → real-time session state with pid liveness check
+ *  2. JSONL walk from cwd up to git root (fallback for sessions not in sessions dir)
+ *  3. Fallback one level above git root (monorepo parent)
  */
 export function resolveClaudeSession(cwd = process.cwd()) {
   if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
@@ -405,32 +453,31 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   // Honour explicit session ID override — useful when two sessions share a cwd.
   const explicitSid = process.env.CLAUDE_SESSION_ID?.trim();
   if (explicitSid) {
-    // Search all project dirs for a JSONL file named after this session ID.
+    // First: check ~/.claude/sessions/ for the session with this ID (most reliable)
+    try {
+      for (const f of readdirSync(CLAUDE_SESSIONS_DIR)) {
+        if (!f.endsWith('.json')) continue;
+        const data = JSON.parse(readFileSync(path.join(CLAUDE_SESSIONS_DIR, f), 'utf8'));
+        if (data.sessionId === explicitSid) {
+          return { sid: explicitSid, gitBranch: data.gitBranch ?? null, cwd, projectDir: null };
+        }
+      }
+    } catch { /* sessions dir absent or unreadable */ }
+    // Fallback: search JSONL files for this session ID
     try {
       for (const projectDirName of readdirSync(CLAUDE_PROJECTS_ROOT)) {
         const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
         const jsonlPath = path.join(projectDir, `${explicitSid}.jsonl`);
         if (!existsSync(jsonlPath)) continue;
-        let sessionCwd = null;
         let gitBranch = null;
         try {
-          const content = readFileSync(jsonlPath, 'utf8');
-          for (const line of content.split('\n')) {
+          for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
             if (!line.trim()) continue;
             const entry = JSON.parse(line);
-            if (entry.type === 'user' && entry.cwd) {
-              sessionCwd = entry.cwd;
-              gitBranch = entry.gitBranch || null;
-              break;
-            }
+            if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
           }
         } catch { /* malformed */ }
-        // When CLAUDE_SESSION_ID is provided, use the CURRENT working directory
-        // (where compact-prepare is invoked), not the cwd stored in the JSONL.
-        // The JSONL may have been started in a different directory (e.g. the user
-        // opened Claude in a parent workspace, then navigated here). The caller
-        // always knows the right project root; the ID just identifies which JSONL
-        // to read metadata from (gitBranch etc.).
+        // Always use the caller's cwd — the JSONL may have been started elsewhere
         return { sid: explicitSid, gitBranch, cwd, projectDir };
       }
     } catch { /* ignore scan errors */ }
@@ -443,6 +490,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
     gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch { /* not a git repo — no cap */ }
+
+  // Primary: ~/.claude/sessions/*.json (real-time, pid-liveness-aware)
+  const liveSession = resolveFromSessionsDir(cwd, gitRoot);
+  if (liveSession) return liveSession;
 
   // Build primary searchDirs: cwd up to (and including) git root.
   const MAX_LEVELS = 4;
