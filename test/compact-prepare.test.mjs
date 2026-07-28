@@ -326,7 +326,7 @@ describe('CLI modes', () => {
       env, cwd: stray, encoding: 'utf8',
     });
     assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
-    assert.match(r.stderr, /cannot resolve session/);
+    assert.match(r.stderr, /no Copilot CLI session found/);
   });
 
   it('uses COPILOT_AGENT_SESSION_ID when set explicitly', () => {

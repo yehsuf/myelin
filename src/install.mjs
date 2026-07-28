@@ -1836,16 +1836,16 @@ export function installCopilotSkills({
   }
 }
 
-/** SKILL.md content for myelin-compact (environment-independent). */
+/** SKILL.md content for myelin-compact (Copilot CLI only). */
 const COMPACT_SKILL_MD = `---
 name: myelin-compact
 description: Prepare a dense /compact hint from the current session's live state (git, todos, plan.md, config) and re-orient after /compact. Works in any repo.
 argument-hint: "[prepare|resume] — prepare before /compact, resume after (post-compact)"
 ---
 
-# compact — generic /compact pipeline
+# compact — Copilot CLI /compact pipeline
 
-Generates a ready-to-paste \`/compact\` hint from live session state. No project-specific hardcoding — works in any repo.
+Generates a ready-to-paste \`/compact\` hint from live Copilot CLI session state. No project-specific hardcoding — works in any repo.
 
 ## When to use
 - Context is getting long and \`/compact\` is imminent → invoke with \`prepare\`
@@ -1857,7 +1857,7 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
 
 ### Mode: prepare
 
-1. If running in a **Copilot CLI session** (\`COPILOT_AGENT_SESSION_ID\` is set), export current todos to a file so the script can read them:
+1. Export current todos to a file so the script can read them:
    \`\`\`sql
    SELECT id, title, COALESCE(description,'') AS description, status, updated_at
    FROM todos
@@ -1865,12 +1865,12 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
    ORDER BY CASE status WHEN 'blocked' THEN 0 WHEN 'in_progress' THEN 1 ELSE 2 END, updated_at DESC
    \`\`\`
    Write the JSON result to \`~/.copilot/session-state/$COPILOT_AGENT_SESSION_ID/files/todos.json\`.
-   (Skip this step in Claude Code sessions — todos are read from memory instead.)
 
 2. Run:
    \`\`\`bash
    node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
    \`\`\`
+   (Defaults to \`--runtime copilot\` — resolves Copilot CLI session only, no Claude Code cross-contamination.)
 
 3. Print the full script output verbatim.
 
@@ -1892,7 +1892,7 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
 3. In ≤3 lines, state the top priority.
 
 ## Error handling
-- Exit 2: tell user "Run this inside an active Copilot CLI session."
+- Exit 2: no Copilot CLI session found — ensure \`COPILOT_AGENT_SESSION_ID\` is set (it's set automatically when running inside Copilot CLI).
 - \`sqlite3\` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
 `;
 
@@ -3682,13 +3682,9 @@ argument-hint: "[prepare|resume] — prepare before /compact, resume after (post
 allowed-tools: [Bash]
 ---
 
-# compact — generic /compact pipeline
+# compact — Claude Code /compact pipeline
 
-Generates a ready-to-paste \`/compact\` hint from live session state. Works in any repo.
-
-> **Note:** Requires a Copilot CLI session context (\`COPILOT_AGENT_SESSION_ID\` must be
-> set). If invoked from a standalone Claude Code session without Copilot CLI, the script
-> will exit 2 with "Run this inside an active Copilot CLI session."
+Generates a ready-to-paste \`/compact\` hint from live session state. Works in any Claude Code repo session.
 
 ## When to use
 - Context is getting long and \`/compact\` is imminent → invoke with \`prepare\`
@@ -3702,9 +3698,9 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
 
 1. Run:
    \`\`\`bash
-   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs prepare
+   CLAUDE_SESSION_PID=$PPID node ~/.copilot/skills/myelin-compact/compact-prepare.mjs --runtime claude prepare 2>&1
    \`\`\`
-   (The script reads todos directly via its own sqlite3 fallback — no separate SQL step needed.)
+   (The \`--runtime claude\` flag restricts resolution to Claude Code sessions only — no Copilot CLI sessions are consulted.)
 
 2. Print the full script output verbatim.
 
@@ -3720,14 +3716,13 @@ Let \`$MODE\` = first token of \`$ARGUMENTS\`, default \`prepare\`. Must be \`pr
 
 1. Run:
    \`\`\`bash
-   node ~/.copilot/skills/myelin-compact/compact-prepare.mjs resume
+   CLAUDE_SESSION_PID=$PPID node ~/.copilot/skills/myelin-compact/compact-prepare.mjs --runtime claude resume 2>&1
    \`\`\`
 2. Print the output verbatim.
 3. In ≤3 lines, state the top priority.
 
 ## Error handling
-- Exit 2: tell user "Run this inside an active Copilot CLI session."
-- \`sqlite3\` missing: warn "todos may be incomplete — install sqlite3 for full accuracy."
+- Exit 2: no matching Claude Code session found — ensure \`CLAUDE_SESSION_PID=$PPID\` is set, or set \`CLAUDE_SESSION_ID\` / \`CLAUDE_SESSION_NAME\` for an exact match.
 `);
       ok('~/.claude/commands/myelin/compact.md (invoke: /myelin:compact)');
 
