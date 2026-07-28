@@ -486,15 +486,33 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   // CLAUDE_SESSION_PID: directly reads ~/.claude/sessions/<pid>.json — the authoritative
   // live session record maintained by Claude Code. Does NOT require ~/.claude/projects to
   // exist (that dir is only needed by the JSONL-walk fallback below).
+  // Uses data.cwd from the session JSON to compute the JSONL path and read gitBranch.
   const explicitPid = parseInt(process.env.CLAUDE_SESSION_PID ?? '', 10);
   if (explicitPid > 0) {
     const pidSessionPath = path.join(CLAUDE_SESSIONS_DIR, `${explicitPid}.json`);
     try {
       const data = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
-      if (data.sessionId) {
-        // Prefer the session's stored cwd (authoritative for the running session) over
-        // process.cwd() (which may differ if the compact command runs from a sub-dir).
-        return { sid: data.sessionId, gitBranch: data.gitBranch ?? null, cwd: data.cwd || cwd, projectDir: null };
+      if (data.sessionId && data.cwd) {
+        // Build JSONL path from session JSON's cwd (same encoding as Claude Code uses).
+        const projectDirName = claudeEncodeProjectPath(data.cwd);
+        const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
+        const jsonlPath = path.join(projectDir, `${data.sessionId}.jsonl`);
+        let gitBranch = null;
+        if (existsSync(jsonlPath)) {
+          try {
+            for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
+              if (!line.trim()) continue;
+              const entry = JSON.parse(line);
+              if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
+            }
+          } catch { /* malformed JSONL — gitBranch stays null */ }
+        }
+        return {
+          sid: data.sessionId,
+          gitBranch,
+          cwd: data.cwd,
+          projectDir: existsSync(projectDir) ? projectDir : null,
+        };
       }
     } catch { /* session file not found or unreadable — fall through */ }
   }
