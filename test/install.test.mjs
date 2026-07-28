@@ -577,6 +577,11 @@ describe('applyServiceEngineInstallPlan', () => {
       isWslImpl: () => true,
       defaultWindowsHomeImpl: () => 'C:\\Users\\alice',
       detectToolImpl: async () => ({ installed: true, path: '/home/alice/.local/bin/headroom-lite' }),
+      // Simulate: no managed component provisioned yet — provisionManagedCompression fails
+      // and resolveManagedCompressionBinary finds no existing pointer.
+      // This ensures detectToolImpl is used regardless of machine state.
+      provisionManagedCompressionImpl: async () => { throw new Error('not staged'); },
+      resolveManagedCompressionBinaryImpl: () => null,
       resolveWindowsServiceExecutableImpl: (options) => {
         resolverCalls.push(options);
         return 'C:\\Users\\alice\\AppData\\Roaming\\npm\\headroom-lite.cmd';
