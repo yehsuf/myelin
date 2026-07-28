@@ -329,6 +329,58 @@ describe('CLI modes', () => {
     assert.match(r.stderr, /no Copilot CLI session found/);
   });
 
+  it('--runtime claude exits 2 when no Claude session matches', () => {
+    // HOME with no ~/.claude/projects — resolveClaudeSession returns null
+    const home = path.join(FIXTURE_ROOT, 'nomatch-claude-home');
+    mkdirSync(path.join(home, '.copilot', 'session-state'), { recursive: true });
+    const stray = path.join(home, 'stray');
+    mkdirSync(stray, { recursive: true });
+    const env = { ...process.env, HOME: home };
+    delete env.COPILOT_AGENT_SESSION_ID;
+    delete env.CLAUDE_SESSION_PID;
+    delete env.CLAUDE_SESSION_ID;
+    delete env.CLAUDE_SESSION_NAME;
+    const r = spawnSync(process.execPath, [SCRIPT, '--runtime', 'claude', 'prepare'], {
+      env, cwd: stray, encoding: 'utf8',
+    });
+    assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /no Claude Code session found/);
+  });
+
+  it('--runtime invalid exits 1 with unknown runtime error', () => {
+    const home = path.join(FIXTURE_ROOT, 'nomatch-home');
+    mkdirSync(path.join(home, '.copilot', 'session-state'), { recursive: true });
+    const env = { ...process.env, HOME: home };
+    delete env.COPILOT_AGENT_SESSION_ID;
+    const r = spawnSync(process.execPath, [SCRIPT, '--runtime', 'foobar', 'prepare'], {
+      env, cwd: home, encoding: 'utf8',
+    });
+    assert.equal(r.status, 1, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /unknown --runtime/);
+  });
+
+  it('--runtime copilot does not fall back to Claude when no Copilot session', () => {
+    // Build a HOME where a Claude session file exists but no Copilot session does
+    const home = path.join(FIXTURE_ROOT, 'copilot-no-fallback-home');
+    const stray = path.join(home, 'stray');
+    mkdirSync(path.join(home, '.copilot', 'session-state'), { recursive: true });
+    mkdirSync(path.join(home, '.claude', 'sessions'), { recursive: true });
+    mkdirSync(stray, { recursive: true });
+    // Write a plausible Claude session file for this cwd
+    writeFileSync(path.join(home, '.claude', 'sessions', '99999.json'), JSON.stringify({
+      pid: 99999, sessionId: 'aaaa-bbbb', cwd: stray, status: 'idle',
+    }));
+    const env = { ...process.env, HOME: home };
+    delete env.COPILOT_AGENT_SESSION_ID;
+    delete env.CLAUDE_SESSION_PID;
+    // With explicit --runtime copilot, must not fall back to Claude
+    const r = spawnSync(process.execPath, [SCRIPT, '--runtime', 'copilot', 'prepare'], {
+      env, cwd: stray, encoding: 'utf8',
+    });
+    assert.equal(r.status, 2, `stdout: ${r.stdout}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /no Copilot CLI session found/);
+  });
+
   it('uses COPILOT_AGENT_SESSION_ID when set explicitly', () => {
     const { home, sid, gitRoot } = makeSession('sid-explicit', {
       todos: [{ id: 'T1', title: 'explicit', description: '', status: 'in_progress' }],

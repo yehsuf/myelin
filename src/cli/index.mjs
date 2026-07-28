@@ -145,12 +145,16 @@ program.command('install')
 program.command('compact')
   .description('Prepare a /compact hint from live session state, or re-orient after /compact')
   .argument('[mode]', 'prepare | emit | resume (default: prepare)')
-  .action(async (mode = 'prepare') => {
+  .option('--runtime <runtime>', 'Session store to use: copilot (default) or claude')
+  .action(async (mode = 'prepare', opts) => {
     const { spawnSync } = await import('node:child_process');
     const { fileURLToPath } = await import('node:url');
     const { join: pjoin, dirname } = await import('node:path');
     const script = pjoin(dirname(fileURLToPath(import.meta.url)), 'compact-prepare.mjs');
-    const r = spawnSync(process.execPath, [script, mode], { stdio: 'inherit' });
+    const args = opts.runtime
+      ? [script, '--runtime', opts.runtime, mode]
+      : [script, mode];
+    const r = spawnSync(process.execPath, args, { stdio: 'inherit' });
     process.exit(r.status ?? 0);
   });
 
