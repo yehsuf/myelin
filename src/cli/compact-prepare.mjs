@@ -1067,44 +1067,74 @@ function modeResume(data) {
 
 // ─── main ─────────────────────────────────────────────────────
 function main() {
-  const mode = process.argv[2] || 'prepare';
+  // Parse positional: mode [prepare|emit|resume|clipboard]
+  // Parse optional flag: --runtime [copilot|claude]
+  // Usage:
+  //   node compact-prepare.mjs [--runtime copilot] prepare   ← Copilot CLI skill
+  //   node compact-prepare.mjs --runtime claude prepare      ← Claude Code skill
+  //   node compact-prepare.mjs clipboard <file>
+
+  const args = process.argv.slice(2);
+  let runtime = 'copilot'; // default: Copilot CLI
+  const positional = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--runtime' && args[i + 1]) {
+      runtime = args[++i];
+    } else {
+      positional.push(args[i]);
+    }
+  }
+  const mode = positional[0] || 'prepare';
+
+  if (!['copilot', 'claude'].includes(runtime)) {
+    console.error(`compact-prepare: unknown --runtime "${runtime}" (expected copilot|claude)`);
+    process.exit(1);
+  }
   if (!['prepare', 'emit', 'resume', 'clipboard'].includes(mode)) {
     console.error(`compact-prepare: unknown mode "${mode}" (expected prepare|emit|resume|clipboard)`);
     process.exit(1);
   }
 
   if (mode === 'clipboard') {
-    modeClipboard(process.argv[3]);
+    modeClipboard(positional[1]);
     return;
   }
 
-  // ── Try Copilot CLI session first ────────────────────────────
-  const sid = resolveSessionId();
-  if (sid) {
-    const sessionDir = path.join(SESSION_ROOT, sid);
-    if (!existsSync(sessionDir)) {
-      console.error(`compact-prepare: session directory missing: ${sessionDir}`);
-      process.exit(3);
+  const emit = (data) => {
+    if (mode === 'prepare') modePrepare(data);
+    else if (mode === 'emit') modeEmit(data);
+    else if (mode === 'resume') modeResume(data);
+  };
+
+  // ── No cross-runtime fallback: each skill owns its session store ─────────────
+  // The Copilot CLI skill calls this script without --runtime (defaults to copilot).
+  // The Claude Code skill calls it with --runtime claude.
+  // No detection, no heuristic mixing between the two stores.
+
+  if (runtime === 'claude') {
+    const claudeSession = resolveClaudeSession(process.cwd());
+    if (!claudeSession) {
+      console.error('compact-prepare: no Claude Code session found for this directory');
+      console.error('  Set CLAUDE_SESSION_PID=$PPID, CLAUDE_SESSION_ID, or CLAUDE_SESSION_NAME for an exact match.');
+      process.exit(2);
     }
-    const data = collectData(sid, sessionDir);
-    if (mode === 'prepare') modePrepare(data);
-    else if (mode === 'emit') modeEmit(data);
-    else if (mode === 'resume') modeResume(data);
+    emit(collectDataClaude(claudeSession));
     return;
   }
 
-  // ── Try Claude Code session ───────────────────────────────────
-  const claudeSession = resolveClaudeSession(process.cwd());
-  if (claudeSession) {
-    const data = collectDataClaude(claudeSession);
-    if (mode === 'prepare') modePrepare(data);
-    else if (mode === 'emit') modeEmit(data);
-    else if (mode === 'resume') modeResume(data);
-    return;
+  // runtime === 'copilot' (default)
+  const sid = resolveSessionId();
+  if (!sid) {
+    console.error('compact-prepare: no Copilot CLI session found for this directory');
+    console.error('  Running from Claude Code? Use: node compact-prepare.mjs --runtime claude prepare');
+    process.exit(2);
   }
-
-  console.error('compact-prepare: cannot resolve session — no Copilot CLI or Claude Code session found for this directory');
-  process.exit(2);
+  const sessionDir = path.join(SESSION_ROOT, sid);
+  if (!existsSync(sessionDir)) {
+    console.error(`compact-prepare: session directory missing: ${sessionDir}`);
+    process.exit(3);
+  }
+  emit(collectData(sid, sessionDir));
 }
 
 // Only run main if invoked directly (not imported for tests).
