@@ -357,6 +357,24 @@ function isProcessAlive(pid) {
 }
 
 /**
+ * Collect ancestor PIDs of the current process (up to maxDepth levels).
+ * On POSIX, reads /proc/<pid>/status (Linux) or uses ps (macOS).
+ * Returns array of [ppid, ppid's ppid, ...].
+ */
+function ancestorPids(maxDepth = 4) {
+  const pids = [];
+  let pid = typeof process.ppid === 'number' ? process.ppid : 0;
+  for (let i = 0; i < maxDepth && pid > 1; i++) {
+    pids.push(pid);
+    try {
+      const r = execFileSync('ps', ['-p', String(pid), '-o', 'ppid='], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      pid = parseInt(r.trim(), 10);
+    } catch { break; }
+  }
+  return pids;
+}
+
+/**
  * Resolve a Claude Code session from ~/.claude/sessions/*.json.
  * These files are maintained by Claude Code and contain real-time session state:
  * pid, sessionId, cwd, status, updatedAt, name.
@@ -367,7 +385,7 @@ function isProcessAlive(pid) {
  *
  * Returns { sid, gitBranch, cwd, projectDir } or null.
  */
-function resolveFromSessionsDir(cwd, gitRoot, ppid = null) {
+function resolveFromSessionsDir(cwd, gitRoot, ancestorPids = null) {
   if (!existsSync(CLAUDE_SESSIONS_DIR)) return null;
   let files;
   try { files = readdirSync(CLAUDE_SESSIONS_DIR).filter(f => f.endsWith('.json')); }
@@ -391,14 +409,16 @@ function resolveFromSessionsDir(cwd, gitRoot, ppid = null) {
     }
 
     const alive = isProcessAlive(pid);
-    const isParent = ppid != null && pid === ppid;
-    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive, isParent });
+    // Is this session one of our ancestor processes? If so, it's almost certainly
+    // the Claude Code session that spawned compact-prepare.
+    const isAncestor = ancestorPids != null && ancestorPids.has(pid);
+    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive, isAncestor });
   }
   if (candidates.length === 0) return null;
 
-  // Sort: parent pid first (auto-detect spawner), then alive, then most-recently-updated
+  // Sort: ancestor pid first (auto-detect spawner), then alive, then most-recently-updated
   candidates.sort((a, b) => {
-    if (a.isParent !== b.isParent) return a.isParent ? -1 : 1;
+    if (a.isAncestor !== b.isAncestor) return a.isAncestor ? -1 : 1;
     if (a.alive !== b.alive) return a.alive ? -1 : 1;
     return b.updatedAt - a.updatedAt;
   });
@@ -500,10 +520,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   } catch { /* not a git repo — no cap */ }
 
   // Primary: ~/.claude/sessions/*.json (real-time, pid-liveness-aware)
-  // Also try parent PID auto-detection: if compact-prepare was run FROM Claude Code,
-  // the parent PID (process.ppid) or grandparent PID should match a session.
-  const ppid = typeof process.ppid === 'number' ? process.ppid : null;
-  const liveSession = resolveFromSessionsDir(cwd, gitRoot, ppid);
+  // Also scan ancestor PIDs (process.ppid → grandparent → ...) so Claude Code
+  // sessions are auto-detected even when compact-prepare runs via a shell.
+  const ancestorSet = new Set(ancestorPids(4));
+  const liveSession = resolveFromSessionsDir(cwd, gitRoot, ancestorSet);
   if (liveSession) return liveSession;
 
   // Build primary searchDirs: cwd up to (and including) git root.
