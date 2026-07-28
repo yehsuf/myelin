@@ -426,7 +426,7 @@ function resolveFromSessionsDir(cwd, gitRoot, ancestorPids = null) {
     // Is this session one of our ancestor processes? If so, it's almost certainly
     // the Claude Code session that spawned compact-prepare.
     const isAncestor = ancestorPids != null && ancestorPids.has(pid);
-    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd, projectDir: null, updatedAt: updatedAt ?? 0, alive, isAncestor });
+    candidates.push({ sid: sessionId, gitBranch: gitBranch ?? null, cwd: sessionCwd, projectDir: null, updatedAt: updatedAt ?? 0, alive, isAncestor });
   }
   if (candidates.length === 0) return null;
 
@@ -542,10 +542,9 @@ export function resolveClaudeSession(cwd = process.cwd()) {
     return null; // explicit ID/name given but not found
   }
 
-  // ~/.claude/projects is required for the heuristic JSONL walk below.
-  if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
-
   // Resolve the git root so we stop walking up at the project boundary.
+  // Done here (not inside each branch) since both resolveFromSessionsDir and
+  // the JSONL walk use it, and git-root detection does not require CLAUDE_PROJECTS_ROOT.
   let gitRoot = null;
   try {
     gitRoot = execFileSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'],
@@ -555,9 +554,13 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   // Primary: ~/.claude/sessions/*.json (real-time, pid-liveness-aware)
   // Also scan ancestor PIDs (process.ppid → grandparent → ...) so Claude Code
   // sessions are auto-detected even when compact-prepare runs via a shell.
+  // This path only depends on CLAUDE_SESSIONS_DIR, not CLAUDE_PROJECTS_ROOT.
   const ancestorSet = new Set(ancestorPids(4));
   const liveSession = resolveFromSessionsDir(cwd, gitRoot, ancestorSet);
   if (liveSession) return liveSession;
+
+  // ~/.claude/projects is required for the heuristic JSONL walk below.
+  if (!existsSync(CLAUDE_PROJECTS_ROOT)) return null;
 
   // Build primary searchDirs: cwd up to (and including) git root.
   const MAX_LEVELS = 4;
