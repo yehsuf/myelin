@@ -1944,12 +1944,17 @@ describe('managed release store', { concurrency: false }, () => {
 
   it('writes launchers that resolve the current release at invocation time', () => {
     const root = makeRoot();
-    const posixResult = installStableLauncher({ home: root, platform: 'linux' });
+    const nodeBin = '/test/node/bin/node';
+    const posixResult = installStableLauncher({ home: root, platform: 'linux', nodeBin });
     const posixLauncher = readFileSync(posixResult.launcher, 'utf8');
 
     assert.match(posixLauncher, /current\/bin\/myelin/);
-    assert.match(posixLauncher, /exec "\$entry" "\$@"/);
-    assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use node to run the shell wrapper
+    // Must invoke the explicit node binary wrapped in single-quotes (shellQuote),
+    // not just exec "$entry" via shebang. Without quotes, paths with spaces break.
+    // Without the explicit path, v16 systems fail with ERR_UNKNOWN_FILE_EXTENSION.
+    assert.match(posixLauncher, /exec '\/test\/node\/bin\/node' "\$entry"/);
+    assert.doesNotMatch(posixLauncher, /exec "\$entry" "\$@"/); // must not rely on shebang
+    assert.doesNotMatch(posixLauncher, /exec node/); // must NOT use bare 'node' command
 
     const windowsHome = join(root, 'home & still-safe');
     const windowsResult = installStableLauncher({

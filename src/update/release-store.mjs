@@ -1243,7 +1243,12 @@ function shellQuote(value) {
   return `'${value.replace(/'/gu, `'\"'\"'`)}'`;
 }
 
-function posixLauncher(home) {
+function posixLauncher(home, nodeBin) {
+  // Explicitly invoke the node binary used at install time, bypassing the
+  // system PATH. This ensures the correct node version is used even on systems
+  // where /usr/bin/env node resolves to a legacy version (e.g. v16) that
+  // cannot load extensionless files in an "type":"module" package context.
+  const nodeExec = nodeBin ? shellQuote(nodeBin) : '/usr/bin/env node';
   return `#!/bin/sh
 set -eu
 myelin_home=${shellQuote(join(home, '.myelin'))}
@@ -1252,7 +1257,7 @@ if [ ! -f "$entry" ]; then
   printf '%s\\n' 'No managed Myelin release is active. Run: myelin update --channel main' >&2
   exit 1
 fi
-exec "$entry" "$@"
+exec ${nodeExec} "$entry" "$@"
 `;
 }
 
@@ -1289,6 +1294,7 @@ exit $LASTEXITCODE
 export function installStableLauncher({
   home,
   platform = process.platform,
+  nodeBin = process.execPath,
   fs = nodeFs,
   pathImpl,
 } = {}) {
@@ -1314,7 +1320,7 @@ export function installStableLauncher({
   }
 
   const launcher = path.join(binDir, 'myelin');
-  fs.writeFileSync(launcher, posixLauncher(home), 'utf8');
+  fs.writeFileSync(launcher, posixLauncher(home, nodeBin), 'utf8');
   fs.chmodSync(launcher, 0o755);
   return { binDir, launcher };
 }
