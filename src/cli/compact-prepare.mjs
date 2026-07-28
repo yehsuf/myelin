@@ -425,7 +425,13 @@ export function resolveClaudeSession(cwd = process.cwd()) {
             }
           }
         } catch { /* malformed */ }
-        return { sid: explicitSid, gitBranch, cwd: sessionCwd ?? cwd, projectDir };
+        // When CLAUDE_SESSION_ID is provided, use the CURRENT working directory
+        // (where compact-prepare is invoked), not the cwd stored in the JSONL.
+        // The JSONL may have been started in a different directory (e.g. the user
+        // opened Claude in a parent workspace, then navigated here). The caller
+        // always knows the right project root; the ID just identifies which JSONL
+        // to read metadata from (gitBranch etc.).
+        return { sid: explicitSid, gitBranch, cwd, projectDir };
       }
     } catch { /* ignore scan errors */ }
     return null; // explicit ID given but not found
