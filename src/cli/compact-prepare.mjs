@@ -18,7 +18,7 @@
  */
 
 import { execFileSync, execSync } from 'node:child_process';
-import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -473,6 +473,50 @@ export function jsonlLastTimestamp(filePath, tailBytes = 4096) {
 }
 
 /**
+ * Read the last N user/assistant turn pairs from a JSONL file for context.
+ * Returns an array of { role, text } objects (most-recent last), capped at maxChars total.
+ * Used to give the Claude Code compact agent context about recent session activity.
+ */
+export function jsonlRecentTurns(filePath, maxTurns = 3, maxChars = 2000, tailBytes = 65536) {
+  try {
+    const { size } = statSync(filePath);
+    if (size === 0) return [];
+    const offset = Math.max(0, size - tailBytes);
+    const buf = Buffer.alloc(Math.min(tailBytes, size));
+    const fd = openSync(filePath, 'r');
+    try { readSync(fd, buf, 0, buf.length, offset); } finally { closeSync(fd); }
+    const lines = buf.toString('utf8').split('\n').filter(l => l.trim());
+    const turns = [];
+    for (const line of lines) {
+      try {
+        const e = JSON.parse(line);
+        if (e.type === 'user' && e.message?.content) {
+          const text = Array.isArray(e.message.content)
+            ? e.message.content.filter(b => b.type === 'text').map(b => b.text).join(' ')
+            : String(e.message.content);
+          if (text.trim()) turns.push({ role: 'user', text: text.trim().slice(0, 400) });
+        } else if (e.type === 'assistant' && e.message?.content) {
+          const text = Array.isArray(e.message.content)
+            ? e.message.content.filter(b => b.type === 'text').map(b => b.text).join(' ')
+            : String(e.message.content);
+          if (text.trim()) turns.push({ role: 'assistant', text: text.trim().slice(0, 400) });
+        }
+      } catch { /* skip malformed */ }
+    }
+    // Keep last maxTurns pairs, cap total chars
+    const recent = turns.slice(-maxTurns * 2);
+    let total = 0;
+    const result = [];
+    for (const t of recent) {
+      total += t.text.length;
+      if (total > maxChars) break;
+      result.push(t);
+    }
+    return result;
+  } catch { return []; }
+}
+
+/**
  * Try to resolve a Claude Code session for the given cwd.
  * Returns { sid, gitBranch, cwd, projectDir } or null.
  *
@@ -669,9 +713,10 @@ export function resolveClaudeSession(cwd = process.cwd()) {
  * Collect session data for a Claude Code session.
  * Unlike Copilot sessions there is no workspace.yaml, session.db, or checkpoints.
  * We derive git root from cwd, read plan.md from cwd, and skip todos/checkpoints.
+ * When projectDir is available, also reads recent JSONL turns for context.
  */
 function collectDataClaude(claudeSession) {
-  const { sid, gitBranch, cwd: sessionCwd } = claudeSession;
+  const { sid, gitBranch, cwd: sessionCwd, projectDir } = claudeSession;
   const cwd = sessionCwd || process.cwd();
   const gitRoot = cwd;
 
@@ -682,6 +727,15 @@ function collectDataClaude(claudeSession) {
   const primary = repoInfo(gitRoot);
   const plan = loadPlanNext(cwd);
   const constitutionLoaded = existsSync(path.join(gitRoot, '.github', 'copilot-instructions.md'));
+
+  // Read recent turns from JSONL for context (helps agent compose accurate hint)
+  let recentTurns = [];
+  if (projectDir && sid) {
+    const jsonlPath = path.join(projectDir, `${sid}.jsonl`);
+    if (existsSync(jsonlPath)) {
+      recentTurns = jsonlRecentTurns(jsonlPath, 3, 1500);
+    }
+  }
 
   return {
     sid,
@@ -702,6 +756,7 @@ function collectDataClaude(claudeSession) {
     globalRules: defaults.rules,
     checkpoints: [],
     constitutionLoaded,
+    recentTurns, // for Claude sessions: recent JSONL context
   };
 }
 
@@ -1059,6 +1114,17 @@ function modePrepare(data) {
   console.log('');
   console.log('<<<SESSION_STATE_BRIEF>>>');
   console.log(hint);
+  // Include recent JSONL turns for Claude sessions — gives agent context about
+  // what the session was actually working on (git state alone is insufficient
+  // for long-lived sessions that span multiple conversations).
+  if (data.recentTurns && data.recentTurns.length > 0) {
+    console.log('');
+    console.log('RECENT_SESSION_TURNS (last 3 turns from JSONL — for context only):');
+    for (const t of data.recentTurns) {
+      const prefix = t.role === 'user' ? 'USER:' : 'ASST:';
+      console.log(`  ${prefix} ${t.text.replace(/\n/g, ' ').slice(0, 300)}`);
+    }
+  }
   console.log('<<<END_SESSION_STATE_BRIEF>>>');
   console.log('');
   console.log('-'.repeat(64));
@@ -1074,12 +1140,21 @@ function modePrepare(data) {
     : path.join(HOME, '.myelin', 'claude-hints', 'unknown', 'compact-hint.txt');
   // Pre-create directory so the agent's file-write step doesn't fail.
   try { mkdirSync(path.dirname(hintFileActual), { recursive: true }); } catch { /* ignore */ }
+  // Archive previous hint file so the agent starts fresh — prevents stale content
+  // from old conversations bleeding into the new one (especially for long-lived sessions
+  // that are reused across multiple conversations with the same session ID).
+  if (existsSync(hintFileActual)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const archivePath = path.join(path.dirname(hintFileActual), `compact-hint.txt.${ts}.bak`);
+    try { renameSync(hintFileActual, archivePath); } catch { /* ignore */ }
+  }
   console.log('  Agent instructions:');
-  console.log('  1. Read the SESSION STATE BRIEF above (facts).');
+  console.log('  1. Read the SESSION STATE BRIEF above (facts + recent turns).');
   console.log('  2. Compose the actual /compact hint using your session memory.');
   console.log(`  3. HARD LIMIT: hint body must be ≤${MAX_HINT} chars.`);
   console.log('     /compact enforces this — exceeding it may abort with a length error.');
   console.log(`  4. Write the hint to: ${hintFileActual}`);
+  console.log('     (Previous hint archived — write fresh content, do not reuse old).');
   console.log('     Then run:');
   console.log('       node ~/.copilot/skills/myelin-compact/compact-prepare.mjs clipboard \\');
   console.log(`         ${hintFileActual}`);
@@ -1088,7 +1163,7 @@ function modePrepare(data) {
   if (isClaude) {
     console.log('');
     console.log('  ℹ  Running under Claude Code: todos/checkpoints unavailable.');
-    console.log('     Git state and plan.md are included; the rest is from memory.');
+    console.log('     Git state, plan.md, and recent JSONL turns are included.');
   }
   console.log('='.repeat(64));
 }
