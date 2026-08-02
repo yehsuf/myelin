@@ -152,8 +152,12 @@ ${restoreLines}
   // Node.js native addons that call turn_off_stack_logging() unconditionally. Filter
   // those lines with a stderr passthrough so they never reach the user's terminal.
   const mallocFlag = '-u MallocStackLogging';
-  // Embed the resolved binary path. If it contains spaces, quote it.
-  const posixCmd = copilotBin.includes(' ') ? `"${copilotBin}"` : copilotBin;
+  // Embed the resolved binary path. Single-quote for POSIX safety — prevents
+  // $VAR / backtick expansion if the path somehow contains special chars.
+  // Embedded single quotes are escaped via the 'foo'"'"'bar' idiom.
+  const posixCmd = copilotBin.includes(' ') || copilotBin.includes("'") || copilotBin !== 'copilot'
+    ? "'" + copilotBin.replace(/'/g, "'\\''") + "'"
+    : copilotBin;
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
