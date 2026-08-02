@@ -113,8 +113,12 @@ export function buildServiceEnvUnsetLines({ os, vars = SERVER_FORBIDDEN_ENV } = 
  * - Falls back to plain `copilot` (with a warning) if mitmproxy is offline;
  *   forbidden vars remain unset even on the fallback path.
  */
-export function buildCopilotWrapper({ os, mitmPort = 8888 } = {}) {
+export function buildCopilotWrapper({ os, mitmPort = 8888, copilotBin = 'copilot' } = {}) {
   if (os === 'windows') {
+    // On Windows, copilotBin may be an absolute path with backslashes. PowerShell
+    // call operator (&) accepts both quoted strings and bare names, so we always
+    // quote it to handle spaces in paths correctly.
+    const psCall = copilotBin === 'copilot' ? '& copilot @args' : `& "${copilotBin}" @args`;
     const savedLines = COPILOT_FORBIDDEN_ENV
       .map(k => `  $saved_${k} = $env:${k}\n  $env:${k} = $null`)
       .join('\n');
@@ -130,12 +134,12 @@ ${savedLines}
   if ($probe) {
     $env:HTTPS_PROXY = "http://127.0.0.1:${mitmPort}"
     $env:NO_PROXY = "${COPILOT_NO_PROXY_HOSTS}"
-    & copilot @args
+    ${psCall}
     $env:HTTPS_PROXY = $null
     $env:NO_PROXY = $null
   } else {
     Write-Warning "myelin: mitmproxy offline (port ${mitmPort}) - running uncompressed"
-    & copilot @args
+    ${psCall}
   }
 ${restoreLines}
 }`;
@@ -145,6 +149,8 @@ ${restoreLines}
   // a "lite" mode that fails with "could not tag MSL-related memory as no_footprint").
   // Unsetting means macOS never starts the logging machinery at all.
   const mallocFlag = '-u MallocStackLogging';
+  // Embed the resolved binary path. If it contains spaces, quote it.
+  const posixCmd = copilotBin.includes(' ') ? `"${copilotBin}"` : copilotBin;
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
@@ -166,10 +172,10 @@ function _copilot() {
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
       $_osc52_env \\
-      copilot "$@"
+      ${posixCmd} "$@"
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
-    env ${unsetFlags} ${mallocFlag} $_osc52_env copilot "$@"
+    env ${unsetFlags} ${mallocFlag} $_osc52_env ${posixCmd} "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
