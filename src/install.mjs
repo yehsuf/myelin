@@ -2636,6 +2636,45 @@ export function stopManagedUvToolProcess(name, {
  * can be unit-tested for env-var isolation. Never set provider env vars
  * globally (shell profile / Windows registry) — always via these wrappers.
  */
+
+/**
+ * Resolve the Copilot CLI binary path, preferring non-npm install locations.
+ *
+ * Embed rationale: npm-global / nvm / volta installs can shadow brew/system
+ * installs depending on PATH order. We embed the resolved path in the wrapper
+ * at install time so `_copilot` always calls the intended binary regardless
+ * of how the user's PATH evolves.
+ *
+ * Priority (POSIX):
+ *   1. Known non-npm locations (/opt/homebrew, /usr/local/bin, /usr/bin)
+ *   2. PATH via `which`, only if it doesn't look like an npm/nvm/volta bin
+ *   3. Bare 'copilot' (user's PATH at invocation time — last resort)
+ *
+ * Windows: bare 'copilot' only (no reliable install-time path resolution).
+ */
+async function resolveCopilotBin(os, home) {
+  if (os === 'windows') return 'copilot';
+
+  const preferred = os === 'darwin'
+    ? ['/opt/homebrew/bin/copilot', '/usr/local/bin/copilot']
+    : ['/home/linuxbrew/.linuxbrew/bin/copilot', '/usr/local/bin/copilot', '/usr/bin/copilot'];
+
+  for (const p of preferred) {
+    if (existsSync(p)) return p;
+  }
+
+  const found = await which('copilot').catch(() => null);
+  if (found) {
+    // Reject paths that are clearly npm/nvm/volta managed bins
+    const isNpmBin = /\/\.(nvm|volta|npm)\//i.test(found)
+      || found.includes('/node_modules/')
+      || (home && found.startsWith(join(home, '.npm')));
+    if (!isNpmBin) return found;
+  }
+
+  return 'copilot';
+}
+
 async function main() {
   const { values: flags } = parseArgs({
     options: {
@@ -3825,7 +3864,8 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
       .map(([k, v]) => `export ${k}=${posixSingleQuote(v)}`)
       .join('\n');
     const certBlock = certLines ? `\n${certLines}` : '';
-    const copilotAlias = buildCopilotWrapper({ os });
+    const copilotBin = await resolveCopilotBin(os, home);
+    const copilotAlias = buildCopilotWrapper({ os, copilotBin });
     const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
     const myelinCmd = managedMyelinCommandLine({ os, commandPath: managedRuntime.commandPath });
     const profilePathBlock = managedProfilePathBlock({ os, home });

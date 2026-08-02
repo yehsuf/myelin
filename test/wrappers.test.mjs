@@ -123,6 +123,33 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
   }
 });
 
+describe('_copilot wrapper — copilotBin path embedding', () => {
+  it('default (no copilotBin) uses bare copilot command', () => {
+    const w = buildCopilotWrapper({ os: 'darwin' });
+    assert.match(w, /\bcopilot "\$@"/);
+  });
+  it('absolute brew path is embedded verbatim in POSIX wrapper', () => {
+    const w = buildCopilotWrapper({ os: 'darwin', copilotBin: '/opt/homebrew/bin/copilot' });
+    assert.ok(w.includes('/opt/homebrew/bin/copilot "$@"'),
+      'wrapper must call the explicit brew path, not bare copilot');
+    assert.ok(!w.match(/(?<!\/)copilot "\$@"/),
+      'bare copilot call must not appear when an explicit bin is given');
+  });
+  it('path with spaces is quoted in POSIX wrapper', () => {
+    const w = buildCopilotWrapper({ os: 'linux', copilotBin: '/usr/local/my apps/copilot' });
+    assert.ok(w.includes('"/usr/local/my apps/copilot" "$@"'));
+  });
+  it('absolute path is embedded in Windows wrapper via quoted & call', () => {
+    const w = buildCopilotWrapper({ os: 'windows', copilotBin: 'C:\\Programs\\copilot\\copilot.exe' });
+    assert.ok(w.includes('"C:\\Programs\\copilot\\copilot.exe" @args'),
+      'Windows wrapper must quote the explicit copilot bin path');
+  });
+  it('Windows default (bare copilot) uses unquoted & copilot call', () => {
+    const w = buildCopilotWrapper({ os: 'windows' });
+    assert.ok(w.includes('& copilot @args'));
+  });
+});
+
 describe('_claude wrapper — sets its own env per-invocation', () => {
   for (const os of platforms) {
     describe(os, () => {
