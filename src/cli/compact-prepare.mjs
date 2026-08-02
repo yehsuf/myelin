@@ -531,32 +531,51 @@ export function resolveClaudeSession(cwd = process.cwd()) {
   // live session record maintained by Claude Code. Does NOT require ~/.claude/projects to
   // exist (that dir is only needed by the JSONL-walk fallback below).
   // Uses data.cwd from the session JSON to compute the JSONL path and read gitBranch.
+  //
+  // IMPORTANT: Claude Code may reuse the same daemon PID across multiple project sessions.
+  // The session file's cwd is written at session start and can be stale. We verify it is
+  // consistent with process.cwd() before trusting it — if it belongs to a different project
+  // (e.g. a prior session in a different repo), we fall through rather than returning wrong
+  // session data silently.
   const explicitPid = parseInt(process.env.CLAUDE_SESSION_PID ?? '', 10);
   if (explicitPid > 0) {
     const pidSessionPath = path.join(CLAUDE_SESSIONS_DIR, `${explicitPid}.json`);
     try {
       const data = JSON.parse(readFileSync(pidSessionPath, 'utf8'));
       if (data.sessionId && data.cwd) {
-        // Build JSONL path from session JSON's cwd (same encoding as Claude Code uses).
-        const projectDirName = claudeEncodeProjectPath(data.cwd);
-        const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
-        const jsonlPath = path.join(projectDir, `${data.sessionId}.jsonl`);
-        let gitBranch = null;
-        if (existsSync(jsonlPath)) {
-          try {
-            for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
-              if (!line.trim()) continue;
-              const entry = JSON.parse(line);
-              if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
-            }
-          } catch { /* malformed JSONL — gitBranch stays null */ }
+        // Verify the session file's cwd belongs to the same project tree as our cwd.
+        // Allow: exact match, session at parent of cwd, or session at child of cwd.
+        const cwdOk = cwd === data.cwd
+          || cwd.startsWith(data.cwd + path.sep)
+          || data.cwd.startsWith(cwd + path.sep);
+        if (!cwdOk) {
+          // Session file is from a different project — stale PID reuse by Claude Code daemon.
+          // Warn and fall through to cwd-based resolution.
+          process.stderr.write(
+            `  [compact-prepare] CLAUDE_SESSION_PID=${explicitPid}: session cwd (${data.cwd}) != process cwd (${cwd}) — skipping stale PID session, falling back to cwd-based resolution\n`
+          );
+        } else {
+          // Build JSONL path from session JSON's cwd (same encoding as Claude Code uses).
+          const projectDirName = claudeEncodeProjectPath(data.cwd);
+          const projectDir = path.join(CLAUDE_PROJECTS_ROOT, projectDirName);
+          const jsonlPath = path.join(projectDir, `${data.sessionId}.jsonl`);
+          let gitBranch = null;
+          if (existsSync(jsonlPath)) {
+            try {
+              for (const line of readFileSync(jsonlPath, 'utf8').split('\n')) {
+                if (!line.trim()) continue;
+                const entry = JSON.parse(line);
+                if (entry.type === 'user' && entry.cwd) { gitBranch = entry.gitBranch || null; break; }
+              }
+            } catch { /* malformed JSONL — gitBranch stays null */ }
+          }
+          return {
+            sid: data.sessionId,
+            gitBranch,
+            cwd: data.cwd,
+            projectDir: existsSync(projectDir) ? projectDir : null,
+          };
         }
-        return {
-          sid: data.sessionId,
-          gitBranch,
-          cwd: data.cwd,
-          projectDir: existsSync(projectDir) ? projectDir : null,
-        };
       }
     } catch { /* session file not found or unreadable — fall through */ }
   }
