@@ -149,8 +149,12 @@ ${restoreLines}
   // a "lite" mode that fails with "could not tag MSL-related memory as no_footprint").
   // Unsetting means macOS never starts the logging machinery at all.
   const mallocFlag = '-u MallocStackLogging';
-  // Embed the resolved binary path. If it contains spaces, quote it.
-  const posixCmd = copilotBin.includes(' ') ? `"${copilotBin}"` : copilotBin;
+  // Embed the resolved binary path. Single-quote for POSIX safety — prevents
+  // $VAR / backtick expansion if the path somehow contains special chars.
+  // Embedded single quotes are escaped via the 'foo'"'"'bar' idiom.
+  const posixCmd = copilotBin.includes(' ') || copilotBin.includes("'") || copilotBin !== 'copilot'
+    ? "'" + copilotBin.replace(/'/g, "'\\''") + "'"
+    : copilotBin;
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.

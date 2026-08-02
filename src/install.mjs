@@ -2598,7 +2598,7 @@ async function resolveCopilotBin(os, home) {
   if (os === 'windows') return 'copilot';
 
   const preferred = os === 'darwin'
-    ? ['/opt/homebrew/bin/copilot', '/usr/local/bin/copilot']
+    ? ['/opt/homebrew/bin/copilot', '/usr/local/bin/copilot', '/usr/bin/copilot']
     : ['/home/linuxbrew/.linuxbrew/bin/copilot', '/usr/local/bin/copilot', '/usr/bin/copilot'];
 
   for (const p of preferred) {
@@ -2607,9 +2607,10 @@ async function resolveCopilotBin(os, home) {
 
   const found = await which('copilot').catch(() => null);
   if (found) {
-    // Reject paths that are clearly npm/nvm/volta managed bins
-    const isNpmBin = /\/\.(nvm|volta|npm)\//i.test(found)
+    // Reject paths that are clearly npm/nvm/volta/pnpm managed bins
+    const isNpmBin = /\/\.(nvm|volta|npm|pnpm)\//i.test(found)
       || found.includes('/node_modules/')
+      || found.includes('/pnpm/')            // ~/.local/share/pnpm, ~/Library/pnpm
       || (home && found.startsWith(join(home, '.npm')));
     if (!isNpmBin) return found;
   }

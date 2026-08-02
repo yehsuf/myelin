@@ -128,16 +128,16 @@ describe('_copilot wrapper — copilotBin path embedding', () => {
     const w = buildCopilotWrapper({ os: 'darwin' });
     assert.match(w, /\bcopilot "\$@"/);
   });
-  it('absolute brew path is embedded verbatim in POSIX wrapper', () => {
+  it('absolute brew path is single-quoted in POSIX wrapper (prevents $VAR expansion)', () => {
     const w = buildCopilotWrapper({ os: 'darwin', copilotBin: '/opt/homebrew/bin/copilot' });
-    assert.ok(w.includes('/opt/homebrew/bin/copilot "$@"'),
-      'wrapper must call the explicit brew path, not bare copilot');
+    assert.ok(w.includes("'/opt/homebrew/bin/copilot' \"$@\""),
+      'wrapper must single-quote the explicit brew path for POSIX safety');
     assert.ok(!w.match(/(?<!\/)copilot "\$@"/),
       'bare copilot call must not appear when an explicit bin is given');
   });
-  it('path with spaces is quoted in POSIX wrapper', () => {
+  it('path with spaces is single-quoted in POSIX wrapper', () => {
     const w = buildCopilotWrapper({ os: 'linux', copilotBin: '/usr/local/my apps/copilot' });
-    assert.ok(w.includes('"/usr/local/my apps/copilot" "$@"'));
+    assert.ok(w.includes("'/usr/local/my apps/copilot' \"$@\""));
   });
   it('absolute path is embedded in Windows wrapper via quoted & call', () => {
     const w = buildCopilotWrapper({ os: 'windows', copilotBin: 'C:\\Programs\\copilot\\copilot.exe' });
