@@ -143,7 +143,10 @@ ${restoreLines}
   const unsetFlags = COPILOT_FORBIDDEN_ENV.map(k => `-u ${k}`).join(' ');
   // -u MallocStackLogging: completely remove from env (not set to 0 — that enables
   // a "lite" mode that fails with "could not tag MSL-related memory as no_footprint").
-  // Unsetting means macOS never starts the logging machinery at all.
+  // Unsetting means macOS never starts the logging machinery at all, but triggers a
+  // harmless "can't turn off stack logging because it was not enabled" stderr line from
+  // Node.js native addons that call turn_off_stack_logging() unconditionally. Filter
+  // those lines with a stderr passthrough so they never reach the user's terminal.
   const mallocFlag = '-u MallocStackLogging';
   return `# _copilot routes LLM traffic through Myelin mitmproxy (token compression).
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
@@ -166,10 +169,10 @@ function _copilot() {
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
       $_osc52_env \\
-      copilot "$@"
+      copilot "$@" 2> >(grep -Fv 'MallocStackLogging:' >&2)
   else
     echo "⚠  myelin: mitmproxy offline (port ${mitmPort}) — running uncompressed" >&2
-    env ${unsetFlags} ${mallocFlag} $_osc52_env copilot "$@"
+    env ${unsetFlags} ${mallocFlag} $_osc52_env copilot "$@" 2> >(grep -Fv 'MallocStackLogging:' >&2)
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
 }`;
