@@ -313,4 +313,19 @@ describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
       assert.ok(wrapper.includes(`-u ${v}`), `must still unset ${v}`);
     }
   });
+
+  it('POSIX _copilot wrapper filters MallocStackLogging stderr noise', () => {
+    // Node.js native addons call turn_off_stack_logging() unconditionally; when
+    // MallocStackLogging is absent this produces a harmless but noisy stderr line
+    // per spawned subprocess. The wrapper must filter it via process substitution.
+    const wrapper = buildCopilotWrapper({ os: 'darwin' });
+    assert.ok(wrapper.includes("grep -Fv 'MallocStackLogging:'"),
+      '_copilot must pipe stderr through grep to suppress MallocStackLogging noise');
+    assert.ok(wrapper.includes('2> >'),
+      'filter must use process substitution (2> >(grep ...))');
+    // Windows wrapper must NOT include the filter (no process substitution in PowerShell)
+    const winWrapper = buildCopilotWrapper({ os: 'windows' });
+    assert.ok(!winWrapper.includes('grep -Fv'),
+      'Windows wrapper must not include POSIX grep filter');
+  });
 });
