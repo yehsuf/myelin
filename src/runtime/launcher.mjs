@@ -65,7 +65,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 
-const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+const RELEASE_ID_RE = /^(?:main-[0-9a-f]{7,64}|(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)$/;
 const BACKSLASH = String.fromCharCode(92);
 
 // Mirror src/shared/myelin-paths.mjs isWindowsStylePath so an explicit

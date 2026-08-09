@@ -1,7 +1,12 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, symlinkSync, unlinkSync, writeSync } from 'node:fs';
 import { joinManaged, managedPaths } from '../shared/myelin-paths.mjs';
 
-export const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+// Accepts either a 'main' channel exact-commit id (main-<7-64 hex sha>) or a
+// 'stable' channel exact-tag id (bare semver X.Y.Z, optional -prerelease/+build).
+// Both channels stage releases into the same releasesDir and share this one
+// "current release" pointer format — keep in lock-step with STABLE_RELEASE_ID
+// below (the release-store's own staging validator uses the same semver shape).
+export const RELEASE_ID_RE = /^(?:main-[0-9a-f]{7,64}|(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)$/;
 
 function normalizeRootArgs(arg) {
   return typeof arg === 'string' ? { home: arg } : (arg ?? {});
