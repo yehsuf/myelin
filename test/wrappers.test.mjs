@@ -133,6 +133,23 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
   }
 });
 
+describe('_copilot wrapper — plugin subcommands never proxied', () => {
+  for (const os of platforms) {
+    describe(os, () => {
+      const w = buildCopilotWrapper({ os });
+      it('branches on the "plugin" subcommand before setting HTTPS_PROXY', () => {
+        if (os === 'windows') {
+          assert.ok(w.includes("$args[0] -eq 'plugin'"),
+            '_copilot must check for the plugin subcommand and skip the mitmproxy branch entirely.');
+        } else {
+          assert.ok(w.includes('[ "$1" = "plugin" ]'),
+            '_copilot must check for the plugin subcommand and skip the mitmproxy branch entirely.');
+        }
+      });
+    });
+  }
+});
+
 describe('_copilot wrapper — copilotBin path embedding', () => {
   it('default (no copilotBin) uses bare copilot command', () => {
     const w = buildCopilotWrapper({ os: 'darwin' });
