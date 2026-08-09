@@ -29,6 +29,8 @@ const COPILOT_NO_PROXY_HOSTS = [
   '*.npmjs.com',
   '*.npmjs.org',
   'repos.akamai.com',
+  'main.vscode-cdn.net',     // plugin marketplace asset CDN — client doesn't trust mitm CA
+  '*.vscode-cdn.net',
   'localhost',
   '127.0.0.1',
   '::1',
