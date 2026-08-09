@@ -146,6 +146,9 @@ export function repairVenvPython(venvDir, {
   unlinkSyncImpl = unlinkSync,
   execFileSyncImpl = execFileSync,
 } = {}) {
+  // Windows venvs use Scripts\python.exe, not bin/python — no symlink to repair.
+  if (process.platform === 'win32') return false;
+
   const binPython = join(venvDir, 'bin', 'python');
   const cfgPath = join(venvDir, 'pyvenv.cfg');
 
@@ -167,7 +170,11 @@ export function repairVenvPython(venvDir, {
   symlinkSyncImpl(uvPython, binPython);
 
   const newHome = dirname(uvPython);
-  writeFileSyncImpl(cfgPath, cfg.replace(/^home\s*=\s*.*/m, `home = ${newHome}`), 'utf8');
+  const updatedCfg = cfg.replace(/^home\s*=\s*.*/m, `home = ${newHome}`);
+  // If pyvenv.cfg has no 'home =' line (unusual), append it rather than silently skip.
+  writeFileSyncImpl(cfgPath, updatedCfg === cfg
+    ? `${cfg.trimEnd()}\nhome = ${newHome}\n`
+    : updatedCfg, 'utf8');
   return true;
 }
 
