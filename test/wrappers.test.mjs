@@ -164,6 +164,28 @@ describe('_copilot wrapper — copilotBin path embedding', () => {
   });
 });
 
+describe('Get-Command calls always take only the first match (guards all wrapper builders)', () => {
+  // Get-Command can return multiple matches (e.g. nvm4w's copilot.cmd shim
+  // plus a bare copilot/claude shim on PATH). Without Select-Object -First 1,
+  // .Source is an array and PowerShell's & operator silently stringifies it
+  // as one broken, space-joined command. Scan every generated Windows wrapper
+  // for the unguarded pattern so no future Get-Command site regresses.
+  it('every Windows Get-Command ...).Source is preceded by Select-Object -First 1', () => {
+    const wrappers = [
+      buildCopilotWrapper({ os: 'windows' }),
+      buildBareCopilotWrapper({ os: 'windows' }),
+      buildClaudeWrapper({ os: 'windows' }),
+      buildBareClaudeWrapper({ os: 'windows' }),
+    ];
+    for (const w of wrappers) {
+      const unguarded = w.match(/Get-Command \w+ -Type Application -ErrorAction Stop\)\.Source/g);
+      assert.equal(unguarded, null,
+        `found Get-Command ...).Source without Select-Object -First 1: ${JSON.stringify(unguarded)}`);
+      assert.ok(/Get-Command \w+ -Type Application -ErrorAction Stop \| Select-Object -First 1\)\.Source/.test(w));
+    }
+  });
+});
+
 describe('_claude wrapper — sets its own env per-invocation', () => {
   for (const os of platforms) {
     describe(os, () => {
