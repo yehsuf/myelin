@@ -27,17 +27,17 @@ program.command('update')
   .description('Update Myelin as one pinned release')
   .option('--check', 'Show release and component drift without making changes')
   .option('--download-only', 'Stage and validate the latest release without activating it')
-  .option('--channel <channel>', 'Release channel: stable or main', 'main')
+  .option('--channel <channel>', 'Release channel: stable or main', 'stable')
   .option('--self', 'Removed; use myelin update')
   .option('-f, --force', 'Removed; use myelin update')
   .action(async (opts) => {
     if (opts.self) {
-      console.error('Error: --self was removed. Use `myelin update` or `myelin update --channel main`.');
+      console.error('Error: --self was removed. Use `myelin update` (stable releases) or `myelin update --channel main` (latest untagged).');
       process.exitCode = 2;
       return;
     }
     if (opts.force) {
-      console.error('Error: --force was removed. Use `myelin update` or `myelin update --channel main`.');
+      console.error('Error: --force was removed. Use `myelin update` (stable releases) or `myelin update --channel main` (latest untagged).');
       process.exitCode = 2;
       return;
     }
