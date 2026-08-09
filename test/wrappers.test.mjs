@@ -108,6 +108,10 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
         const custom = buildCopilotWrapper({ os, mitmPort: 9999 });
         assert.ok(custom.includes('127.0.0.1:9999'));
       });
+      it('bypasses mitmproxy for the plugin marketplace CDN (client does not trust the mitm CA)', () => {
+        assert.ok(w.includes('vscode-cdn.net'),
+          'main.vscode-cdn.net must be in NO_PROXY — its client rejects the mitm CA with a TLS handshake failure.');
+      });
       if (os === 'windows') {
         it('calls the binary directly via Get-Command (not "& copilot @args") to avoid recursing into the bare copilot function', () => {
           assert.ok(w.includes('Get-Command copilot -Type Application -ErrorAction Stop'),
