@@ -7,7 +7,7 @@
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
-import { join, resolve, win32 as pathWin32 } from 'node:path';
+import { join, resolve, dirname, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
@@ -117,7 +117,65 @@ export function ensureManagedVenv(venv, {
   const venvArg = String(venv);
   if (!existsSyncImpl(join(venvArg, 'pyvenv.cfg'))) {
     execFileSyncImpl('uv', ['venv', venvArg], { stdio });
+  } else {
+    // Repair stale python symlink left by a uv standalone-Python upgrade.
+    repairVenvPython(venvArg, { existsSyncImpl, execFileSyncImpl });
   }
+}
+
+/**
+ * Repair a uv-managed venv whose `bin/python` symlink points to a stale uv
+ * Python installation (e.g. after `uv` upgraded and the standalone CPython
+ * patch version changed).  Safe to call on every install run — exits early when
+ * the venv is healthy.
+ *
+ * Strategy:
+ *  1. If bin/python resolves (existsSync follows the link) → healthy, return false.
+ *  2. Parse the Python minor version from pyvenv.cfg.
+ *  3. Run `uv python find <minor>` to get the live binary path.
+ *  4. Re-point `bin/python` symlink and update `home` in pyvenv.cfg.
+ *
+ * @param {string} venvDir  - Venv root (must contain bin/ and pyvenv.cfg).
+ * @returns {boolean} true if a repair was performed.
+ */
+export function repairVenvPython(venvDir, {
+  existsSyncImpl = existsSync,
+  readFileSyncImpl = readFileSync,
+  writeFileSyncImpl = writeFileSync,
+  symlinkSyncImpl = symlinkSync,
+  unlinkSyncImpl = unlinkSync,
+  execFileSyncImpl = execFileSync,
+} = {}) {
+  // Windows venvs use Scripts\python.exe, not bin/python — no symlink to repair.
+  if (process.platform === 'win32') return false;
+
+  const binPython = join(venvDir, 'bin', 'python');
+  const cfgPath = join(venvDir, 'pyvenv.cfg');
+
+  if (existsSyncImpl(binPython)) return false;            // healthy
+  if (!existsSyncImpl(cfgPath)) return false;             // not a uv venv we know about
+
+  const cfg = readFileSyncImpl(cfgPath, 'utf8');
+  const versionMatch = /^version_info\s*=\s*(\d+\.\d+)/m.exec(cfg);
+  if (!versionMatch) return false;
+
+  let uvPython;
+  try {
+    uvPython = execFileSyncImpl('uv', ['python', 'find', versionMatch[1]], { stdio: 'pipe' })
+      .toString().trim();
+  } catch { return false; }
+  if (!uvPython || !existsSyncImpl(uvPython)) return false;
+
+  try { unlinkSyncImpl(binPython); } catch { /* stale or already gone */ }
+  symlinkSyncImpl(uvPython, binPython);
+
+  const newHome = dirname(uvPython);
+  const updatedCfg = cfg.replace(/^home\s*=\s*.*/m, `home = ${newHome}`);
+  // If pyvenv.cfg has no 'home =' line (unusual), append it rather than silently skip.
+  writeFileSyncImpl(cfgPath, updatedCfg === cfg
+    ? `${cfg.trimEnd()}\nhome = ${newHome}\n`
+    : updatedCfg, 'utf8');
+  return true;
 }
 
 /**
@@ -3268,6 +3326,16 @@ async function main() {
   } else if (!mitmEnabled) {
     // proxy.mitm.enabled=false → no binary needed
   } else {
+    // Repair stale venv python before detection — uv standalone-Python upgrades
+    // break the bin/python symlink inside the managed mitmproxy venv, making
+    // the service fail silently even though the binary file exists.
+    try {
+      const managed = resolveManagedMitmBinary({
+        componentsRoot: updatePaths(home).componentsRoot,
+        platform: resolveInstallComponentStoragePlatform(os),
+      });
+      repairVenvPython(dirname(dirname(managed.binPath)));
+    } catch { /* no managed component present yet — skip */ }
     mitmdumpBin ??= await ensureMitmproxy(os, { installIfMissing: runGlobalComponentInstalls });
   }
   if (!mitmEnabled) {
