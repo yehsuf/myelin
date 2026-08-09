@@ -362,15 +362,21 @@ function _claude() {
 export function buildBareCopilotWrapper({ os } = {}) {
   const proxyVars = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy'];
   if (os === 'windows') {
-    const saveLines = proxyVars.map(k => `  $p_${k.replace(/[^a-zA-Z]/g, '_')} = $env:${k}; $env:${k} = $null`).join('\n');
-    const restoreLines = proxyVars.map(k => `  $env:${k} = $p_${k.replace(/[^a-zA-Z]/g, '_')}`).join('\n');
+    // PowerShell env vars are case-insensitive: $env:HTTPS_PROXY === $env:https_proxy.
+    // Deduplicate to uppercase-only so save/restore vars don't collide.
+    const winVars = [...new Set(proxyVars.map(v => v.toUpperCase()))];
+    const saveLines = winVars.map(k => `  $p_${k} = $env:${k}; $env:${k} = $null`).join('\n');
+    const restoreLines = winVars.map(k => `  $env:${k} = $p_${k}`).join('\n');
     return `# copilot: proxy-clean wrapper — strips HTTPS_PROXY/HTTP_PROXY so bare
 # 'copilot' never routes through mitmproxy regardless of session env.
 # Use _copilot for AI calls (compression), copilot for auth/plugins/updates.
 function global:copilot {
 ${saveLines}
-  & (Get-Command copilot -Type Application -ErrorAction Stop).Source @args
+  try {
+    & (Get-Command copilot -Type Application -ErrorAction Stop).Source @args
+  } finally {
 ${restoreLines}
+  }
 }`;
   }
   const unsetFlags = proxyVars.map(k => `-u ${k}`).join(' ');
@@ -393,15 +399,19 @@ function copilot() {
 export function buildBareClaudeWrapper({ os } = {}) {
   const claudeVars = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ENABLE_PROMPT_CACHING_1H', 'HEADROOM_PORT'];
   if (os === 'windows') {
-    const saveLines = claudeVars.map(k => `  $c_${k.replace(/[^a-zA-Z]/g, '_')} = $env:${k}; $env:${k} = $null`).join('\n');
-    const restoreLines = claudeVars.map(k => `  $env:${k} = $c_${k.replace(/[^a-zA-Z]/g, '_')}`).join('\n');
+    // All claudeVars are already uppercase-only — no case collision risk.
+    const saveLines = claudeVars.map(k => `  $c_${k} = $env:${k}; $env:${k} = $null`).join('\n');
+    const restoreLines = claudeVars.map(k => `  $env:${k} = $c_${k}`).join('\n');
     return `# claude: provider-clean wrapper — strips ANTHROPIC_BASE_URL/headroom vars
 # so bare 'claude' never routes through headroom regardless of session env.
 # Use _claude for compressed AI calls, claude for auth/config/one-off use.
 function global:claude {
 ${saveLines}
-  & (Get-Command claude -Type Application -ErrorAction Stop).Source @args
+  try {
+    & (Get-Command claude -Type Application -ErrorAction Stop).Source @args
+  } finally {
 ${restoreLines}
+  }
 }`;
   }
   const unsetFlags = claudeVars.map(k => `-u ${k}`).join(' ');

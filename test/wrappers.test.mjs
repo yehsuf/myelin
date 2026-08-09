@@ -364,6 +364,8 @@ describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
 // -----------------------------------------------------------------------------
 describe('buildBareCopilotWrapper — guarantees no proxy vars reach copilot', () => {
   const proxyVars = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy'];
+  // Windows PS env vars are case-insensitive; wrapper deduplicates to uppercase.
+  const winProxyVars = [...new Set(proxyVars.map(v => v.toUpperCase()))]; // ['HTTPS_PROXY','HTTP_PROXY','NO_PROXY']
   for (const os of ['darwin', 'linux', 'windows']) {
     describe(os, () => {
       const w = buildBareCopilotWrapper({ os });
@@ -371,8 +373,9 @@ describe('buildBareCopilotWrapper — guarantees no proxy vars reach copilot', (
         if (os === 'windows') assert.ok(w.includes('function global:copilot'));
         else assert.ok(w.includes('function copilot()'));
       });
-      it('strips all proxy vars', () => {
-        for (const v of proxyVars) {
+      it('strips proxy vars (Windows: uppercase-deduplicated; POSIX: all 6)', () => {
+        const checkVars = os === 'windows' ? winProxyVars : proxyVars;
+        for (const v of checkVars) {
           const stripped = os === 'windows' ? w.includes(`$env:${v} = $null`) : w.includes(`-u ${v}`);
           assert.ok(stripped, `bare copilot must strip '${v}'`);
         }
@@ -380,6 +383,11 @@ describe('buildBareCopilotWrapper — guarantees no proxy vars reach copilot', (
       it('calls binary directly (no function recursion)', () => {
         if (os === 'windows') assert.ok(w.includes('Get-Command copilot -Type Application'));
         else assert.ok(w.includes('type -P copilot'));
+      });
+      it('Windows wrapper uses try/finally for guaranteed restore', () => {
+        if (os !== 'windows') return;
+        assert.ok(w.includes('try {'), 'Windows copilot wrapper must use try block');
+        assert.ok(w.includes('} finally {'), 'Windows copilot wrapper must use finally block');
       });
     });
   }
@@ -403,6 +411,11 @@ describe('buildBareClaudeWrapper — guarantees no provider vars reach claude', 
       it('calls binary directly (no function recursion)', () => {
         if (os === 'windows') assert.ok(w.includes('Get-Command claude -Type Application'));
         else assert.ok(w.includes('type -P claude'));
+      });
+      it('Windows wrapper uses try/finally for guaranteed restore', () => {
+        if (os !== 'windows') return;
+        assert.ok(w.includes('try {'), 'Windows claude wrapper must use try block');
+        assert.ok(w.includes('} finally {'), 'Windows claude wrapper must use finally block');
       });
     });
   }
