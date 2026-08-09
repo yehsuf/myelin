@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import {
   buildCopilotWrapper,
   buildClaudeWrapper,
+  buildBareCopilotWrapper,
+  buildBareClaudeWrapper,
   buildServiceEnvUnsetLines,
   COPILOT_FORBIDDEN_ENV,
   CLAUDE_FORBIDDEN_ENV,
@@ -106,6 +108,14 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
         const custom = buildCopilotWrapper({ os, mitmPort: 9999 });
         assert.ok(custom.includes('127.0.0.1:9999'));
       });
+      if (os === 'windows') {
+        it('calls the binary directly via Get-Command (not "& copilot @args") to avoid recursing into the bare copilot function', () => {
+          assert.ok(w.includes('Get-Command copilot -Type Application -ErrorAction Stop'),
+            '_copilot must resolve the copilot binary explicitly so it never re-enters a "function global:copilot" clean wrapper defined in the same profile.');
+          assert.ok(!w.includes('& copilot @args'),
+            '_copilot must not call "copilot" as a bare command — that would recurse if a "copilot" function is defined.');
+        });
+      }
       if (os !== 'windows') {
         it('single-quotes the NO_PROXY value so zsh does not glob its * patterns', () => {
           // NO_PROXY contains wildcard hosts (e.g. *.akamai.com, *.local). As an
@@ -144,9 +154,13 @@ describe('_copilot wrapper — copilotBin path embedding', () => {
     assert.ok(w.includes('"C:\\Programs\\copilot\\copilot.exe" @args'),
       'Windows wrapper must quote the explicit copilot bin path');
   });
-  it('Windows default (bare copilot) uses unquoted & copilot call', () => {
+  it('Windows default (bare copilot) uses recursion-safe Get-Command call', () => {
     const w = buildCopilotWrapper({ os: 'windows' });
-    assert.ok(w.includes('& copilot @args'));
+    // Default copilotBin ('copilot') routes through Get-Command -Type Application
+    // instead of '& copilot @args' to avoid recursing into a bare 'copilot' clean
+    // wrapper function defined in the same profile.
+    assert.ok(w.includes('Get-Command copilot -Type Application -ErrorAction Stop'));
+    assert.ok(!w.includes('& copilot @args'));
   });
 });
 
@@ -190,7 +204,7 @@ describe('_claude wrapper — sets its own env per-invocation', () => {
       it('falls back to plain `claude` when headroom is offline', () => {
         if (os === 'windows') {
           assert.ok(w.includes('Test-NetConnection'));
-          assert.ok(w.includes('& claude @args'));
+          assert.ok(w.includes('Get-Command claude -Type Application'));
         } else {
           assert.ok(w.includes('nc -z 127.0.0.1'));
           assert.ok(w.includes('claude "$@"'));
@@ -218,7 +232,7 @@ describe('_claude wrapper — unproxied when compression backend is disabled (nu
       });
       it('runs claude directly (unproxied)', () => {
         if (os === 'windows') {
-          assert.ok(w.includes('& claude @args'));
+          assert.ok(w.includes('Get-Command claude -Type Application'));
         } else {
           assert.ok(w.includes('claude "$@"'));
         }
@@ -355,4 +369,66 @@ describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
     assert.ok(!winWrapper.includes('grep -Fv'),
       'Windows wrapper must not include POSIX grep filter');
   });
+});
+
+// -----------------------------------------------------------------------------
+// Bare wrappers — copilot and claude clean-env shims.
+// -----------------------------------------------------------------------------
+describe('buildBareCopilotWrapper — guarantees no proxy vars reach copilot', () => {
+  const proxyVars = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy'];
+  // Windows PS env vars are case-insensitive; wrapper deduplicates to uppercase.
+  const winProxyVars = [...new Set(proxyVars.map(v => v.toUpperCase()))]; // ['HTTPS_PROXY','HTTP_PROXY','NO_PROXY']
+  for (const os of ['darwin', 'linux', 'windows']) {
+    describe(os, () => {
+      const w = buildBareCopilotWrapper({ os });
+      it('defines a copilot function (not _copilot)', () => {
+        if (os === 'windows') assert.ok(w.includes('function global:copilot'));
+        else assert.ok(w.includes('function copilot()'));
+      });
+      it('strips proxy vars (Windows: uppercase-deduplicated; POSIX: all 6)', () => {
+        const checkVars = os === 'windows' ? winProxyVars : proxyVars;
+        for (const v of checkVars) {
+          const stripped = os === 'windows' ? w.includes(`$env:${v} = $null`) : w.includes(`-u ${v}`);
+          assert.ok(stripped, `bare copilot must strip '${v}'`);
+        }
+      });
+      it('calls binary directly (no function recursion)', () => {
+        if (os === 'windows') assert.ok(w.includes('Get-Command copilot -Type Application'));
+        else assert.ok(w.includes('type -P copilot'));
+      });
+      it('Windows wrapper uses try/finally for guaranteed restore', () => {
+        if (os !== 'windows') return;
+        assert.ok(w.includes('try {'), 'Windows copilot wrapper must use try block');
+        assert.ok(w.includes('} finally {'), 'Windows copilot wrapper must use finally block');
+      });
+    });
+  }
+});
+
+describe('buildBareClaudeWrapper — guarantees no provider vars reach claude', () => {
+  const providerVars = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ENABLE_PROMPT_CACHING_1H', 'HEADROOM_PORT'];
+  for (const os of ['darwin', 'linux', 'windows']) {
+    describe(os, () => {
+      const w = buildBareClaudeWrapper({ os });
+      it('defines a claude function (not _claude)', () => {
+        if (os === 'windows') assert.ok(w.includes('function global:claude'));
+        else assert.ok(w.includes('function claude()'));
+      });
+      it('strips all provider vars', () => {
+        for (const v of providerVars) {
+          const stripped = os === 'windows' ? w.includes(`$env:${v} = $null`) : w.includes(`-u ${v}`);
+          assert.ok(stripped, `bare claude must strip '${v}'`);
+        }
+      });
+      it('calls binary directly (no function recursion)', () => {
+        if (os === 'windows') assert.ok(w.includes('Get-Command claude -Type Application'));
+        else assert.ok(w.includes('type -P claude'));
+      });
+      it('Windows wrapper uses try/finally for guaranteed restore', () => {
+        if (os !== 'windows') return;
+        assert.ok(w.includes('try {'), 'Windows claude wrapper must use try block');
+        assert.ok(w.includes('} finally {'), 'Windows claude wrapper must use finally block');
+      });
+    });
+  }
 });

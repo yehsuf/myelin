@@ -65,6 +65,23 @@ export const CLAUDE_FORBIDDEN_ENV = [
 ];
 
 /**
+ * Env vars that must NEVER reach bare `copilot` — proxy vars that could
+ * silently route Copilot CLI through mitmproxy or a corporate proxy chain.
+ */
+export const COPILOT_CLEAN_ENV = [
+  'HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy',
+];
+
+/**
+ * Env vars that must NEVER reach bare `claude` — provider routing vars that
+ * could silently redirect Claude Code to headroom or a stale proxy endpoint.
+ */
+export const CLAUDE_CLEAN_ENV = [
+  'ANTHROPIC_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL',
+  'ENABLE_PROMPT_CACHING_1H', 'HEADROOM_PORT',
+];
+
+/**
  * Env vars that must NEVER be visible to our long-running services (main
  * headroom, copilot-headroom, mitmproxy). These are CLIENT-SIDE provider
  * settings that would misdirect the server's own routing or cause
@@ -125,21 +142,32 @@ export function buildCopilotWrapper({ os, mitmPort = 8888, copilotBin = 'copilot
     const restoreLines = COPILOT_FORBIDDEN_ENV
       .map(k => `  $env:${k} = $saved_${k}`)
       .join('\n');
+    // Call the binary directly (by Application type) so that if the user's
+    // profile also defines a bare `copilot` clean wrapper, _copilot never
+    // recurses into it — functions take precedence over binaries in PowerShell.
+    // If copilotBin was resolved to something other than bare 'copilot' (POSIX
+    // callers may pass a brew/absolute path; Windows currently never does),
+    // call that explicit path instead of re-resolving via Get-Command.
+    const psCallBin = copilotBin === 'copilot'
+      ? '& (Get-Command copilot -Type Application -ErrorAction Stop).Source @args'
+      : psCall;
     return `# _copilot: routes through Myelin mitmproxy with health-check fallback.
 # Actively unsets Claude-provider env vars so a stray ANTHROPIC_BASE_URL in
 # the shell can never make Copilot bypass mitmproxy.
+# Calls the copilot binary directly (Type Application) to avoid recursing into
+# the bare 'copilot' clean wrapper when both are defined in the same profile.
 function global:_copilot {
 ${savedLines}
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitmPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
     $env:HTTPS_PROXY = "http://127.0.0.1:${mitmPort}"
     $env:NO_PROXY = "${COPILOT_NO_PROXY_HOSTS}"
-    ${psCall}
+    ${psCallBin}
     $env:HTTPS_PROXY = $null
     $env:NO_PROXY = $null
   } else {
     Write-Warning "myelin: mitmproxy offline (port ${mitmPort}) - running uncompressed"
-    ${psCall}
+    ${psCallBin}
   }
 ${restoreLines}
 }`;
@@ -218,12 +246,14 @@ export function buildClaudeWrapper({ os, headroomPort = 8787 } = {}) {
       const restoreLines = unsetVars
         .map(k => `  $env:${k} = $saved_${k}`)
         .join('\n');
-      return `# _claude: compression backend disabled — runs Claude Code unproxied.
+    // Call the binary directly to avoid recursing into the bare 'claude' clean wrapper.
+    const psClaudeBin = `(Get-Command claude -Type Application -ErrorAction Stop).Source`;
+    return `# _claude: compression backend disabled — runs Claude Code unproxied.
 # Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT so a stray
 # global value can never point Claude at a nonexistent proxy port.
 function global:_claude {
 ${savedLines}
-  & claude @args
+  & ${psClaudeBin} @args
 ${restoreLines}
 }`;
     }
@@ -245,27 +275,30 @@ function _claude() {
     return `# _claude: routes Claude Code through Myelin headroom with health-check fallback.
 # Detects Foundry mode to avoid setting conflicting provider vars — never set
 # both ANTHROPIC_BASE_URL and ANTHROPIC_FOUNDRY_BASE_URL simultaneously.
+# Calls the claude binary directly (Type Application) to avoid recursing into
+# the bare 'claude' clean wrapper when both are defined in the same profile.
 function global:_claude {
 ${savedLines}
+  $_claudeBin = (Get-Command claude -Type Application -ErrorAction Stop).Source
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${headroomPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
     if ($env:CLAUDE_CODE_USE_FOUNDRY -eq '1') {
       $env:ANTHROPIC_FOUNDRY_BASE_URL = "http://127.0.0.1:${headroomPort}"
       $env:ENABLE_PROMPT_CACHING_1H = "1"
       $env:ANTHROPIC_BASE_URL = $null
-      & claude @args
+      & $_claudeBin @args
       $env:ANTHROPIC_FOUNDRY_BASE_URL = $null
       $env:ENABLE_PROMPT_CACHING_1H = $null
     } else {
       $env:ANTHROPIC_BASE_URL = "http://127.0.0.1:${headroomPort}"
       $env:ENABLE_PROMPT_CACHING_1H = "1"
-      & claude @args
+      & $_claudeBin @args
       $env:ANTHROPIC_BASE_URL = $null
       $env:ENABLE_PROMPT_CACHING_1H = $null
     }
   } else {
     Write-Warning "myelin: headroom offline (port ${headroomPort}) - running uncompressed"
-    & claude @args
+    & $_claudeBin @args
   }
 ${restoreLines}
 }`;
@@ -313,5 +346,81 @@ function _claude() {
     env ${unsetFlags} ${mallocFlag} $_osc52_env claude "$@"
   fi
   [ -n "$_osc52_pid" ] && { kill "$_osc52_pid" 2>/dev/null; rm -f "$_osc52_sock" 2>/dev/null; }
+}`;
+}
+
+/**
+ * Build a bare `copilot` wrapper that guarantees HTTPS_PROXY and all proxy
+ * vars are NEVER visible to Copilot CLI, regardless of what the surrounding
+ * shell or SSH session has set. This is the defensive complement to
+ * `_copilot`: use `copilot` for auth/plugins/config, `_copilot` for AI calls.
+ *
+ * On Windows the function calls the binary via Get-Command -Type Application
+ * to bypass PowerShell function lookup (prevents self-recursion).
+ * On POSIX, `type -P` skips function lookup and finds the PATH binary.
+ */
+export function buildBareCopilotWrapper({ os } = {}) {
+  const proxyVars = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy'];
+  if (os === 'windows') {
+    // PowerShell env vars are case-insensitive: $env:HTTPS_PROXY === $env:https_proxy.
+    // Deduplicate to uppercase-only so save/restore vars don't collide.
+    const winVars = [...new Set(proxyVars.map(v => v.toUpperCase()))];
+    const saveLines = winVars.map(k => `  $p_${k} = $env:${k}; $env:${k} = $null`).join('\n');
+    const restoreLines = winVars.map(k => `  $env:${k} = $p_${k}`).join('\n');
+    return `# copilot: proxy-clean wrapper — strips HTTPS_PROXY/HTTP_PROXY so bare
+# 'copilot' never routes through mitmproxy regardless of session env.
+# Use _copilot for AI calls (compression), copilot for auth/plugins/updates.
+function global:copilot {
+${saveLines}
+  try {
+    & (Get-Command copilot -Type Application -ErrorAction Stop).Source @args
+  } finally {
+${restoreLines}
+  }
+}`;
+  }
+  const unsetFlags = proxyVars.map(k => `-u ${k}`).join(' ');
+  return `# copilot: proxy-clean wrapper — strips HTTPS_PROXY/HTTP_PROXY so bare
+# 'copilot' never routes through mitmproxy regardless of session env.
+# Use _copilot for AI calls (compression), copilot for auth/plugins/updates.
+# type -P finds the binary in PATH, skipping this function definition.
+function copilot() {
+  env ${unsetFlags} -u MallocStackLogging \\
+    "\$(type -P copilot)" "\$@" 2> >(grep -Fv 'MallocStackLogging:' >&2)
+}`;
+}
+
+/**
+ * Build a bare `claude` wrapper that guarantees ANTHROPIC_BASE_URL and
+ * headroom routing vars are NEVER visible to bare Claude CLI. Prevents
+ * accidental routing through headroom when the user runs `claude` directly
+ * (e.g. for auth, config, or one-off queries without compression).
+ */
+export function buildBareClaudeWrapper({ os } = {}) {
+  const claudeVars = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ENABLE_PROMPT_CACHING_1H', 'HEADROOM_PORT'];
+  if (os === 'windows') {
+    // All claudeVars are already uppercase-only — no case collision risk.
+    const saveLines = claudeVars.map(k => `  $c_${k} = $env:${k}; $env:${k} = $null`).join('\n');
+    const restoreLines = claudeVars.map(k => `  $env:${k} = $c_${k}`).join('\n');
+    return `# claude: provider-clean wrapper — strips ANTHROPIC_BASE_URL/headroom vars
+# so bare 'claude' never routes through headroom regardless of session env.
+# Use _claude for compressed AI calls, claude for auth/config/one-off use.
+function global:claude {
+${saveLines}
+  try {
+    & (Get-Command claude -Type Application -ErrorAction Stop).Source @args
+  } finally {
+${restoreLines}
+  }
+}`;
+  }
+  const unsetFlags = claudeVars.map(k => `-u ${k}`).join(' ');
+  return `# claude: provider-clean wrapper — strips ANTHROPIC_BASE_URL/headroom vars
+# so bare 'claude' never routes through headroom regardless of session env.
+# Use _claude for compressed AI calls, claude for auth/config/one-off use.
+# type -P finds the binary in PATH, skipping this function definition.
+function claude() {
+  env ${unsetFlags} -u MallocStackLogging \\
+    "\$(type -P claude)" "\$@" 2> >(grep -Fv 'MallocStackLogging:' >&2)
 }`;
 }
