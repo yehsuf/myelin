@@ -3372,6 +3372,9 @@ async function main() {
       // Strip any existing .exe suffix before appending — some manifest bin values
       // already include '.exe' (e.g. winsw: 'WinSW.exe'); guard future entries.
       const stem = binName.replace(/\.exe$/i, '');
+      // Reject bin values with path traversal sequences — manifest is frozen/hardcoded
+      // but this guards against a future malicious or malformed entry.
+      if (stem.includes('/') || stem.includes('\\') || stem.includes('..')) continue;
       const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', `${stem}.exe`);
       if (!existsSync(managedBin)) continue;
       const target = joinManaged(managed.binDir, `${stem}.exe`);
@@ -3382,12 +3385,16 @@ async function main() {
         let needsCopy = true;
         try { needsCopy = lstatSync(target).size !== srcSize; } catch { /* missing → copy */ }
         if (needsCopy) {
-          // Atomic write: copy to temp then rename (MoveFileEx on NTFS is atomic).
+          // Write to temp then rename — reduces the window where the binary is partially written.
+          // Note: MoveFileEx on Windows is NOT guaranteed atomic; a running binary may cause EBUSY.
           const tmp = `${target}.tmp`;
           copyFileSync(managedBin, tmp);
           renameSync(tmp, target);
         }
-      } catch { /* not writable or source gone — ignore */ }
+      } catch (e) {
+        // EBUSY: binary is in use — old version stays active until next update run.
+        warn(`  ⚠ ${name}: could not update ${stem}.exe (${e?.code ?? e?.message ?? 'error'}) — re-run after closing all Copilot/Claude sessions`);
+      }
     }
   }
 
