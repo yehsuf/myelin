@@ -156,18 +156,24 @@ export function buildCopilotWrapper({ os, mitmPort = 8888, copilotBin = 'copilot
 # the shell can never make Copilot bypass mitmproxy.
 # Calls the copilot binary directly (Type Application) to avoid recursing into
 # the bare 'copilot' clean wrapper when both are defined in the same profile.
+# 'plugin' subcommands (marketplace/install/list) never go through mitmproxy —
+# GitHub's plugin API can reject MITM'd requests (e.g. spurious 403s).
 function global:_copilot {
 ${savedLines}
-  $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitmPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
-  if ($probe) {
-    $env:HTTPS_PROXY = "http://127.0.0.1:${mitmPort}"
-    $env:NO_PROXY = "${COPILOT_NO_PROXY_HOSTS}"
+  if ($args.Count -gt 0 -and $args[0] -eq 'plugin') {
     ${psCallBin}
-    $env:HTTPS_PROXY = $null
-    $env:NO_PROXY = $null
   } else {
-    Write-Warning "myelin: mitmproxy offline (port ${mitmPort}) - running uncompressed"
-    ${psCallBin}
+    $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${mitmPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
+    if ($probe) {
+      $env:HTTPS_PROXY = "http://127.0.0.1:${mitmPort}"
+      $env:NO_PROXY = "${COPILOT_NO_PROXY_HOSTS}"
+      ${psCallBin}
+      $env:HTTPS_PROXY = $null
+      $env:NO_PROXY = $null
+    } else {
+      Write-Warning "myelin: mitmproxy offline (port ${mitmPort}) - running uncompressed"
+      ${psCallBin}
+    }
   }
 ${restoreLines}
 }`;
@@ -190,6 +196,8 @@ ${restoreLines}
 # Actively unsets Claude-provider env vars (via env -u ...) so a stray
 # ANTHROPIC_BASE_URL in the shell can never make Copilot bypass mitmproxy.
 # Falls back to plain copilot with a warning if mitmproxy is offline.
+# 'plugin' subcommands (marketplace/install/list) never go through mitmproxy —
+# GitHub's plugin API can reject MITM'd requests (e.g. spurious 403s).
 function _copilot() {
   # osc52d: start clipboard daemon so compact-prepare can reach the real tty
   # via OSC 52 even from within the captured AI subprocess context.
@@ -202,7 +210,9 @@ function _copilot() {
     while [ "$_i" -lt 20 ] && ! [ -S "$_osc52_sock" ]; do sleep 0.05; _i=$((_i+1)); done
   fi
   local _osc52_env=""; [ -S "$_osc52_sock" ] && _osc52_env="OSC52_SOCKET=$_osc52_sock"
-  if nc -z 127.0.0.1 ${mitmPort} 2>/dev/null; then
+  if [ "$1" = "plugin" ]; then
+    env ${unsetFlags} ${mallocFlag} $_osc52_env ${posixCmd} "$@" 2> >(grep -Fv 'MallocStackLogging:' >&2)
+  elif nc -z 127.0.0.1 ${mitmPort} 2>/dev/null; then
     env ${unsetFlags} ${mallocFlag} \\
       HTTPS_PROXY=http://127.0.0.1:${mitmPort} \\
       NO_PROXY='${COPILOT_NO_PROXY_HOSTS}' \\
