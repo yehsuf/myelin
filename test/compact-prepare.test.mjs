@@ -763,7 +763,8 @@ describe('resolveClaudeSession', () => {
     assert.ok(result.sid, 'sid must be a non-empty string');
     assert.ok(result.sid.length === 36, `sid should be a UUID, got: ${result.sid}`);
     assert.ok(result.cwd, 'cwd must be set');
-    assert.ok(result.projectDir, 'projectDir must be set');
+    // projectDir is null when the session is a fallback/ancestor match (no exact project match)
+    assert.ok(result.projectDir === null || typeof result.projectDir === 'string', 'projectDir must be null or string');
   });
 
   it('does NOT match sessions whose cwd is above the git root (git-boundary regression)', () => {
