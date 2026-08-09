@@ -1581,7 +1581,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, win32 as win32Path, posix as posixPath } from 'node:path';
 
-const RELEASE_ID_RE = /^main-[0-9a-f]{7,64}$/;
+const RELEASE_ID_RE = /^(?:main-[0-9a-f]{7,64}|(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)$/;
 const BACKSLASH = String.fromCharCode(92);
 
 // Mirror src/shared/myelin-paths.mjs isWindowsStylePath / resolveMyelinRoot so
@@ -1693,7 +1693,7 @@ import sys
 
 TARGET_PATH = ${JSON.stringify(relativeTargetPath)}
 MODE = ${JSON.stringify(mode)}
-RELEASE_ID_RE = re.compile(r'^main-[0-9a-f]{7,64}$')
+RELEASE_ID_RE = re.compile(r'^(?:main-[0-9a-f]{7,64}|(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)$')
 
 def is_windows_style_path(p):
     if not isinstance(p, str) or len(p) == 0:

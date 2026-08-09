@@ -218,6 +218,48 @@ describe('current release pointer', { concurrency: false }, () => {
     }
   });
 
+  // Regression: myelin update --channel stable (the CLI default since #147)
+  // resolves target.version to a bare semver tag (e.g. '1.3.31'), which flows
+  // straight into writeCurrentRelease({ releaseId: target.version }) via
+  // planUpdate/syncReleasePair. Before this fix, RELEASE_ID_RE only accepted
+  // 'main-<sha>', so every stable-channel update failed with
+  // "Update failed: invalid release id: 1.3.31" — reported live from Windows.
+  it('accepts a bare semver release id (stable channel target.version)', () => {
+    const home = makeTempHome();
+    try {
+      const result = writeCurrentRelease({ home, releaseId: '1.3.31' });
+      const runtimeRoot = join(home, '.myelin', 'releases', '1.3.31');
+      assert.deepEqual(result, { version: 1, releaseId: '1.3.31', runtimeRoot });
+      assert.deepEqual(readCurrentRelease({ home }), result);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a semver release id with prerelease/build metadata', () => {
+    const home = makeTempHome();
+    try {
+      for (const releaseId of ['2.0.0-beta.1', '1.3.31+build.5']) {
+        rmSync(join(home, '.myelin'), { recursive: true, force: true });
+        const result = writeCurrentRelease({ home, releaseId });
+        assert.equal(result.releaseId, releaseId);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a semver-shaped but invalid release id (leading zero)', () => {
+    const home = makeTempHome();
+    try {
+      // Leading-zero components (e.g. '01.3.31') are not valid semver and must
+      // still be rejected — the acceptance is bare semver only, not "any digits".
+      assert.throws(() => writeCurrentRelease({ home, releaseId: '01.3.31' }), /invalid release id/i);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('fsyncs the temp pointer (open→write→fsync→close) before renaming it into place', () => {
     const events = [];
     const files = new Map();
@@ -473,6 +515,33 @@ describe('current release pointer', { concurrency: false }, () => {
       });
       assert.equal(r.status, 0, `stderr: ${r.stderr}`);
       assert.equal(r.stdout, 'LAUNCH-HOME\n');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Regression: the stable channel (myelin update's default since #147) points
+  // current.json at a bare semver releaseId (e.g. '1.3.31'), not 'main-<sha>'.
+  // The generated launcher script embeds its OWN copy of RELEASE_ID_RE (it has
+  // no dependency on release-store.mjs by design) — that copy must independently
+  // accept the same semver shape or every real `myelin` invocation after a
+  // stable-channel update fails with "no current managed runtime configured".
+  it('generated launcher resolves a stable-channel (bare semver) release id end-to-end', () => {
+    const home = makeTempHome();
+    try {
+      const result = writeManagedLauncher({ home, os: 'darwin' });
+      const releaseId = '1.3.31';
+      const entrypoint = join(home, '.myelin', 'releases', releaseId, 'src', 'cli', 'index.mjs');
+      mkdirSync(dirname(entrypoint), { recursive: true });
+      writeFileSync(entrypoint, "console.log('LAUNCH-STABLE');\n", 'utf8');
+      writeCurrentRelease({ home, releaseId });
+
+      const r = spawnSync(process.execPath, [result.launcherPath], {
+        env: { ...process.env, HOME: home, USERPROFILE: home },
+        encoding: 'utf8',
+      });
+      assert.equal(r.status, 0, `stderr: ${r.stderr}`);
+      assert.equal(r.stdout, 'LAUNCH-STABLE\n');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
