@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import {
   buildCopilotWrapper,
   buildClaudeWrapper,
+  buildBareCopilotWrapper,
+  buildBareClaudeWrapper,
   buildServiceEnvUnsetLines,
   COPILOT_FORBIDDEN_ENV,
   CLAUDE_FORBIDDEN_ENV,
@@ -190,7 +192,7 @@ describe('_claude wrapper — sets its own env per-invocation', () => {
       it('falls back to plain `claude` when headroom is offline', () => {
         if (os === 'windows') {
           assert.ok(w.includes('Test-NetConnection'));
-          assert.ok(w.includes('& claude @args'));
+          assert.ok(w.includes('Get-Command claude -Type Application'));
         } else {
           assert.ok(w.includes('nc -z 127.0.0.1'));
           assert.ok(w.includes('claude "$@"'));
@@ -218,7 +220,7 @@ describe('_claude wrapper — unproxied when compression backend is disabled (nu
       });
       it('runs claude directly (unproxied)', () => {
         if (os === 'windows') {
-          assert.ok(w.includes('& claude @args'));
+          assert.ok(w.includes('Get-Command claude -Type Application'));
         } else {
           assert.ok(w.includes('claude "$@"'));
         }
@@ -355,4 +357,53 @@ describe('osc52d integration in shell wrappers (COMPACT-CLIP-001)', () => {
     assert.ok(!winWrapper.includes('grep -Fv'),
       'Windows wrapper must not include POSIX grep filter');
   });
+});
+
+// -----------------------------------------------------------------------------
+// Bare wrappers — copilot and claude clean-env shims.
+// -----------------------------------------------------------------------------
+describe('buildBareCopilotWrapper — guarantees no proxy vars reach copilot', () => {
+  const proxyVars = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy'];
+  for (const os of ['darwin', 'linux', 'windows']) {
+    describe(os, () => {
+      const w = buildBareCopilotWrapper({ os });
+      it('defines a copilot function (not _copilot)', () => {
+        if (os === 'windows') assert.ok(w.includes('function global:copilot'));
+        else assert.ok(w.includes('function copilot()'));
+      });
+      it('strips all proxy vars', () => {
+        for (const v of proxyVars) {
+          const stripped = os === 'windows' ? w.includes(`$env:${v} = $null`) : w.includes(`-u ${v}`);
+          assert.ok(stripped, `bare copilot must strip '${v}'`);
+        }
+      });
+      it('calls binary directly (no function recursion)', () => {
+        if (os === 'windows') assert.ok(w.includes('Get-Command copilot -Type Application'));
+        else assert.ok(w.includes('type -P copilot'));
+      });
+    });
+  }
+});
+
+describe('buildBareClaudeWrapper — guarantees no provider vars reach claude', () => {
+  const providerVars = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_FOUNDRY_BASE_URL', 'ENABLE_PROMPT_CACHING_1H', 'HEADROOM_PORT'];
+  for (const os of ['darwin', 'linux', 'windows']) {
+    describe(os, () => {
+      const w = buildBareClaudeWrapper({ os });
+      it('defines a claude function (not _claude)', () => {
+        if (os === 'windows') assert.ok(w.includes('function global:claude'));
+        else assert.ok(w.includes('function claude()'));
+      });
+      it('strips all provider vars', () => {
+        for (const v of providerVars) {
+          const stripped = os === 'windows' ? w.includes(`$env:${v} = $null`) : w.includes(`-u ${v}`);
+          assert.ok(stripped, `bare claude must strip '${v}'`);
+        }
+      });
+      it('calls binary directly (no function recursion)', () => {
+        if (os === 'windows') assert.ok(w.includes('Get-Command claude -Type Application'));
+        else assert.ok(w.includes('type -P claude'));
+      });
+    });
+  }
 });

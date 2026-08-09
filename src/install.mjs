@@ -48,7 +48,7 @@ import {
   resolveWindowsServiceExecutable,
   setUserEnvVars,
 } from './service/windows.mjs';
-import { buildCopilotWrapper, buildClaudeWrapper } from './service/wrappers.mjs';
+import { buildCopilotWrapper, buildClaudeWrapper, buildBareCopilotWrapper, buildBareClaudeWrapper } from './service/wrappers.mjs';
 import { fileURLToPath } from 'node:url';
 import { execSync, execFileSync, spawn } from 'node:child_process';
 import { readCurrentRelease, runtimePaths } from './runtime/release-store.mjs';
@@ -1109,9 +1109,9 @@ function installWindowsAutoloadModule(appData, profilePath) {
   const moduleDir = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules', 'MyelinAutoload');
   mkdirSync(moduleDir, { recursive: true });
   const psm1 = join(moduleDir, 'MyelinAutoload.psm1');
-  writeFileSync(psm1, `. "${profilePath}"\nExport-ModuleMember -Function myelin, _copilot, _claude\n`, 'utf8');
+  writeFileSync(psm1, `. "${profilePath}"\nExport-ModuleMember -Function myelin, copilot, claude, _copilot, _claude\n`, 'utf8');
   writeFileSync(join(moduleDir, 'MyelinAutoload.psd1'),
-    `@{\n  ModuleVersion = '1.0'\n  RootModule = 'MyelinAutoload.psm1'\n  FunctionsToExport = @('myelin','_copilot','_claude')\n}\n`, 'utf8');
+    `@{\n  ModuleVersion = '1.0'\n  RootModule = 'MyelinAutoload.psm1'\n  FunctionsToExport = @('myelin','copilot','claude','_copilot','_claude')\n}\n`, 'utf8');
 
   const modulesParent = join(appData, 'Microsoft', 'Windows', 'PowerShell', 'Modules');
   const tmp = join(tmpdir(), `myelin-psmodulepath-${Date.now()}.ps1`);
@@ -3915,6 +3915,8 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
     const copilotBin = await resolveCopilotBin(os, home);
     const copilotAlias = buildCopilotWrapper({ os, copilotBin });
     const claudeAlias = buildClaudeWrapper({ os, headroomPort: selectedProxyPort });
+    const copilotBareAlias = buildBareCopilotWrapper({ os });
+    const claudeBareAlias = buildBareClaudeWrapper({ os });
     const myelinCmd = managedMyelinCommandLine({ os, commandPath: managedRuntime.commandPath });
     const profilePathBlock = managedProfilePathBlock({ os, home });
     const extraPath = profilePathBlock.posixExport;
@@ -3953,13 +3955,13 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
         : '';
       const psCert = Object.entries(sslEnv).map(([k, v]) => `$env:${k} = ${powershellSingleQuote(v)}`).join('\n');
       const psPaths = renderWindowsProfilePathLines(profilePathBlock.windowsPathDirs);
-      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\n${psEnv}\n${psMyelinDir}${psCert}\n${psPaths}\n${myelinCmd}\n${copilotBareAlias}\n${claudeBareAlias}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     } else {
       // NOTE: no ANTHROPIC_BASE_URL export — see _claude wrapper below. When the
       // backend is disabled (selectedProxyPort == null) HEADROOM_PORT is omitted
       // entirely so nothing points at a nonexistent proxy.
       const headroomExport = selectedProxyPort != null ? `export HEADROOM_PORT=${selectedProxyPort}` : '';
-      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
+      block = `\n# >>> myelin managed >>>\n${headroomExport}${myelinDirExport}${certBlock}${extraPath}\n${myelinCmd}\n${copilotBareAlias}\n${claudeBareAlias}\n${copilotAlias}\n${claudeAlias}\n# <<< myelin managed <<<\n`;
     }
     const updated = MANAGED_BLOCK_RE.test(existing)
       ? existing.replace(MANAGED_BLOCK_RE, block)
