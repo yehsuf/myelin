@@ -879,3 +879,63 @@ describe('resolveClaudeSession — CLAUDE_SESSION_ID override', () => {
     }
   });
 });
+
+describe('resolveClaudeSession — CLAUDE_SESSION_PID stale cwd guard', () => {
+  // Write directly to the real ~/.claude/sessions/ dir since CLAUDE_SESSIONS_DIR is
+  // a module-level constant resolved at import time (HOME override has no effect).
+  const realSessionsDir = path.join(process.env.HOME || '', '.claude', 'sessions');
+  const STALE_PID  = '2999901'; // high fake PID — guaranteed not a real process
+  const MATCH_PID  = '2999902';
+  const origPid = process.env.CLAUDE_SESSION_PID;
+
+  before(() => {
+    mkdirSync(realSessionsDir, { recursive: true });
+    writeFileSync(path.join(realSessionsDir, `${STALE_PID}.json`), JSON.stringify({
+      pid: parseInt(STALE_PID),
+      sessionId: 'stale-session-id',
+      cwd: '/Users/someone/completely-different-project',
+      status: 'idle',
+    }));
+    writeFileSync(path.join(realSessionsDir, `${MATCH_PID}.json`), JSON.stringify({
+      pid: parseInt(MATCH_PID),
+      sessionId: 'correct-session-id',
+      cwd: '/matching-project-unique-xyzabc',
+      status: 'active',
+    }));
+  });
+
+  after(() => {
+    if (origPid === undefined) delete process.env.CLAUDE_SESSION_PID;
+    else process.env.CLAUDE_SESSION_PID = origPid;
+    try { rmSync(path.join(realSessionsDir, `${STALE_PID}.json`), { force: true }); } catch { /* ignore */ }
+    try { rmSync(path.join(realSessionsDir, `${MATCH_PID}.json`), { force: true }); } catch { /* ignore */ }
+  });
+
+  it('does not return a stale session when PID session cwd differs from process cwd', () => {
+    const origPidEnv = process.env.CLAUDE_SESSION_PID;
+    try {
+      process.env.CLAUDE_SESSION_PID = STALE_PID;
+      // Session file has cwd=/Users/someone/completely-different-project
+      // Our cwd is completely unrelated — guard must skip it and fall through
+      const result = resolveClaudeSession('/myelin-repo-cwd-unrelated-zyx987');
+      assert.equal(result, null,
+        'stale PID session (different project cwd) must not be returned — should fall through to null');
+    } finally {
+      if (origPidEnv === undefined) delete process.env.CLAUDE_SESSION_PID;
+      else process.env.CLAUDE_SESSION_PID = origPidEnv;
+    }
+  });
+
+  it('DOES return a PID session when its cwd matches process cwd', () => {
+    const origPidEnv = process.env.CLAUDE_SESSION_PID;
+    try {
+      process.env.CLAUDE_SESSION_PID = MATCH_PID;
+      const result = resolveClaudeSession('/matching-project-unique-xyzabc');
+      assert.ok(result !== null, 'matching cwd PID session should be returned');
+      assert.equal(result.sid, 'correct-session-id');
+    } finally {
+      if (origPidEnv === undefined) delete process.env.CLAUDE_SESSION_PID;
+      else process.env.CLAUDE_SESSION_PID = origPidEnv;
+    }
+  });
+});

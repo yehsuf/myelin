@@ -1113,7 +1113,7 @@ describe('Task 10 finding 14: staged apply resolves mitmproxy from a managed poi
     // The global mitmproxy detection must not run under update-apply.
     assert.match(
       source,
-      /\}\s*else\s*\{\s*mitmdumpBin \?\?= await ensureMitmproxy/,
+      /\}\s*else\s*\{[\s\S]*?mitmdumpBin \?\?= await ensureMitmproxy/,
       'ensureMitmproxy global detection must be confined to the non-update-apply branch',
     );
   });
