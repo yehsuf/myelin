@@ -750,8 +750,11 @@ describe('resolveClaudeSession', () => {
 
   it('resolves real Claude session for tokenstack cwd', () => {
     // This test validates the resolution against real ~/.claude data.
-    // It is environment-dependent: skip gracefully if no Claude sessions exist.
+    // It is environment-dependent: skip gracefully if no Claude sessions exist
+    // or if ~/tokenstack does not exist on this machine (e.g. Linux dev boxes
+    // where the repo lives at ~/.myelin/repo, not ~/tokenstack).
     const tokenstackCwd = path.join(process.env.HOME || '', 'tokenstack');
+    if (!existsSync(tokenstackCwd)) return; // not applicable on this machine
     const result = resolveClaudeSession(tokenstackCwd);
     if (result === null) {
       // No Claude session for tokenstack — acceptable in CI or fresh machines
