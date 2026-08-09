@@ -2980,7 +2980,7 @@ async function main() {
     if (flags.profile === 'proxy') console.log(`  headroom service on port ${port}, mitmproxy service on port 8888`);
     if (claudeCC) console.log('  ~/.claude/settings.json, CLAUDE.md, hooks');
     if (copilot)  console.log('  ~/.copilot/mcp-config.json');
-    console.log('  shell profile HEADROOM_PORT + _copilot/_claude wrappers (per-invocation env, no global pollution)');
+    console.log('  shell profile HEADROOM_PORT + copilot/claude/_copilot/_claude wrappers (per-invocation env, no global pollution)');
     console.log('\n[dry-run] No changes made.\n');
     return;
   }
@@ -3976,7 +3976,7 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
         // Don't return — linkGlobalBin and registry setup must still run.
       }
       if (profileWriteOk) {
-        ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, _copilot + _claude wrappers)`);
+        ok(`${profilePath} (proxy, alias${certLines ? ', CA bundle env vars' : ''}, PATH, copilot/claude + _copilot/_claude wrappers)`);
         if (os === 'windows') {
           const appData = process.env.APPDATA || join(home, 'AppData', 'Roaming');
           if (installWindowsAutoloadModule(appData, profilePath)) {

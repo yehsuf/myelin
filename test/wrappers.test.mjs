@@ -108,6 +108,14 @@ describe('_copilot wrapper — sets its own env per-invocation', () => {
         const custom = buildCopilotWrapper({ os, mitmPort: 9999 });
         assert.ok(custom.includes('127.0.0.1:9999'));
       });
+      if (os === 'windows') {
+        it('calls the binary directly via Get-Command (not "& copilot @args") to avoid recursing into the bare copilot function', () => {
+          assert.ok(w.includes('Get-Command copilot -Type Application -ErrorAction Stop'),
+            '_copilot must resolve the copilot binary explicitly so it never re-enters a "function global:copilot" clean wrapper defined in the same profile.');
+          assert.ok(!w.includes('& copilot @args'),
+            '_copilot must not call "copilot" as a bare command — that would recurse if a "copilot" function is defined.');
+        });
+      }
       if (os !== 'windows') {
         it('single-quotes the NO_PROXY value so zsh does not glob its * patterns', () => {
           // NO_PROXY contains wildcard hosts (e.g. *.akamai.com, *.local). As an
