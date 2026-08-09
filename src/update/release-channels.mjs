@@ -118,9 +118,17 @@ async function stableTarget(repository, fetch) {
       throw releaseChannelError('Stable release pagination loop is invalid.', 'ERR_RELEASE_API');
     }
     seenPages.add(pageUrl);
-    const response = await fetch(pageUrl, {
-      headers: { Accept: 'application/vnd.github+json' },
-    });
+    let response;
+    try {
+      response = await fetch(pageUrl, {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+    } catch (cause) {
+      throw releaseChannelError(
+        `Unable to reach GitHub releases API: ${cause?.message ?? 'network error'}. Check connectivity or use myelin update --channel main.`,
+        'ERR_RELEASE_API',
+      );
+    }
     if (!response?.ok) {
       throw releaseChannelError(
         `Unable to resolve stable Myelin releases (${response?.status ?? 'request failed'}).`,
@@ -167,7 +175,7 @@ async function stableTarget(repository, fetch) {
     pageUrl = nextReleasePage(response, repository);
   }
   throw releaseChannelError(
-    'No stable Myelin release exists. Use myelin update --channel main to select an explicit main commit.',
+    'No stable Myelin release exists. Tag a release first, or use myelin update --channel main to pull the latest untagged commit.',
     'ERR_RELEASE_STABLE_MISSING',
   );
 }
