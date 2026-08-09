@@ -56,6 +56,12 @@ export const UPDATE_JOURNAL_FILENAME = 'update-journal.json';
 
 const DEFAULT_STALE_LOCK_MS = 120_000;
 const DEFAULT_HEARTBEAT_MS = 20_000;
+// Windows: AV scanners (Defender) can lock the heartbeat file for several
+// consecutive intervals. 3 failures × 20s = 60s tolerance is too tight for
+// a multi-minute install on a machine with real-time protection enabled.
+// ponytail: global per-platform budget; per-drive override if AV is disruptive
+const PLATFORM_HEARTBEAT_MAX_CONSECUTIVE_FAILURES =
+  process.platform === 'win32' ? 10 : DEFAULT_HEARTBEAT_MAX_CONSECUTIVE_FAILURES;
 const DEFAULT_HEALTH_RETRY_MS = 1_000;
 const DEFAULT_SERVICE_HEALTH_DEADLINE_MS = 30_000;
 const DEFAULT_TOTAL_HEALTH_DEADLINE_MS = 120_000;
@@ -2789,6 +2795,7 @@ export async function runUpdate(options = {}, injectedDeps = {}) {
     });
     stopHeartbeat = deps.lock.startHeartbeat?.(token, lockPath, undefined, {
       onTerminalFailure: ({ reason }) => abort.trigger(reason),
+      maxConsecutiveFailures: PLATFORM_HEARTBEAT_MAX_CONSECUTIVE_FAILURES,
     });
     const context = { lockToken: token, abort, abortSignal: abort.signal };
     deps.fence ??= abort.fence;

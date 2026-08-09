@@ -208,6 +208,7 @@ describe('repairVenvPython', () => {
   });
 
   it('repairs symlink and pyvenv.cfg when bin/python is broken', () => {
+    if (process.platform === 'win32') return; // win32 guard returns early — POSIX only
     const symlinked = [];
     const written = [];
     const cfg = 'home = /old/uv/python/cpython-3.12-macos-aarch64-none/bin\nversion_info = 3.12\n';
@@ -228,6 +229,7 @@ describe('repairVenvPython', () => {
   });
 
   it('appends home line when pyvenv.cfg has no existing home entry', () => {
+    if (process.platform === 'win32') return; // win32 guard returns early — POSIX only
     const written = [];
     const cfg = 'version_info = 3.12\ninclude-system-site-packages = false\n';
     repairVenvPython('/venv', {

@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync, renameSync } from 'node:fs';
 import { join, resolve, dirname, isAbsolute, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -3355,6 +3355,45 @@ async function main() {
             symlinkSync(managedBin, target);
           } catch { /* not writable — ignore */ }
         }
+      }
+    }
+  } else {
+    // Windows: symlinks require admin/Developer Mode — use copyFileSync instead.
+    // Copy github-binary managed components from components/<name>/current/bin/<name>.exe
+    // to ~/.myelin/bin/<name>.exe so the pinned version is active in PATH.
+    // npm/uv-tool/service components are handled by their package managers or separately.
+    const WIN_COPY = new Set(['github-binary']);
+    const WIN_SKIP = new Set(['winsw', 'tokenOptimizer']); // service binaries managed separately
+    for (const [name, component] of Object.entries(COMPONENTS)) {
+      if (!WIN_COPY.has(component.kind)) continue;
+      if (WIN_SKIP.has(name)) continue;
+      const binName = component.bin;
+      if (!binName) continue;
+      // Strip any existing .exe suffix before appending — some manifest bin values
+      // already include '.exe' (e.g. winsw: 'WinSW.exe'); guard future entries.
+      const stem = binName.replace(/\.exe$/i, '');
+      // Reject bin values with path traversal sequences — manifest is frozen/hardcoded
+      // but this guards against a future malicious or malformed entry.
+      if (stem.includes('/') || stem.includes('\\') || stem.includes('..')) continue;
+      const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', `${stem}.exe`);
+      if (!existsSync(managedBin)) continue;
+      const target = joinManaged(managed.binDir, `${stem}.exe`);
+      try {
+        // Size-only comparison: mtime is unreliable (copyFileSync doesn't preserve
+        // mtime on Windows; lstatSync on a junction returns the junction's mtime).
+        const srcSize = lstatSync(managedBin).size;
+        let needsCopy = true;
+        try { needsCopy = lstatSync(target).size !== srcSize; } catch { /* missing → copy */ }
+        if (needsCopy) {
+          // Write to temp then rename — reduces the window where the binary is partially written.
+          // Note: MoveFileEx on Windows is NOT guaranteed atomic; a running binary may cause EBUSY.
+          const tmp = `${target}.tmp`;
+          copyFileSync(managedBin, tmp);
+          renameSync(tmp, target);
+        }
+      } catch (e) {
+        // EBUSY: binary is in use — old version stays active until next update run.
+        warn(`  ⚠ ${name}: could not update ${stem}.exe (${e?.code ?? e?.message ?? 'error'}) — re-run after closing all Copilot/Claude sessions`);
       }
     }
   }

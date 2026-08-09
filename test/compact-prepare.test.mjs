@@ -750,8 +750,11 @@ describe('resolveClaudeSession', () => {
 
   it('resolves real Claude session for tokenstack cwd', () => {
     // This test validates the resolution against real ~/.claude data.
-    // It is environment-dependent: skip gracefully if no Claude sessions exist.
+    // It is environment-dependent: skip gracefully if no Claude sessions exist
+    // or if ~/tokenstack does not exist on this machine (e.g. Linux dev boxes
+    // where the repo lives at ~/.myelin/repo, not ~/tokenstack).
     const tokenstackCwd = path.join(process.env.HOME || '', 'tokenstack');
+    if (!existsSync(tokenstackCwd)) return; // not applicable on this machine
     const result = resolveClaudeSession(tokenstackCwd);
     if (result === null) {
       // No Claude session for tokenstack — acceptable in CI or fresh machines
@@ -760,7 +763,8 @@ describe('resolveClaudeSession', () => {
     assert.ok(result.sid, 'sid must be a non-empty string');
     assert.ok(result.sid.length === 36, `sid should be a UUID, got: ${result.sid}`);
     assert.ok(result.cwd, 'cwd must be set');
-    assert.ok(result.projectDir, 'projectDir must be set');
+    // projectDir is null when the session is a fallback/ancestor match (no exact project match)
+    assert.ok(result.projectDir === null || typeof result.projectDir === 'string', 'projectDir must be null or string');
   });
 
   it('does NOT match sessions whose cwd is above the git root (git-boundary regression)', () => {
