@@ -149,7 +149,7 @@ export function buildCopilotWrapper({ os, mitmPort = 8888, copilotBin = 'copilot
     // callers may pass a brew/absolute path; Windows currently never does),
     // call that explicit path instead of re-resolving via Get-Command.
     const psCallBin = copilotBin === 'copilot'
-      ? '& (Get-Command copilot -Type Application -ErrorAction Stop).Source @args'
+      ? '& (Get-Command copilot -Type Application -ErrorAction Stop | Select-Object -First 1).Source @args'
       : psCall;
     return `# _copilot: routes through Myelin mitmproxy with health-check fallback.
 # Actively unsets Claude-provider env vars so a stray ANTHROPIC_BASE_URL in
@@ -247,7 +247,7 @@ export function buildClaudeWrapper({ os, headroomPort = 8787 } = {}) {
         .map(k => `  $env:${k} = $saved_${k}`)
         .join('\n');
     // Call the binary directly to avoid recursing into the bare 'claude' clean wrapper.
-    const psClaudeBin = `(Get-Command claude -Type Application -ErrorAction Stop).Source`;
+    const psClaudeBin = `(Get-Command claude -Type Application -ErrorAction Stop | Select-Object -First 1).Source`;
     return `# _claude: compression backend disabled — runs Claude Code unproxied.
 # Actively unsets ANTHROPIC_BASE_URL/HEADROOM_PORT so a stray
 # global value can never point Claude at a nonexistent proxy port.
@@ -279,7 +279,7 @@ function _claude() {
 # the bare 'claude' clean wrapper when both are defined in the same profile.
 function global:_claude {
 ${savedLines}
-  $_claudeBin = (Get-Command claude -Type Application -ErrorAction Stop).Source
+  $_claudeBin = (Get-Command claude -Type Application -ErrorAction Stop | Select-Object -First 1).Source
   $probe = Test-NetConnection -ComputerName 127.0.0.1 -Port ${headroomPort} -WarningAction SilentlyContinue -InformationLevel Quiet 2>$null
   if ($probe) {
     if ($env:CLAUDE_CODE_USE_FOUNDRY -eq '1') {
@@ -373,7 +373,7 @@ export function buildBareCopilotWrapper({ os } = {}) {
 function global:copilot {
 ${saveLines}
   try {
-    & (Get-Command copilot -Type Application -ErrorAction Stop).Source @args
+    & (Get-Command copilot -Type Application -ErrorAction Stop | Select-Object -First 1).Source @args
   } finally {
 ${restoreLines}
   }
@@ -408,7 +408,7 @@ export function buildBareClaudeWrapper({ os } = {}) {
 function global:claude {
 ${saveLines}
   try {
-    & (Get-Command claude -Type Application -ErrorAction Stop).Source @args
+    & (Get-Command claude -Type Application -ErrorAction Stop | Select-Object -First 1).Source @args
   } finally {
 ${restoreLines}
   }
