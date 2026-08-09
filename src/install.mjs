@@ -7,7 +7,7 @@
  */
 import { parseArgs } from 'node:util';
 import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
-import { join, resolve, dirname, win32 as pathWin32 } from 'node:path';
+import { join, resolve, dirname, isAbsolute, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
 import { buildCombinedCaCert } from './detect/combined-ca.mjs';
@@ -2652,7 +2652,10 @@ export function stopManagedUvToolProcess(name, {
  *
  * Windows: bare 'copilot' only (no reliable install-time path resolution).
  */
-async function resolveCopilotBin(os, home) {
+export async function resolveCopilotBin(os, home, {
+  existsSyncImpl = existsSync,
+  whichImpl = which,
+} = {}) {
   if (os === 'windows') return 'copilot';
 
   const preferred = os === 'darwin'
@@ -2660,17 +2663,22 @@ async function resolveCopilotBin(os, home) {
     : ['/home/linuxbrew/.linuxbrew/bin/copilot', '/usr/local/bin/copilot', '/usr/bin/copilot'];
 
   for (const p of preferred) {
-    if (existsSync(p)) return p;
+    if (existsSyncImpl(p)) return p;
   }
 
-  const found = await which('copilot').catch(() => null);
+  const found = await whichImpl('copilot').catch(() => null);
   if (found) {
     // Reject paths that are clearly npm/nvm/volta/pnpm managed bins
     const isNpmBin = /\/\.(nvm|volta|npm|pnpm)\//i.test(found)
       || found.includes('/node_modules/')
       || found.includes('/pnpm/')            // ~/.local/share/pnpm, ~/Library/pnpm
       || (home && found.startsWith(join(home, '.npm')));
-    if (!isNpmBin) return found;
+    // `which` normally returns an absolute path, but a relative PATH entry
+    // (e.g. '.' or 'bin') would make it echo one back. Baked into the wrapper
+    // verbatim, a relative path re-resolves against whatever directory the
+    // user happens to be in when they later run copilot/_copilot — not the
+    // installer's cwd. Reject anything non-absolute; fall back to bare 'copilot'.
+    if (!isNpmBin && isAbsolute(found)) return found;
   }
 
   return 'copilot';

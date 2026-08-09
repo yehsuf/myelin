@@ -25,6 +25,7 @@ import {
   stopLegacyManagedProxies,
   stopManagedUvToolProcess,
   repairVenvPython,
+  resolveCopilotBin,
 } from '../src/install.mjs';
 import { powerShellExecutable } from '../src/detect/os.mjs';
 import { installWatchdog as installWindowsWatchdog, normalizeWindowsFilesystemPath } from '../src/service/windows.mjs';
@@ -1898,5 +1899,96 @@ describe('finalizeAndExit (installer force-exit — cures "install stuck at Shel
       setTimeoutImpl: () => ({ unref() { unrefed = true; } }),
     });
     assert.equal(unrefed, true);
+  });
+});
+
+describe('resolveCopilotBin — non-npm copilot binary preference', () => {
+  it('Windows always returns bare "copilot" (no install-time path resolution)', async () => {
+    const bin = await resolveCopilotBin('windows', '/Users/u');
+    assert.equal(bin, 'copilot');
+  });
+
+  it('macOS: prefers /opt/homebrew/bin/copilot when present', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: p => p === '/opt/homebrew/bin/copilot',
+      whichImpl: async () => '/Users/u/.nvm/versions/node/v20/bin/copilot',
+    });
+    assert.equal(bin, '/opt/homebrew/bin/copilot');
+  });
+
+  it('macOS: falls back to /usr/local/bin/copilot when brew path absent', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: p => p === '/usr/local/bin/copilot',
+      whichImpl: async () => null,
+    });
+    assert.equal(bin, '/usr/local/bin/copilot');
+  });
+
+  it('Linux: prefers linuxbrew path when present', async () => {
+    const bin = await resolveCopilotBin('linux', '/home/u', {
+      existsSyncImpl: p => p === '/home/linuxbrew/.linuxbrew/bin/copilot',
+      whichImpl: async () => null,
+    });
+    assert.equal(bin, '/home/linuxbrew/.linuxbrew/bin/copilot');
+  });
+
+  it('falls back to `which` result when it is a non-npm absolute path', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => '/usr/bin/env/custom/copilot',
+    });
+    assert.equal(bin, '/usr/bin/env/custom/copilot');
+  });
+
+  it('rejects `which` result under .nvm/', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => '/Users/u/.nvm/versions/node/v20/bin/copilot',
+    });
+    assert.equal(bin, 'copilot');
+  });
+
+  it('rejects `which` result under .volta/', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => '/Users/u/.volta/bin/copilot',
+    });
+    assert.equal(bin, 'copilot');
+  });
+
+  it('rejects `which` result under node_modules/', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => '/Users/u/project/node_modules/.bin/copilot',
+    });
+    assert.equal(bin, 'copilot');
+  });
+
+  it('rejects `which` result under ~/.npm', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => '/Users/u/.npm/bin/copilot',
+    });
+    assert.equal(bin, 'copilot');
+  });
+
+  it('rejects a relative path from `which` (directory-dependent trojan risk)', async () => {
+    // A relative PATH entry could make `which` echo back a non-absolute path.
+    // Baked verbatim into the wrapper, it would re-resolve against whatever
+    // directory the user is in when they later invoke copilot/_copilot —
+    // not the installer's cwd. Must reject and fall back to bare 'copilot'.
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => 'bin/copilot',
+    });
+    assert.equal(bin, 'copilot');
+  });
+
+  it('falls back to bare "copilot" when `which` finds nothing', async () => {
+    const bin = await resolveCopilotBin('darwin', '/Users/u', {
+      existsSyncImpl: () => false,
+      whichImpl: async () => null,
+    });
+    assert.equal(bin, 'copilot');
   });
 });
