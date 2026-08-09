@@ -27,7 +27,7 @@ program.command('update')
   .description('Update Myelin as one pinned release')
   .option('--check', 'Show release and component drift without making changes')
   .option('--download-only', 'Stage and validate the latest release without activating it')
-  .option('--channel <channel>', 'Release channel: stable or main', 'main')
+  .option('--channel <channel>', 'Release channel: stable or main', 'stable')
   .option('--self', 'Removed; use myelin update')
   .option('-f, --force', 'Removed; use myelin update')
   .action(async (opts) => {
