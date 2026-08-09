@@ -6,7 +6,7 @@
  *        --check  --dry-run
  */
 import { parseArgs } from 'node:util';
-import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync } from 'node:fs';
+import { mkdirSync, existsSync, lstatSync, readlinkSync, readFileSync, writeFileSync, copyFileSync, accessSync, unlinkSync, chmodSync, symlinkSync, readdirSync, renameSync } from 'node:fs';
 import { join, resolve, dirname, isAbsolute, win32 as pathWin32 } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface as createRL } from 'node:readline';
@@ -3362,7 +3362,6 @@ async function main() {
     // Copy github-binary managed components from components/<name>/current/bin/<name>.exe
     // to ~/.myelin/bin/<name>.exe so the pinned version is active in PATH.
     // npm/uv-tool/service components are handled by their package managers or separately.
-    // ponytail: global lock, per-component hardlink attempt if copy fails (same-drive assumption)
     const WIN_COPY = new Set(['github-binary']);
     const WIN_SKIP = new Set(['winsw', 'tokenOptimizer']); // service binaries managed separately
     for (const [name, component] of Object.entries(COMPONENTS)) {
@@ -3370,17 +3369,24 @@ async function main() {
       if (WIN_SKIP.has(name)) continue;
       const binName = component.bin;
       if (!binName) continue;
-      const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', `${binName}.exe`);
+      // Strip any existing .exe suffix before appending — some manifest bin values
+      // already include '.exe' (e.g. winsw: 'WinSW.exe'); guard future entries.
+      const stem = binName.replace(/\.exe$/i, '');
+      const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', `${stem}.exe`);
       if (!existsSync(managedBin)) continue;
-      const target = joinManaged(managed.binDir, `${binName}.exe`);
+      const target = joinManaged(managed.binDir, `${stem}.exe`);
       try {
-        const srcStat = lstatSync(managedBin);
+        // Size-only comparison: mtime is unreliable (copyFileSync doesn't preserve
+        // mtime on Windows; lstatSync on a junction returns the junction's mtime).
+        const srcSize = lstatSync(managedBin).size;
         let needsCopy = true;
-        try {
-          const dstStat = lstatSync(target);
-          needsCopy = dstStat.size !== srcStat.size || dstStat.mtimeMs !== srcStat.mtimeMs;
-        } catch { /* target missing → copy */ }
-        if (needsCopy) copyFileSync(managedBin, target);
+        try { needsCopy = lstatSync(target).size !== srcSize; } catch { /* missing → copy */ }
+        if (needsCopy) {
+          // Atomic write: copy to temp then rename (MoveFileEx on NTFS is atomic).
+          const tmp = `${target}.tmp`;
+          copyFileSync(managedBin, tmp);
+          renameSync(tmp, target);
+        }
       } catch { /* not writable or source gone — ignore */ }
     }
   }
