@@ -3357,6 +3357,32 @@ async function main() {
         }
       }
     }
+  } else {
+    // Windows: symlinks require admin/Developer Mode — use copyFileSync instead.
+    // Copy github-binary managed components from components/<name>/current/bin/<name>.exe
+    // to ~/.myelin/bin/<name>.exe so the pinned version is active in PATH.
+    // npm/uv-tool/service components are handled by their package managers or separately.
+    // ponytail: global lock, per-component hardlink attempt if copy fails (same-drive assumption)
+    const WIN_COPY = new Set(['github-binary']);
+    const WIN_SKIP = new Set(['winsw', 'tokenOptimizer']); // service binaries managed separately
+    for (const [name, component] of Object.entries(COMPONENTS)) {
+      if (!WIN_COPY.has(component.kind)) continue;
+      if (WIN_SKIP.has(name)) continue;
+      const binName = component.bin;
+      if (!binName) continue;
+      const managedBin = joinManaged(managed.root, 'components', name, 'current', 'bin', `${binName}.exe`);
+      if (!existsSync(managedBin)) continue;
+      const target = joinManaged(managed.binDir, `${binName}.exe`);
+      try {
+        const srcStat = lstatSync(managedBin);
+        let needsCopy = true;
+        try {
+          const dstStat = lstatSync(target);
+          needsCopy = dstStat.size !== srcStat.size || dstStat.mtimeMs !== srcStat.mtimeMs;
+        } catch { /* target missing → copy */ }
+        if (needsCopy) copyFileSync(managedBin, target);
+      } catch { /* not writable or source gone — ignore */ }
+    }
   }
 
   // mitmproxy — install binary + generate CA + append CA to PEM bundles
