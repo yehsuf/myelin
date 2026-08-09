@@ -154,9 +154,13 @@ describe('_copilot wrapper — copilotBin path embedding', () => {
     assert.ok(w.includes('"C:\\Programs\\copilot\\copilot.exe" @args'),
       'Windows wrapper must quote the explicit copilot bin path');
   });
-  it('Windows default (bare copilot) uses unquoted & copilot call', () => {
+  it('Windows default (bare copilot) uses recursion-safe Get-Command call', () => {
     const w = buildCopilotWrapper({ os: 'windows' });
-    assert.ok(w.includes('& copilot @args'));
+    // Default copilotBin ('copilot') routes through Get-Command -Type Application
+    // instead of '& copilot @args' to avoid recursing into a bare 'copilot' clean
+    // wrapper function defined in the same profile.
+    assert.ok(w.includes('Get-Command copilot -Type Application -ErrorAction Stop'));
+    assert.ok(!w.includes('& copilot @args'));
   });
 });
 
