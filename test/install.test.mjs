@@ -14,6 +14,7 @@ import {
   ensureManagedHeadroomService,
   ensureManagedVenv,
   finalizeAndExit,
+  installCopilotStatusline,
   installPipPackageInManagedVenv,
   isNativeBuildToolchainError,
   resolveLitellmSpec,
@@ -47,6 +48,106 @@ describe('resolveLitellmSpec', () => {
 
   it('ignores a blank override and falls back to the default', () => {
     assert.equal(resolveLitellmSpec({ budget_routing: { litellm_spec: '   ' } }), 'litellm[proxy]>=1.90');
+  });
+});
+
+describe('installCopilotStatusline', () => {
+  const FAKE_REPO = '/fake/myelin';
+  const FAKE_HOME = '/fake/home';
+  const SETTINGS_PATH = `${FAKE_HOME}/.copilot/settings.json`;
+  const BASE_SETTINGS = JSON.stringify({ model: 'claude-opus-4.8', memory: true }, null, 2);
+
+  it('does nothing when settings.json does not exist', () => {
+    const copies = [];
+    installCopilotStatusline({
+      home: FAKE_HOME,
+      os: 'windows',
+      repoRoot: FAKE_REPO,
+      existsSyncImpl: () => false,
+      copyFileSyncImpl: (s, d) => copies.push([s, d]),
+      writeFileSyncImpl: () => assert.fail('should not write'),
+      readFileSyncImpl: () => assert.fail('should not read'),
+      mkdirSyncImpl: () => {},
+    });
+    assert.equal(copies.length, 0);
+  });
+
+  it('copies statusline.ps1 on Windows and sets settings.json statusLine command', () => {
+    const copies = [];
+    const writes = {};
+    installCopilotStatusline({
+      home: FAKE_HOME,
+      os: 'windows',
+      repoRoot: FAKE_REPO,
+      existsSyncImpl: (p) => p.endsWith('settings.json') || p.endsWith('statusline.ps1'),
+      copyFileSyncImpl: (s, d) => copies.push({ s, d }),
+      writeFileSyncImpl: (p, data) => { writes[p] = data; },
+      readFileSyncImpl: () => BASE_SETTINGS,
+      mkdirSyncImpl: () => {},
+    });
+    const scriptCopies = copies.filter(({ s, d }) => s.endsWith('.ps1') || d.endsWith('.ps1'));
+    assert.equal(scriptCopies.length, 1);
+    assert.ok(scriptCopies[0].s.endsWith('statusline.ps1'), 'should copy the .ps1 source');
+    assert.ok(scriptCopies[0].d.endsWith('statusline.ps1'), 'should deploy to ~/.copilot/statusline.ps1');
+    const writtenJson = Object.values(writes)[0];
+    const written = JSON.parse(writtenJson);
+    assert.equal(written.statusLine.type, 'command');
+    assert.ok(written.statusLine.command.includes('powershell'), 'Windows command uses powershell');
+    assert.ok(written.statusLine.command.includes('-WindowStyle Hidden'), 'suppresses window');
+    assert.ok(written.statusLine.command.includes('statusline.ps1'), 'references the ps1 file');
+  });
+
+  it('copies statusline.sh on POSIX and sets a bare command', () => {
+    const copies = [];
+    const writes = {};
+    installCopilotStatusline({
+      home: FAKE_HOME,
+      os: 'darwin',
+      repoRoot: FAKE_REPO,
+      existsSyncImpl: (p) => p.endsWith('settings.json') || p.endsWith('statusline.sh'),
+      copyFileSyncImpl: (s, d) => copies.push({ s, d }),
+      writeFileSyncImpl: (p, data) => { writes[p] = data; },
+      readFileSyncImpl: () => BASE_SETTINGS,
+      mkdirSyncImpl: () => {},
+    });
+    const shCopies = copies.filter(({ s }) => s.endsWith('.sh'));
+    assert.equal(shCopies.length, 1);
+    assert.ok(shCopies[0].s.endsWith('statusline.sh'));
+    const written = JSON.parse(Object.values(writes)[0]);
+    assert.ok(written.statusLine.command.endsWith('statusline.sh'));
+    assert.ok(!written.statusLine.command.includes('powershell'));
+  });
+
+  it('preserves existing settings.json keys when updating statusLine', () => {
+    const writes = {};
+    installCopilotStatusline({
+      home: FAKE_HOME,
+      os: 'windows',
+      repoRoot: FAKE_REPO,
+      existsSyncImpl: () => true,
+      copyFileSyncImpl: () => {},
+      writeFileSyncImpl: (p, data) => { writes[p] = data; },
+      readFileSyncImpl: () => BASE_SETTINGS,
+      mkdirSyncImpl: () => {},
+    });
+    const written = JSON.parse(Object.values(writes)[0]);
+    assert.equal(written.model, 'claude-opus-4.8');
+    assert.equal(written.memory, true);
+  });
+
+  it('skips install when source script file is missing from repo', () => {
+    const copies = [];
+    installCopilotStatusline({
+      home: FAKE_HOME,
+      os: 'windows',
+      repoRoot: FAKE_REPO,
+      existsSyncImpl: (p) => p.endsWith('settings.json'), // src .ps1 not present
+      copyFileSyncImpl: (s, d) => copies.push([s, d]),
+      writeFileSyncImpl: () => assert.fail('should not write'),
+      readFileSyncImpl: () => BASE_SETTINGS,
+      mkdirSyncImpl: () => {},
+    });
+    assert.equal(copies.length, 0);
   });
 });
 

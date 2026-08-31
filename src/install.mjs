@@ -1894,6 +1894,52 @@ export function installCopilotSkills({
   }
 }
 
+/**
+ * Install the Copilot CLI statusline script and wire settings.json.
+ *
+ * On Windows, deploys `src/tools/statusline.ps1` (PS5.1-compatible ANSI) and
+ * sets `statusLine.command` in `~/.copilot/settings.json` to invoke it via
+ * `powershell -WindowStyle Hidden`. On POSIX, deploys the bash `.sh` variant
+ * instead. Only runs when `copilot` is true and `settings.json` already exists
+ * (i.e. Copilot CLI is installed) — never creates settings.json from scratch.
+ */
+export function installCopilotStatusline({
+  home,
+  os,
+  repoRoot,
+  existsSyncImpl = existsSync,
+  copyFileSyncImpl = copyFileSync,
+  writeFileSyncImpl = writeFileSync,
+  readFileSyncImpl = readFileSync,
+  mkdirSyncImpl = mkdirSync,
+} = {}) {
+  const copilotDir = join(home, '.copilot');
+  const settingsPath = join(copilotDir, 'settings.json');
+  if (!existsSyncImpl(settingsPath)) return;
+
+  const isWindows = os === 'windows';
+  const srcFile = isWindows ? 'statusline.ps1' : 'statusline.sh';
+  const src = join(repoRoot, 'src', 'tools', srcFile);
+  if (!existsSyncImpl(src)) return;
+
+  const dst = join(copilotDir, srcFile);
+  mkdirSyncImpl(copilotDir, { recursive: true });
+  copyFileSyncImpl(src, dst);
+
+  const command = isWindows
+    ? `powershell -NoProfile -NonInteractive -WindowStyle Hidden -File ${dst}`
+    : dst;
+
+  const current = JSON.parse(readFileSyncImpl(settingsPath, 'utf8'));
+  const updated = { ...current, statusLine: { type: 'command', command } };
+  // Backup via injected impls (not the module-level backup() which uses real fs).
+  if (existsSyncImpl(settingsPath)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    try { copyFileSyncImpl(settingsPath, `${settingsPath}.bak.${ts}`); } catch { /* best-effort */ }
+  }
+  writeFileSyncImpl(settingsPath, JSON.stringify(updated, null, 2), 'utf8');
+}
+
 /** SKILL.md content for myelin-compact (Copilot CLI only). */
 const COMPACT_SKILL_MD = `---
 name: myelin-compact
@@ -3902,6 +3948,12 @@ ${constitutionSkillMd(managedRuntime.commandPath).replace(/^---[\s\S]*?---\n/, '
     managedRuntimeCommandPath: managedRuntime.commandPath,
     os,
   });
+
+  if (copilot) {
+    const slFile = os === 'windows' ? 'statusline.ps1' : 'statusline.sh';
+    installCopilotStatusline({ home, os, repoRoot: runtimeBridge.root });
+    ok(`~/.copilot/${slFile} + settings.json statusLine (Copilot statusline)`);
+  }
 
   // Shell profile
   const profilePath = shellProfilePath(os, shell);
